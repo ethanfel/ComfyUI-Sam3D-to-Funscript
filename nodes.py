@@ -135,7 +135,7 @@ class S3F_BuildMotion:
             "smoothing_ms": ("FLOAT", {"default": 80, "min": 0, "max": 2000}),
             "enabled_axes": ("STRING", {"default": "L0,L1,L2,R0,R1,R2"}),
             "settings_json": ("STRING", {"default": "{}", "multiline": True,
-                "tooltip": "Optional max_gap_ms, neutral_window_ms, tolerance and axis_settings. L0 defaults to automatic stroke direction and range. Explicit component/range/center keeps manual calibration unless auto_fit is true. Translation ranges in metres; rotations in degrees."}),
+                "tooltip": "Optional max_gap_ms, neutral_window_ms, tolerance and axis_settings. L0 Auto adapts direction, origin and range to this anchor over time. Set calibration to clip for a single whole-clip fit. Explicit component/range/center keeps manual calibration unless auto_fit is true. Translation ranges in metres; rotations in degrees."}),
         }, "optional": {
             "target_anchor_override": ("S3F_ANCHOR", {"tooltip": "Connect Detailed Anchor Override to replace target_anchor with a specific landmark."}),
             "reference_anchor_override": ("S3F_ANCHOR", {"tooltip": "Connect Detailed Anchor Override to replace reference_anchor. Ignored when reference_person is -1."}),

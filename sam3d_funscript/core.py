@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation
 from .anchors import ANCHORS
 from .standalone import standalone_html
 from .mouth import MOUTH_NOTE
-from .direction import auto_motion, fit_range
+from .direction import auto_motion, adaptive_motion, fit_range
 
 AXES = ("L0", "L1", "L2", "R0", "R1", "R2")
 SUFFIXES = dict(zip(AXES, ("", ".surge", ".sway", ".twist", ".roll", ".pitch")))
@@ -148,7 +148,8 @@ def default_config():
             "max_gap_ms": 250.0, "neutral_window_ms": 500.0, "tolerance": 0.75,
             "enabled_axes": list(AXES), "axis_settings": {
                 axis: {"component": "auto" if i == 0 else i % 3, "range": 0.2 if i < 3 else 60.0,
-                       "center": 50, "invert": False, "auto_fit": i == 0} for i, axis in enumerate(AXES)}}
+                       "center": 50, "invert": False, "auto_fit": i == 0,
+                       "calibration": "adaptive"} for i, axis in enumerate(AXES)}}
 
 
 def build_project(sequence, overrides=None):
@@ -235,21 +236,37 @@ def build_project(sequence, overrides=None):
             raise ValueError("Axis component must be 0, 1, 2 or 'auto'")
         if type(settings["auto_fit"]) is not bool:
             raise ValueError("Axis auto_fit must be true or false")
+        if settings["calibration"] not in ("adaptive", "clip"):
+            raise ValueError("Axis calibration must be 'adaptive' or 'clip'")
         rotational = axis.startswith("R")
         reports = None
+        local_ranges = None
+        adaptive = component == "auto" and settings["auto_fit"] and settings["calibration"] == "adaptive"
         if component == "auto":
-            if rotational not in automatic:
-                automatic[rotational] = auto_motion(times, raw, processed, ranges, orientation_hints, rotational)
-            source_raw, source, reports = automatic[rotational]
+            cache_key = (rotational, adaptive)
+            if cache_key not in automatic:
+                fn = adaptive_motion if adaptive else auto_motion
+                automatic[cache_key] = fn(times, raw, processed, ranges, orientation_hints, rotational)
+            if adaptive:
+                source_raw, source, local_ranges, _, reports = automatic[cache_key]
+            else:
+                source_raw, source, reports = automatic[cache_key]
         else:
             component += 3 if rotational else 0
             source_raw, source = raw[:, component], processed[:, component]
         if settings["auto_fit"]:
-            settings["range"], settings["center"] = fit_range(source[valid], rotational, settings["invert"])
+            if adaptive:
+                # Representative range for saved controls; actual gain is local.
+                settings["range"] = float(np.ceil(np.median(local_ranges[valid]) * 1e6) / 1e6)
+                settings["center"] = 50
+            else:
+                settings["range"], settings["center"] = fit_range(source[valid], rotational, settings["invert"])
         extent, center = settings["range"], settings["center"]
         if not isinstance(extent, (float, int)) or not np.isfinite(extent) or extent <= 0 or not np.isfinite(center) or not 0 <= center <= 100:
             raise ValueError("Axis range must be positive and center must be in 0–100")
-        positions = center + source / extent * 100 * (-1 if settings["invert"] else 1)
+        positions = center + source / (local_ranges if adaptive else extent) * 100 * (-1 if settings["invert"] else 1)
+        if adaptive:
+            positions = np.round(positions, 9)  # Stable integer ties in Python and JS.
         quantized = np.rint(np.clip(positions, 0, 100))
         actions = []
         for start, end in ranges:
@@ -268,6 +285,10 @@ def build_project(sequence, overrides=None):
                          "raw_span": float(np.ptp(source_raw[valid])), "units": "deg" if rotational else "m"}
         if reports is not None:
             metrics[axis]["auto_direction"] = reports
+        if adaptive:
+            metrics[axis]["auto_calibration"] = {"mode": "adaptive", "anchor": config["target_anchor"],
+                "window_ms": 3000, "step_ms": 500,
+                "range_min": float(np.min(local_ranges[valid])), "range_max": float(np.max(local_ranges[valid]))}
     warnings = list(sequence.metadata.get("warnings", []))
     if len(ranges) > 1:
         warnings.append("Gaps/cuts hold the previous position, then step at the next valid span. Review these boundaries before playback.")

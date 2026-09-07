@@ -61,6 +61,11 @@ export function simplify(times, values, tolerance) {
 const dot = (a,b) => a.reduce((sum,x,i)=>sum+x*b[i],0);
 const length = v => Math.sqrt(dot(v,v));
 const identity = () => [[1,0,0],[0,1,0],[0,0,1]];
+function timeIndex(times, value, inclusive=false) {
+    let lo=0,hi=times.length;
+    while(lo<hi){const mid=(lo+hi)>>1;if(times[mid]<value||(inclusive&&times[mid]===value))lo=mid+1;else hi=mid;}
+    return lo;
+}
 function percentile(values, q) {
     const sorted=[...values].sort((a,b)=>a-b), index=(sorted.length-1)*q, low=Math.floor(index);
     return sorted[low]+(sorted[Math.min(low+1,sorted.length-1)]-sorted[low])*(index-low);
@@ -146,13 +151,58 @@ function dominantDirection(times, values, axes) {
     }
     return {direction,share:Math.max(0,Math.min(1,energy(direction)/total)),mode};
 }
+function adaptiveMotion(project, offset) {
+    const times=project.times_ms,output={raw:Array(times.length).fill(null),processed:Array(times.length).fill(null),ranges:Array(times.length).fill(null),directions:Array(times.length).fill(null),spans:[]};
+    let start=null;
+    for(let end=0;end<=times.length;end++){
+        const good=end<times.length&&project.valid[end]&&project.processed[end].slice(offset,offset+3).every(Number.isFinite);
+        const boundary=end>0&&end<times.length&&(project.segments[end]!==project.segments[end-1]||times[end]-times[end-1]>project.config.max_gap_ms);
+        if(start!==null&&(!good||boundary)){
+            const t=times.slice(start,end),values=project.processed.slice(start,end).map(v=>v.slice(offset,offset+3)),orientation=orientationAt(project,start);
+            const knots=[];for(let at=t[0];at<t.at(-1);at+=500)knots.push(at);knots.push(t.at(-1));
+            const fits=[];let previous=null;
+            const firstReport=output.spans.length;
+            for(const at of knots){
+                const left=Math.max(t[0],Math.min(at-1500,t.at(-1)-3000));
+                const a=timeIndex(t,left),b=Math.max(a+1,timeIndex(t,left+3000,true));
+                const fit=dominantDirection(t.slice(a,b),values.slice(a,b),orientation.axes);
+                if(previous&&dot(fit.direction,previous)<0)fit.direction=fit.direction.map(x=>-x);
+                previous=fit.direction;
+                const projected=values.slice(a,b).map(v=>dot(v,fit.direction)),low=Math.min(...projected),high=Math.max(...projected);
+                const range=Math.ceil(Math.max(offset?10:.04,(high-low)/.9)*1e6)/1e6,origin=(low+high)/2;
+                fits.push({...fit,range,origin});
+                const index=timeIndex(t,at);
+                output.spans.push({start:start+index,end,at_ms:at,window_ms:[t[a],t[b-1]],...fit,range,origin,orientation:orientation.orientation});
+            }
+            for(let i=firstReport;i<output.spans.length-1;i++)output.spans[i].end=output.spans[i+1].start;
+            let j=0;
+            for(let i=0;i<t.length;i++){
+                while(j+1<knots.length&&knots[j+1]<=t[i])j++;
+                const k=Math.min(j+1,knots.length-1),weight=j===k?0:(t[i]-knots[j])/(knots[k]-knots[j]),f0=fits[j],f1=fits[k];
+                const gain=f0.direction.map((v,c)=>(1-weight)*v/f0.range+weight*f1.direction[c]/f1.range),bias=(1-weight)*f0.origin/f0.range+weight*f1.origin/f1.range;
+                const norm=length(gain),range=1/Math.max(norm,1e-30);
+                let target=dot(values[i],gain)-bias;
+                if(i){const movement=length(values[i].map((v,c)=>v-values[i-1][c])),limit=2*movement/Math.min(range,output.ranges[start+i-1]);target=Math.max(output.processed[start+i-1]-limit,Math.min(output.processed[start+i-1]+limit,target));}
+                output.processed[start+i]=target;
+                output.raw[start+i]=target+dot(project.raw[start+i].slice(offset,offset+3).map((v,c)=>v-values[i][c]),gain);
+                output.ranges[start+i]=range;output.directions[start+i]=gain.map(v=>v/Math.max(norm,1e-30));
+            }
+            start=null;
+        }
+        if(good&&start===null)start=end;
+    }
+    for(let i=0;i<times.length;i++)if(output.ranges[i]!==null){output.raw[i]*=output.ranges[i];output.processed[i]*=output.ranges[i];}
+    return output;
+}
 const automaticCache=new WeakMap();
-export function motionForAxis(project, axis, component=project.config.axis_settings[axis].component) {
+export function motionForAxis(project, axis, component=project.config.axis_settings[axis].component, calibration) {
     const offset=axis.startsWith("R")?3:0;
     if(component!=="auto")return {raw:project.raw.map(row=>row[component+offset]),processed:project.processed.map(row=>row[component+offset]),spans:[]};
     let cache=automaticCache.get(project);
     if(!cache||cache.source!==project.processed||cache.gap!==project.config.max_gap_ms){cache={source:project.processed,gap:project.config.max_gap_ms};automaticCache.set(project,cache);}
-    if(cache[offset])return cache[offset];
+    const s=project.config.axis_settings[axis],adaptive=(calibration??s.calibration)==="adaptive"&&(calibration!==undefined||s.auto_fit),key=`${offset}:${adaptive}`;
+    if(cache[key])return cache[key];
+    if(adaptive)return cache[key]=adaptiveMotion(project,offset);
     const output={raw:Array(project.times_ms.length).fill(null),processed:Array(project.times_ms.length).fill(null),spans:[]};
     let start=null;
     for(let i=0;i<=project.times_ms.length;i++){
@@ -167,16 +217,25 @@ export function motionForAxis(project, axis, component=project.config.axis_setti
         }
         if(good&&start===null)start=i;
     }
-    cache[offset]=output;return output;
+    cache[key]=output;return output;
 }
-export function autoFitAxis(project,axis,includeExtremes=false) {
-    const source=motionForAxis(project,axis,"auto").processed.filter(Number.isFinite);
+export function autoFitAxis(project,axis,includeExtremes=false,calibration=project.config.axis_settings[axis].calibration??"adaptive") {
+    if(includeExtremes)calibration="clip";
+    const motion=motionForAxis(project,axis,"auto",calibration),source=motion.processed.filter(Number.isFinite);
     if(!source.length)throw new Error("No usable samples for automatic fitting");
+    if(calibration==="adaptive")return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,calibration,center:50,range:Math.ceil(percentile(motion.ranges.filter(Number.isFinite),.5)*1e6)/1e6};
     const low=percentile(source,includeExtremes?0:.05),high=percentile(source,includeExtremes?1:.95),midpoint=(low+high)/2;
     const range=Math.ceil(Math.max(axis.startsWith("R")?10:.04,(high-low)/(includeExtremes ? .9 : .8),2*Math.abs(midpoint))*1e6)/1e6;
     const invert=project.config.axis_settings[axis].invert;
     const center=Math.floor(Math.max(0,Math.min(100,50-midpoint/range*100*(invert?-1:1)))*1000+.5)/1000;
-    return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,range,center};
+    return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,calibration,range,center};
+}
+
+export function axisValue(source, settings, index, field="processed") {
+    const value=source[field][index];
+    if(!Number.isFinite(value))return null;
+    const position=settings.center+value/(source.ranges?.[index]??settings.range)*100*(settings.invert?-1:1);
+    return source.ranges?Math.round(position*1e9)/1e9:position;
 }
 
 export function invertAxis(project, axis) {
@@ -191,7 +250,7 @@ export function invertAxis(project, axis) {
 
 export function rebuildAxis(project, axis) {
     const s = project.config.axis_settings[axis];
-    const source = motionForAxis(project,axis).processed;
+    const motion=motionForAxis(project,axis),source=motion.processed;
     const times = project.times_ms.map(roundEven), runs = [];
     let start = null;
     for (let i = 0; i <= times.length; ++i) {
@@ -203,8 +262,7 @@ export function rebuildAxis(project, axis) {
     const actions = [];
     for (const [a, b] of runs) {
         const t = times.slice(a, b);
-        const values = source.slice(a, b).map(value => roundEven(Math.max(0, Math.min(100,
-            s.center + value / s.range * 100 * (s.invert ? -1 : 1)))));
+        const values = source.slice(a, b).map((value,i) => roundEven(Math.max(0, Math.min(100,axisValue(motion,s,a+i)))));
         if (actions.length && t[0] > actions.at(-1).at + 1) actions.push({at: t[0] - 1, pos: actions.at(-1).pos});
         for (const i of simplify(t, values, project.config.tolerance)) actions.push({at: t[i], pos: values[i]});
     }

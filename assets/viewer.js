@@ -1,4 +1,4 @@
-import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
+import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
 import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
@@ -92,7 +92,9 @@ function controls() {
     const {data,axis,track}=selected(), s=data.config.axis_settings[axis];
     $("component").value=s.component; $("range").value=s.range; $("center").value=s.center; $("invert").checked=s.invert;
     $("unit").textContent=axis.startsWith("R")?"degrees":"metres";
-    for(const id of ["component","range","center","rebuild","autoFit"])$(id).disabled=assembled()||locked();
+    $("calibration").value=s.calibration??"clip";
+    for(const id of ["component","calibration","range","center","rebuild","autoFit"])$(id).disabled=assembled()||locked();
+    calibrationControls();
     $("invert").disabled=locked();
     $("editing").textContent=track?`Editing ${track.name} · ${axis}. Source edits are independent; apply a selection to update main.`:
         assembled()?"Editing main · assembled sections. Drag points to adjust joins, or calibrate a source track and apply it again.":`Editing main · ${axis}`;
@@ -106,6 +108,12 @@ function controls() {
     $("selectMain").textContent=`Main · ${$("axis").value} · export`;
     const main=project.timeline.main[$("axis").value];
     $("mainDescription").textContent=main.assembled?`${main.regions.length} source sections · device preview and exports follow main`:"Device preview and exported scripts follow this track";
+}
+function calibrationControls() {
+    const {data,axis}=selected();
+    const adaptive=$("component").value==="auto"&&$("calibration").value==="adaptive"&&data.config.axis_settings[axis].auto_fit;
+    $("rangeLabel").textContent=adaptive?"Local full-scale range":"Full-scale range";
+    for(const id of ["range","center"])$(id).disabled=assembled()||locked()||adaptive;
 }
 function selectLane(id) {
     if(!project)return;
@@ -201,9 +209,10 @@ function drawSkeleton(index, project, axis) {
     const selected=(project.anchor_indices?.target||ANCHORS[project.config.target_anchor]).map(j=>target[j]);
     if(selected.every(finitePoint)){
         const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();
-        const report=project.config.axis_settings[axis].component==="auto"?motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end):null;
+        const motion=project.config.axis_settings[axis].component==="auto"?motionForAxis(project,axis):null;
+        const report=motion?.spans.find(s=>index>=s.start&&index<s.end);
         if(report){
-            const d=report.direction,relative=project.config.frame==="reference_body";
+            const d=motion.directions?.[index]??report.direction,relative=project.config.frame==="reference_body";
             let vector=[-d[2],d[0]*(relative?1:-1),d[1]];
             if(relative){const frame=bodyFrame(people[project.config.reference_person]);if(frame)vector=[0,1,2].map(i=>frame.reduce((sum,v,j)=>sum+v[i]*vector[j],0));}
             if(project.config.axis_settings[axis].invert)vector=vector.map(v=>-v);
@@ -262,7 +271,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
             paint.fillStyle="#8c593b66";paint.fillRect(x(timeAt(i)),15,Math.max(2,x(data.times_ms[i+1]??timeAt(i)+10)-x(timeAt(i))),h-40);
         }
         for(const [field,strokeColor] of [["raw","#607689"],["processed","#bb9457"]]){
-            stroke(source[field].length,timeAt,i=>data.valid[i]&&Number.isFinite(source[field][i])?s.center+source[field][i]/s.range*100*(s.invert?-1:1):null,strokeColor,1,breakAt);
+            stroke(source[field].length,timeAt,i=>data.valid[i]?axisValue(source,s,i,field):null,strokeColor,1,breakAt);
         }
         stroke(actions.length,i=>actions[i].at,i=>actions[i].pos,color,2);
         const [a,b]=visibleRange(actions.length,i=>actions[i].at,...bounds);
@@ -287,7 +296,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
         paint.restore();
         let count=0,clipped=0;
         for(let i=0;i<source.processed.length;i++)if(data.valid[i]&&Number.isFinite(source.processed[i])){
-            const value=s.center+source.processed[i]/s.range*100*(s.invert?-1:1);++count;if(value<0||value>100)++clipped;
+            const value=axisValue(source,s,i);++count;if(value<0||value>100)++clipped;
         }
         layer={key,data,actions,surface,source,clipped:count?clipped/count*100:0,referenceLabel};curveLayers.set(canvas,layer);
     }
@@ -301,7 +310,9 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
     $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${composed?"assembled main":`${layer.clipped.toFixed(1)}% source clipping`}`;
     $("directionInfo").hidden=composed||s.component!=="auto";
     const index=sampleIndex(data),direction=layer.source.spans.find(span=>index>=span.start&&index<span.end);
-    if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${["Up","Forward","Left"].map((name,i)=>`${name} ${direction.direction[i]>=0?"+":""}${direction.direction[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
+    const vector=layer.source.directions?.[index]??direction?.direction;
+    if(layer.source.ranges&&$("range").disabled&&$("calibration").value==="adaptive")$("range").value=Number.isFinite(layer.source.ranges[index])?layer.source.ranges[index].toFixed(6):"";
+    if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${layer.source.ranges?`Adaptive ${data.config.target_anchor.replaceAll("_"," ")} · `:"Whole clip · "}${["Up","Forward","Left"].map((name,i)=>`${name} ${vector[i]>=0?"+":""}${vector[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
 }
 function render() {
     if(!project)return;
@@ -358,25 +369,32 @@ $("invert").addEventListener("change",()=>{
 function regenerate(data,axis,track) {
     data.scripts[axis]=rebuildAxis(data,axis);
     const source=motionForAxis(data,axis),s=data.config.axis_settings[axis];
-    const mapped=source.processed.filter(Number.isFinite).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
+    const mapped=source.processed.map((v,i)=>axisValue(source,s,i)).filter(Number.isFinite);
     const raw=source.raw.filter(Number.isFinite);
     data.metrics??={};data.metrics[axis]={actions:data.scripts[axis].actions.length,
         clipped_fraction:mapped.filter(v=>v<0||v>100).length/mapped.length,
         raw_span:raw.reduce((m,v)=>Math.max(m,v),-Infinity)-raw.reduce((m,v)=>Math.min(m,v),Infinity),units:axis.startsWith("R")?"deg":"m"};
     if(s.component==="auto")data.metrics[axis].auto_direction=source.spans;
+    if(source.ranges){const ranges=source.ranges.filter(Number.isFinite);data.metrics[axis].auto_calibration={mode:"adaptive",anchor:data.config.target_anchor,window_ms:3000,step_ms:500,range_min:ranges.reduce((m,v)=>Math.min(m,v),Infinity),range_max:ranges.reduce((m,v)=>Math.max(m,v),-Infinity)};}
     commitSelected(data,axis,track);
 }
 $("rebuild").addEventListener("click",()=>{
-    if(!project||assembled()||locked())return;const range=Number($("range").value),center=Number($("center").value);
-    if(!Number.isFinite(range)||range<=0||!Number.isFinite(center)||center<0||center>100){status("Range must be positive; center must be between 0 and 100");return;}
-    record();const {data,axis,track}=selected();data.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:$("component").value==="auto"?"auto":Number($("component").value),auto_fit:false};
-    regenerate(data,axis,track);dirty();render();
-});
-$("autoFit").addEventListener("click",()=>{
     if(!project||assembled()||locked())return;
-    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis,!!track?.window);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
-    catch(error){status(error.message);}
+    const {data:current,axis:currentAxis}=selected();
+    if($("component").value==="auto"&&$("calibration").value==="adaptive"&&current.config.axis_settings[currentAxis].auto_fit){fitAutomatic();return;}
+    const range=Number($("range").value),center=Number($("center").value);
+    if(!Number.isFinite(range)||range<=0||!Number.isFinite(center)||center<0||center>100){status("Range must be positive; center must be between 0 and 100");return;}
+    record();const {data,axis,track}=selected();data.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:$("component").value==="auto"?"auto":Number($("component").value),auto_fit:false,calibration:$("calibration").value};
+    regenerate(data,axis,track);dirty();controls();render();
 });
+function fitAutomatic(calibration=$("calibration").value) {
+    if(!project||assembled()||locked())return;
+    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis,!!track?.window&&calibration==="clip",calibration);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
+    catch(error){status(error.message);}
+}
+$("autoFit").addEventListener("click",()=>{if(project){const {data,axis}=selected();fitAutomatic(data.config.axis_settings[axis].calibration??"adaptive");}});
+$("calibration").addEventListener("change",()=>fitAutomatic());
+$("component").addEventListener("change",calibrationControls);
 $("fitSelection").addEventListener("click",()=>{
     if(!project)return;const track=selected().track;if(!track)return;
     try{

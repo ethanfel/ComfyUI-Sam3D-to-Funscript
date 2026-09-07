@@ -10,7 +10,7 @@ function fixture(amplitude=.03) {
         mask_boxes:times.map(t=>[t]),timestamps:times.map(t=>({time_ms:t}))},times_ms:times,
         valid:times.map(()=>true),segments:times.map(()=>0),raw,processed:raw.map(r=>[...r]),points:times.map(t=>[t]),pixels:times.map(t=>[t]),
         config:{target_anchor:"right_hand",target_person:0,frame:"camera",max_gap_ms:250,tolerance:.75,
-            axis_settings:{L0:{component:"auto",range:1,center:50,invert:false,auto_fit:false},R0:{component:0,range:60,center:50,invert:false,auto_fit:false}}},scripts:{},metrics:{}};
+            axis_settings:{L0:{component:"auto",range:1,center:50,invert:false,auto_fit:false,calibration:"clip"},R0:{component:0,range:60,center:50,invert:false,auto_fit:false}}},scripts:{},metrics:{}};
     project.config.axis_settings.L0=autoFitAxis(project,"L0");
     for(const axis of ["L0","R0"])project.scripts[axis]=rebuildAxis(project,axis);
     initializeTimeline(project);return project;

@@ -80,7 +80,11 @@ class DirectionTests(unittest.TestCase):
         actual = build_project(altered, AUTO)
         self.assertEqual(expected["scripts"]["L0"], actual["scripts"]["L0"])
         reports = actual["metrics"]["L0"]["auto_direction"]
-        self.assertEqual([(r["start"], r["end"]) for r in reports], [(0, 15), (20, 30), (30, 51)])
+        covered = [i for r in reports for i in range(r["start"], r["end"])]
+        self.assertEqual(covered, list(range(15)) + list(range(20, 51)))
+        for r in reports:
+            self.assertTrue(any(a <= r["start"] < r["end"] <= b for a, b in [(0, 15), (20, 30), (30, 51)]))
+            self.assertEqual(sequence.segments[r["start"]], sequence.segments[r["end"] - 1])
         actions = actual["scripts"]["L0"]["actions"]
         self.assertEqual(next(a["pos"] for a in actions if a["at"] == 799), [a["pos"] for a in actions if a["at"] < 600][-1])
 

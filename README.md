@@ -36,13 +36,13 @@ The default workflow streams video in batches and caches the poses. Changing anc
 | `sample_fps` | Set to **0** to analyse every source frame. |
 | `max_frames` | Limits the analysed clip length. Increase it for longer videos. |
 | `batch_size` | Start with **8**; larger batches need more memory. [Benchmarks →](docs/performance.md) |
-| **Auto fit** | Finds a motion direction and range for the selected axis. |
+| **Auto fit** | Adapts direction and range over time, independently for each anchor. |
 
 ## Edit the motion
 
 - **Combine anchors:** connect more motion projects to the preview node. Each becomes a source track.
 - **Use a section:** select a source row, Shift-drag a time range, then click **Use selection in main**. Choose **Blend** for a smooth join.
-- **Recover small movements:** select the relevant interval and use **Fit selection as track**. This fits its direction and range independently of the rest of the clip.
+- **Fit motion automatically:** L0 defaults to **Adaptive · per anchor**, so large movements elsewhere in the clip do not set one range for the entire track. Use **Whole clip** for manual range control, or **Fit selection as track** for a separate section.
 - **Protect finished work:** click **Lock**. The device preview and exported scripts follow the **main** tracks.
 
 Your download includes `project.json` and `viewer.html`. Open the viewer and choose the matching source video to keep editing offline. The video itself stays separate.

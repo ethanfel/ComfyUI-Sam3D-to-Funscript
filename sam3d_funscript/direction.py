@@ -76,3 +76,74 @@ def fit_range(values, rotational=False, invert=False):
     extent = np.ceil(extent * 1e6) / 1e6
     center = np.clip(50 - midpoint / extent * 100 * (-1 if invert else 1), 0, 100)
     return float(extent), float(np.floor(center * 1000 + .5) / 1000)
+
+
+def adaptive_motion(times, raw, processed, runs, orientation_hints, rotational=False):
+    """Fit this anchor's local direction, origin and gain on overlapping windows.
+
+    Three-second windows contain several ordinary strokes; half-second knots
+    blend their calibration without hard section joins. No other anchor's
+    coordinates or clip-wide extrema enter a window. Minimum range limits gain.
+    Calibration alone cannot move a stationary anchor, and adjustment per sample
+    is bounded by the measured 3D displacement, including at activity changes.
+    """
+    offset = 3 if rotational else 0
+    floor = 10.0 if rotational else .04
+    normalized_raw, normalized = (np.full(len(times), np.nan) for _ in range(2))
+    local_ranges = np.full(len(times), np.nan)
+    directions = np.full((len(times), 3), np.nan)
+    reports = []
+    hints = {hint['start']: hint['axes'] for hint in orientation_hints}
+    for start, end in runs:
+        t = times[start:end]
+        values = processed[start:end, offset:offset + 3]
+        raw_values = raw[start:end, offset:offset + 3]
+        axes = hints.get(start, np.eye(3))
+        knots = np.unique(np.r_[np.arange(t[0], t[-1], 500.0), t[-1]])
+        fits = []
+        previous_direction = None
+        for at in knots:
+            left = max(t[0], min(at - 1500.0, t[-1] - 3000.0))
+            a = np.searchsorted(t, left)
+            b = max(a + 1, np.searchsorted(t, left + 3000.0, side='right'))
+            direction, share, mode = dominant_direction(t[a:b], values[a:b], axes)
+            if previous_direction is not None and np.dot(direction, previous_direction) < 0:
+                direction = -direction
+            previous_direction = direction
+            projected = values[a:b] @ direction
+            low, high = np.min(projected), np.max(projected)
+            extent = np.ceil(max(floor, float(high - low) / .9) * 1e6) / 1e6
+            midpoint = float((low + high) / 2)
+            fits.append((direction, extent, midpoint))
+            reports.append({'start': start + int(np.searchsorted(t, at)), 'end': end,
+                            'at_ms': float(at), 'window_ms': [float(t[a]), float(t[b - 1])],
+                            'direction': direction.tolist(), 'range': float(extent),
+                            'origin': midpoint, 'share': share, 'mode': mode,
+                            'orientation': 'body' if start in hints else 'camera'})
+        # Limit report coverage to its knot interval; cuts/gaps remain separate.
+        for i in range(len(reports) - len(fits), len(reports) - 1):
+            reports[i]['end'] = reports[i + 1]['start']
+        j = 0
+        for i, at in enumerate(t):
+            while j + 1 < len(knots) and knots[j + 1] <= at:
+                j += 1
+            k = min(j + 1, len(knots) - 1)
+            weight = 0.0 if j == k else (at - knots[j]) / (knots[k] - knots[j])
+            d0, r0, c0 = fits[j]
+            d1, r1, c1 = fits[k]
+            gain = (1 - weight) * d0 / r0 + weight * d1 / r1
+            bias = (1 - weight) * c0 / r0 + weight * c1 / r1
+            gain_norm = np.linalg.norm(gain)
+            extent = 1 / max(gain_norm, 1e-30)
+            target = float(values[i] @ gain - bias)
+            if i:
+                movement = np.linalg.norm(values[i] - values[i - 1])
+                adjustment = 2 * movement / min(extent, local_ranges[start + i - 1])
+                target = float(np.clip(target, normalized[start + i - 1] - adjustment,
+                                       normalized[start + i - 1] + adjustment))
+            # Raw-vs-filtered comparison uses the exact same local calibration.
+            normalized[start + i] = target
+            normalized_raw[start + i] = target + float((raw_values[i] - values[i]) @ gain)
+            local_ranges[start + i] = extent
+            directions[start + i] = gain / max(gain_norm, 1e-30)
+    return normalized_raw * local_ranges, normalized * local_ranges, local_ranges, directions, reports
