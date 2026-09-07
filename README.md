@@ -237,13 +237,19 @@ If two editors write from different revisions, the older save is rejected with a
 
 ### Playback and curve editing
 
+Long clips open with a **30-second view**; shorter clips fit in full. Every motion track shares one zoom level, visible interval and playhead. Drag the **horizontal scrollbar** to browse the clip without seeking the video. **Shift-scroll** or a horizontal trackpad gesture also pans; **Ctrl/Cmd-scroll** zooms around the pointer. The slider and +/− buttons zoom around the visible playhead, or the center of the inspected section when the playhead is offscreen. Time rulers use minutes/hours with finer precision as you zoom in.
+
+**Fit selection** shows the marked interval. **Show playhead** brings playback back into view. **Follow playhead** advances the view when playback leaves it; manual panning or zooming at the pointer disables following so the editor keeps the region you chose. Click a curve to seek using that track's original timestamps. At overview scales, dense action handles are hidden; zoom in to drag individual points. Navigation works on locked tracks and never changes their actions or calibration.
+
+Curves draw the visible samples and their interpolation neighbors. Dense overviews retain extrema within each screen pixel; this only reduces drawing detail, never the exported actions. Static curve layers are cached during playback, and offscreen source rows release those layers. The viewport uses a virtual horizontal scrollbar instead of a clip-wide canvas. Zoom and scroll position are remembered locally for the video and included in downloaded projects and standalone viewers.
+
 The source video is the playback clock. Seeking updates the overlay, 3D skeleton, selected device and curves. The selected anchor is marked in yellow, with a one-second projection trail. This identifies the named landmark; it does not add click-to-select tracking. The pose display uses the nearest analysed frame; the device evaluates the actual funscript actions at the video time. A 16 Hz pose sample is therefore less temporally precise than the original 32 fps video.
 
 Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1/L2/R0/R1/R2. Readouts show only the selected device's supported channels; missing channels hold neutral at 50. Device selection controls the preview, while curve editing and exports retain every authored axis. Drag or use arrow keys to orbit the device, scroll or press +/− to zoom, and toggle the sleeve outline. SR6 uses a schematic six-linkage mechanism with an inner twist receiver. Dashed coral rods mark poses outside that model's linkage reach; this is not a calibrated hardware simulator. Geometry details and the interactive asset demo are in [assets/device-previews](assets/device-previews/README.md).
 
 - Click the timeline to seek; double-click to add an action.
 - Drag a point to edit its time and position; right-click to remove it.
-- Choose a 4-second or 1-second view for detailed edits.
+- Use the zoom slider, +/− buttons or time presets to choose the visible interval, from the full clip down to 250 ms.
 - Select main or a source row before changing its calibration; reference-script comparisons apply to main.
 - **Invert** immediately mirrors the selected curve as `100 − position`, including manually edited points. It also mirrors Center as `100 − center`, keeping the range, timestamps and existing clipping unchanged. No regeneration is needed; Undo restores the previous curve.
 - Adjust range, center or component, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
@@ -358,3 +364,5 @@ This project is licensed under the GNU General Public License version 3 only (`G
 Third-party dependencies and model weights retain their respective licenses.
 
 Lock regression checks: `tests/test_editor.py` covers default Auto/manual overrides, immutable locked source revisions, unchanged reruns, disconnections, incompatible video protection, restart persistence, stale-save rejection and exact exported actions. `scripts/lock_browser_smoke.mjs BASE MULTITRACK_PROJECT_ID OUTPUT_DIRECTORY` tests UI locks, actual Comfy execution, full/embedded editor synchronization, repeated reruns and offline locks. It uses the cached three-anchor fixture in `development/timeline-workflow.json` produced by the timeline queue smoke script.
+
+Timeline navigation checks: `node --test tests/test_viewport.mjs` covers anchored zoom, boundaries, follow behavior, hour/subsecond rulers and peak-preserving display reduction. `node scripts/viewport_browser_smoke.mjs BASE MULTITRACK_PROJECT_ID OUTPUT_DIRECTORY` checks a synthetic one-hour timeline with 216,001 actions, real-video follow/pan behavior, synchronized seeking, locked curves, native scrolling, responsive layout and offline exports.

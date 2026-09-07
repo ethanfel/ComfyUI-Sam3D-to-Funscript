@@ -1,5 +1,6 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
 import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
+import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
@@ -9,20 +10,67 @@ const EDGES = [[5,6],[5,7],[7,62],[6,8],[8,41],[5,9],[6,10],[9,10],[9,11],[11,13
 const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:[41]};
 let project, history = [], currentMs = 0, dragging = null, bounds = [0, 1], videoURL;
 let comparisonRevision=0, comparisonCache=null;
+let view = timelineView(1), scrollPosition = 0;
+const curveLayers = new WeakMap();
+const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
+function previewState() {return {...project.preview,device:$("device").value,timeline_view:{...view}};}
+function saveView() {try{localStorage.setItem(viewKey+':'+project.metadata.source.path,JSON.stringify(view));}catch{/* Storage is optional in offline/private browsers. */}}
+function restoreView(data, keep) {
+    let saved=data.preview?.timeline_view;
+    if(!document.getElementById('s3f-project')){try{saved=JSON.parse(localStorage.getItem(viewKey+':'+data.metadata.source.path))||saved;}catch{/* Use the default view. */}}
+    view=timelineView(data.metadata.duration_ms,keep?view:saved||{start_ms:data.times_ms[0]});
+}
+function navigationControls() {
+    const duration=project.metadata.duration_ms,span=view.span_ms;
+    bounds=[view.start_ms,view.start_ms+span];
+    $("zoomLevel").value=spanSlider(duration,span);
+    const preset=[...$("zoom").options].find(o=>o.value!=="custom"&&Math.abs((Number(o.value)||duration)-span)<.01);
+    $("zoom").value=preset?.value||"custom";
+    $("zoomOut").disabled=span>=duration;$("zoomIn").disabled=span<=Math.min(250,duration);
+    $("zoomSelection").disabled=project.timeline.selection[1]<=project.timeline.selection[0];
+    $("followPlayhead").checked=view.follow;
+    $("viewRange").textContent=`${formatTime(bounds[0],span<10000?3:0,duration>=3600000)} – ${formatTime(bounds[1],span<10000?3:0,duration>=3600000)}`;
+    $("viewRange").dataset.start=String(bounds[0]);$("viewRange").dataset.end=String(bounds[1]);
+    const scroll=$("timelineScroll"),width=scroll.clientWidth;
+    // A virtual spacer keeps a native scrollbar without allocating a giant canvas.
+    $("timelineScrollSpace").style.width=Math.min(4000000,Math.max(width,width*duration/span))+'px';
+    const travel=scroll.scrollWidth-width;
+    const target=duration>span?view.start_ms/(duration-span)*travel:0;
+    if(Math.abs(scroll.scrollLeft-target)>.5)scroll.scrollLeft=target;
+    scrollPosition=scroll.scrollLeft;
+}
+function changeView(next) {if(!project)return;view=timelineView(project.metadata.duration_ms,next);saveView();render();}
+function zoomTimeline(span, anchor) {
+    if(!project||dragging)return;
+    const pointed=anchor!==undefined;
+    anchor??=(currentMs>=bounds[0]&&currentMs<=bounds[1]?currentMs:(bounds[0]+bounds[1])/2);
+    changeView(zoomView(project.metadata.duration_ms,{...view,follow:pointed?false:view.follow},span,anchor));
+}
+function scrollTimeline(start) {if(project&&!dragging)changeView(panView(project.metadata.duration_ms,view,start));}
+function timelineWheel(event, canvas) {
+    if(!project||dragging)return;
+    const rect=canvas.getBoundingClientRect(),scale=event.deltaMode===1?16:event.deltaMode===2?rect.width:1;
+    if(event.ctrlKey||event.metaKey){
+        event.preventDefault();const fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-42)/(rect.width-54)));
+        zoomTimeline(view.span_ms*Math.exp(Math.max(-1,Math.min(1,event.deltaY*scale*.003))),view.start_ms+fraction*view.span_ms);
+    }else if(event.shiftKey||Math.abs(event.deltaX)>Math.abs(event.deltaY)){
+        event.preventDefault();scrollTimeline(view.start_ms+(event.deltaX||event.deltaY)*scale/Math.max(1,rect.width-54)*view.span_ms);
+    }
+}
 let orbit = {yaw: .2, pitch: -.1, zoom: 1};
 const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project)})); if(history.length>40)history.shift(); $("undo").disabled=false; }
-const session = editorSession({install, snapshot:()=>({...project,preview:{...project.preview,device:$("device").value}}), status});
+const session = editorSession({install, snapshot:()=>({...project,preview:previewState()}), status});
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function install(data, keepPlayback=false, output=null) {
     const oldAxis=$("axis").value, previousMs=currentMs, hadVideo=!!video.getAttribute("src");
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
     if(!keepPlayback){video.pause(); video.removeAttribute("src"); video.load();
     if(videoURL){URL.revokeObjectURL(videoURL);videoURL=null;}}
-    initializeTimeline(data); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    initializeTimeline(data);restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
     $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
     $("name").textContent = data.metadata.source.path.split("/").at(-1);
@@ -151,7 +199,7 @@ function drawSkeleton(index, project, axis) {
     const selected=(project.anchor_indices?.target||ANCHORS[project.config.target_anchor]).map(j=>target[j]);
     if(selected.every(finitePoint)){
         const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();
-        const report=motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end);
+        const report=project.config.axis_settings[axis].component==="auto"?motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end):null;
         if(report){
             const d=report.direction,relative=project.config.frame==="reference_body";
             let vector=[-d[2],d[0]*(relative?1:-1),d[1]];
@@ -175,79 +223,126 @@ function drawRobot() {
     $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
 function drawCurve(canvas, data, axis, isMain, active, window) {
-    const [ctx,w,h]=resize(canvas), composed=isMain&&project.timeline.main[axis].assembled;
-    const color=isMain?"#75e2ba":"#78baf7";
+    const [ctx,w,h]=resize(canvas),composed=isMain&&project.timeline.main[axis].assembled;
     const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
-    ctx.font="11px system-ui";ctx.fillStyle="#8197ab";
-    for(const p of [0,25,50,75,100]){line(ctx,[42,y(p)],[w-12,y(p)],"#2a3c4c",1);ctx.fillText(p,9,y(p)+4);}
-    for(let i=0;i<=5;i++){const t=bounds[0]+(bounds[1]-bounds[0])*i/5;ctx.fillText((t/1000).toFixed(1)+"s",x(t)-12,h-6);}
+    const actions=data.scripts[axis].actions,s=data.config.axis_settings[axis],color=isMain?"#75e2ba":"#78baf7";
+    const key=JSON.stringify([w,h,devicePixelRatio,bounds,axis,comparisonRevision,composed,s,window]);
+    let layer=curveLayers.get(canvas);
+    if(!layer||layer.key!==key||layer.data!==data||layer.actions!==actions){
+        const surface=layer?.surface||document.createElement("canvas");surface.width=canvas.width;surface.height=canvas.height;
+        const paint=surface.getContext("2d");paint.setTransform(devicePixelRatio||1,0,0,devicePixelRatio||1,0,0);
+        const source=composed?{raw:[],processed:[],spans:[]}:motionForAxis(data,axis);
+        paint.font="11px system-ui";paint.fillStyle="#8197ab";
+        for(const p of [0,25,50,75,100]){line(paint,[42,y(p)],[w-12,y(p)],"#2a3c4c",1);paint.fillText(p,9,y(p)+4);}
+        for(const tick of rulerTicks(...bounds,w-54,project.metadata.duration_ms)){
+            line(paint,[x(tick.time),10],[x(tick.time),h-25],"#263744",1);
+            paint.fillText(tick.label,Math.max(42,Math.min(w-12-paint.measureText(tick.label).width,x(tick.time)-paint.measureText(tick.label).width/2)),h-6);
+        }
+        paint.save();paint.beginPath();paint.rect(42,10,w-54,h-30);paint.clip();
+        function stroke(length,timeAt,valueAt,strokeColor,width=1,breakAt=()=>false){
+            const indices=displayIndices(length,timeAt,valueAt,...bounds,w-54,breakAt);
+            paint.strokeStyle=strokeColor;paint.lineWidth=width;paint.beginPath();let pen=false;
+            for(const i of indices){
+                if(i===null||!Number.isFinite(valueAt(i))){pen=false;continue;}
+                const px=x(timeAt(i)),py=y(Math.max(0,Math.min(100,valueAt(i))));
+                if(breakAt(i))pen=false;
+                if(pen)paint.lineTo(px,py);else paint.moveTo(px,py);pen=true;
+            }paint.stroke();
+        }
+        paint.save();
+        if(window){
+            paint.fillStyle="#0c121977";paint.fillRect(42,10,x(window[0])-42,h-30);paint.fillRect(x(window[1]),10,w-12-x(window[1]),h-30);
+            paint.beginPath();paint.rect(x(window[0]),10,x(window[1])-x(window[0]),h-30);paint.clip();
+        }
+        const timeAt=i=>data.times_ms[i],breakAt=i=>i>0&&data.segments[i]!==data.segments[i-1];
+        const [first,stop]=visibleRange(data.times_ms.length,timeAt,...bounds);
+        for(let i=first;!composed&&i<stop;i++)if(!data.valid[i]||breakAt(i)){
+            paint.fillStyle="#8c593b66";paint.fillRect(x(timeAt(i)),15,Math.max(2,x(data.times_ms[i+1]??timeAt(i)+10)-x(timeAt(i))),h-40);
+        }
+        for(const [field,strokeColor] of [["raw","#607689"],["processed","#bb9457"]]){
+            stroke(source[field].length,timeAt,i=>data.valid[i]&&Number.isFinite(source[field][i])?s.center+source[field][i]/s.range*100*(s.invert?-1:1):null,strokeColor,1,breakAt);
+        }
+        stroke(actions.length,i=>actions[i].at,i=>actions[i].pos,color,2);
+        const [a,b]=visibleRange(actions.length,i=>actions[i].at,...bounds);
+        // Individual handles are meaningful only when points can be distinguished.
+        if(b-a<=(w-54)/4){paint.fillStyle=color;for(let i=a;i<b;i++){const action=actions[i];paint.beginPath();paint.arc(x(action.at),y(action.pos),3,0,Math.PI*2);paint.fill();}}
+        paint.restore();
+        const ref=isMain?project.references?.[axis]:null;
+        let referenceLabel="No reference loaded for this axis";
+        if(ref){
+            const shift=ref.offset_ms||0;
+            stroke(ref.actions.length,i=>ref.actions[i].at+shift,i=>ref.actions[i].pos,"#dcadfa",2);
+            if(!comparisonCache||comparisonCache.axis!==axis||comparisonCache.revision!==comparisonRevision){comparisonCache={axis,revision:comparisonRevision,value:referenceAgreement(actions,ref,composed?0:data.times_ms[0],composed?project.metadata.duration_ms:data.times_ms.at(-1))};}
+            const m=comparisonCache.value;
+            referenceLabel=m?`Reference agreement · MAE ${m.mae.toFixed(1)} / 100 · RMSE ${m.rmse.toFixed(1)} · correlation ${m.correlation===null?"undefined":m.correlation.toFixed(3)} · full overlap`:'Reference does not overlap this analysis';
+        }
+        if(isMain)for(const region of project.timeline.main[axis].regions){
+            if(region.end<bounds[0]||region.start>bounds[1])continue;
+            paint.fillStyle="#eabf7177";paint.fillRect(x(region.start),10,x(region.end)-x(region.start),4);
+            const left=Math.max(44,x(region.start)+4),right=Math.min(w-12,x(region.end));
+            if(right-left>35){paint.save();paint.beginPath();paint.rect(left,15,right-left,14);paint.clip();paint.fillStyle="#eabf71";paint.fillText(region.name,left,24);paint.restore();}
+        }
+        paint.restore();
+        let count=0,clipped=0;
+        for(let i=0;i<source.processed.length;i++)if(data.valid[i]&&Number.isFinite(source.processed[i])){
+            const value=s.center+source.processed[i]/s.range*100*(s.invert?-1:1);++count;if(value<0||value>100)++clipped;
+        }
+        layer={key,data,actions,surface,source,clipped:count?clipped/count*100:0,referenceLabel};curveLayers.set(canvas,layer);
+    }
+    ctx.drawImage(layer.surface,0,0,layer.surface.width,layer.surface.height,0,0,w,h);
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
-    if(window){
-        ctx.fillStyle="#0c121977";ctx.fillRect(42,10,x(window[0])-42,h-30);ctx.fillRect(x(window[1]),10,w-12-x(window[1]),h-30);
-        ctx.beginPath();ctx.rect(x(window[0]),10,x(window[1])-x(window[0]),h-30);ctx.clip();
-    }
-    for(let i=0;!composed&&i<data.times_ms.length;i++)if(!data.valid[i]||(i&&data.segments[i]!==data.segments[i-1])){
-        ctx.fillStyle="#8c593b66";ctx.fillRect(x(data.times_ms[i]),15,Math.max(2,x(data.times_ms[i+1]||data.times_ms[i]+10)-x(data.times_ms[i])),h-40);
-    }
-    const s=data.config.axis_settings[axis],source=composed?{raw:[],processed:[],spans:[]}:motionForAxis(data,axis);
-    for(const [key,color]of [["raw","#607689"],["processed","#bb9457"]]){
-        ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();let pen=false;
-        source[key].forEach((value,i)=>{if(!data.valid[i]||!Number.isFinite(value)){pen=false;return;}const px=x(data.times_ms[i]),py=y(Math.max(0,Math.min(100,s.center+value/s.range*100*(s.invert?-1:1))));if(i&&data.segments[i]!==data.segments[i-1])pen=false;if(pen)ctx.lineTo(px,py);else ctx.moveTo(px,py);pen=true;});ctx.stroke();
-    }
-    const actions=data.scripts[axis].actions;
-    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();actions.forEach((a,i)=>i?ctx.lineTo(x(a.at),y(a.pos)):ctx.moveTo(x(a.at),y(a.pos)));ctx.stroke();
-    ctx.fillStyle=color;for(const a of actions){if(a.at<bounds[0]||a.at>bounds[1])continue;ctx.beginPath();ctx.arc(x(a.at),y(a.pos),3,0,Math.PI*2);ctx.fill();}line(ctx,[x(currentMs),10],[x(currentMs),h-25],"#f0f5fa",1);ctx.restore();
-    const ref=isMain?project.references?.[axis]:null;
-    if(ref){
-        const shift=ref.offset_ms||0,lo=Math.max(bounds[0],ref.actions[0].at+shift),hi=Math.min(bounds[1],ref.actions.at(-1).at+shift);
-        if(hi>=lo){ctx.strokeStyle="#dcadfa";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x(lo),y(evaluate(ref.actions,lo-shift)));for(const a of ref.actions)if(a.at+shift>lo&&a.at+shift<hi)ctx.lineTo(x(a.at+shift),y(a.pos));ctx.lineTo(x(hi),y(evaluate(ref.actions,hi-shift)));ctx.stroke();}
-        if(!comparisonCache||comparisonCache.axis!==axis||comparisonCache.revision!==comparisonRevision){comparisonCache={axis,revision:comparisonRevision,value:referenceAgreement(actions,ref,composed?0:data.times_ms[0],composed?project.metadata.duration_ms:data.times_ms.at(-1))};}
-        const m=comparisonCache.value;
-        $("referenceMetrics").textContent=m?`Reference agreement · MAE ${m.mae.toFixed(1)} / 100 · RMSE ${m.rmse.toFixed(1)} · correlation ${m.correlation===null?"undefined":m.correlation.toFixed(3)} · full overlap`:'Reference does not overlap this analysis';
-    }else if(isMain) $("referenceMetrics").textContent="No reference loaded for this axis";
-    const [selectionStart,selectionEnd]=project.timeline.selection;
-    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
-    if(selectionEnd>selectionStart){ctx.fillStyle="#78baf722";ctx.fillRect(x(selectionStart),10,x(selectionEnd)-x(selectionStart),h-35);for(const t of [selectionStart,selectionEnd])line(ctx,[x(t),10],[x(t),h-25],"#78baf7",1);}
-    if(isMain){for(const region of project.timeline.main[axis].regions){
-        ctx.fillStyle="#eabf7177";ctx.fillRect(x(region.start),10,x(region.end)-x(region.start),4);
-        const left=Math.max(44,x(region.start)+4),right=Math.min(w-12,x(region.end));
-        if(right-left>35){ctx.save();ctx.beginPath();ctx.rect(left,15,right-left,14);ctx.clip();ctx.fillStyle="#eabf71";ctx.fillText(region.name,left,24);ctx.restore();}
-    }}
-    ctx.restore();
-    ctx.restore();
+    const [start,end]=project.timeline.selection;
+    if(end>start){ctx.fillStyle="#78baf722";ctx.fillRect(x(start),10,x(end)-x(start),h-35);for(const t of [start,end])line(ctx,[x(t),10],[x(t),h-25],"#78baf7",1);}
+    line(ctx,[x(currentMs),10],[x(currentMs),h-25],"#f0f5fa",1);ctx.restore();
+    if(isMain)$("referenceMetrics").textContent=layer.referenceLabel;
     if(!active)return;
-    const mapped=source.processed.filter((v,i)=>data.valid[i]&&Number.isFinite(v)).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
-    const clipped=mapped.length?mapped.filter(v=>v<0||v>100).length/mapped.length*100:0;
-    $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${composed?"assembled main":`${clipped.toFixed(1)}% source clipping`}`;
+    $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${composed?"assembled main":`${layer.clipped.toFixed(1)}% source clipping`}`;
     $("directionInfo").hidden=composed||s.component!=="auto";
-    const direction=source.spans.find(span=>sampleIndex(data)>=span.start&&sampleIndex(data)<span.end);
+    const index=sampleIndex(data),direction=layer.source.spans.find(span=>index>=span.start&&index<span.end);
     if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${["Up","Forward","Left"].map((name,i)=>`${name} ${direction.direction[i]>=0?"+":""}${direction.direction[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
 }
 function render() {
     if(!project)return;
-    $("time").textContent=(currentMs/1000).toFixed(3)+" s";
+    $("time").textContent=project.metadata.duration_ms>=60000?formatTime(currentMs,3,project.metadata.duration_ms>=3600000):(currentMs/1000).toFixed(3)+" s";
+    $("time").dataset.ms=String(currentMs);
     const selectedContext=selected(), outputAxis=$("axis").value;
     const pose=selectedContext.track?selectedContext:project.timeline.main[outputAxis].assembled?mainPoseProject(project,outputAxis,currentMs):selectedContext;
     const data=pose.data,i=sampleIndex(data),available=data.valid[i]&&currentMs>=data.times_ms[0]&&currentMs<=data.metadata.duration_ms&&Math.abs(currentMs-data.times_ms[i])<=data.config.max_gap_ms;
     if(available){drawOverlay(i,data);drawSkeleton(i,data,pose.axis);}
     else for(const name of ["overlay","skeleton"]){const[ctx,w,h]=resize($(name));ctx.fillStyle="#eabf71";ctx.font="13px system-ui";ctx.fillText("No analysed pose at this time",12,h/2);}
-    const duration=project.metadata.duration_ms,zoom=Number($("zoom").value);
-    if(dragging===null){const span=Math.max(1,zoom?Math.min(zoom,duration):duration),left=Math.max(0,Math.min(duration-span,currentMs-span/2));bounds=[left,left+span];}
+    if(!video.paused&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);
+    navigationControls();
     drawRobot();
     const mainContext=editProject(project,outputAxis,"main");
     drawCurve($("curve"),mainContext.data,outputAxis,true,project.timeline.active==="main");
     const listRect=$("tracks").getBoundingClientRect();
     for(const track of project.timeline.tracks){
         const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
-        if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);
+        if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);else curveLayers.delete(canvas);
     }
 }
 function frameCallback(_,metadata){currentMs=metadata.mediaTime*1000;render();video.requestVideoFrameCallback(frameCallback);}
 if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frameCallback);
 video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||video.paused){currentMs=video.currentTime*1000;render();}});
-video.addEventListener("seeked",()=>{currentMs=video.currentTime*1000;render();});
+video.addEventListener("seeked",()=>{currentMs=video.currentTime*1000;if(project&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);render();});
 video.addEventListener("error",()=>status("Choose the source video locally if this browser cannot load the server copy"));
-$("axis").addEventListener("change",()=>{controls();render();});$("zoom").addEventListener("change",render);
+$("axis").addEventListener("change",()=>{controls();render();});
+$("zoom").addEventListener("change",()=>{if(project)zoomTimeline(Number($("zoom").value)||project.metadata.duration_ms);});
+$("zoomLevel").addEventListener("input",()=>{if(project)zoomTimeline(sliderSpan(project.metadata.duration_ms,Number($("zoomLevel").value)));});
+$("zoomIn").onclick=()=>zoomTimeline(view.span_ms/2);$("zoomOut").onclick=()=>zoomTimeline(view.span_ms*2);
+$("showPlayhead").onclick=()=>{if(project)changeView(followView(project.metadata.duration_ms,view,currentMs,true));};
+$("followPlayhead").onchange=()=>{if(project)changeView({...view,follow:$("followPlayhead").checked});};
+$("zoomSelection").onclick=()=>{if(!project)return;const [start,end]=project.timeline.selection;if(end>start)changeView({...view,start_ms:start,span_ms:end-start,follow:false});};
+$("timelineScroll").addEventListener("scroll",()=>{
+    const scroll=$("timelineScroll");if(!project||Math.abs(scroll.scrollLeft-scrollPosition)<.5)return;
+    const travel=scroll.scrollWidth-scroll.clientWidth;
+    scrollTimeline(travel>0?scroll.scrollLeft/travel*(project.metadata.duration_ms-view.span_ms):0);
+});
+$("timelineScroll").addEventListener("wheel",event=>timelineWheel(event,$("curve")),{passive:false});
+$("timelineScroll").addEventListener("keydown",event=>{
+    if(!project||!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();scrollTimeline(event.key==="Home"?0:event.key==="End"?project.metadata.duration_ms:view.start_ms+view.span_ms*(event.key==="ArrowLeft"?-.1:.1));
+});
 $("invert").addEventListener("change",()=>{
     if(!project||locked())return;
     const {data,axis,track}=selected();
@@ -291,9 +386,14 @@ $("fitSelection").addEventListener("click",()=>{
 });
 $("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();dirty(false);render();});
 function pointer(event,canvas){const rect=canvas.getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
-function nearest(event,canvas,actions){const a=pointer(event,canvas),rect=canvas.getBoundingClientRect();return actions.findIndex(p=>Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9);}
+function nearest(event,canvas,actions){
+    const a=pointer(event,canvas),rect=canvas.getBoundingClientRect(),[first,stop]=visibleRange(actions.length,i=>actions[i].at,...bounds);
+    if(stop-first>(rect.width-54)/4)return -1;
+    for(let i=first;i<stop;i++){const p=actions[i];if(Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9)return i;}return -1;
+}
 function seek(time){currentMs=time;if(video.readyState)video.currentTime=time/1000;render();}
 function bindCurve(canvas,id){
+    canvas.addEventListener("wheel",event=>timelineWheel(event,canvas),{passive:false});
     const actions=()=>id==="main"?project.scripts[$("axis").value].actions:project.timeline.tracks.find(t=>t.id===id).script.actions;
     canvas.addEventListener("pointerdown",event=>{
         if(!project||event.button!==0)return;selectLane(id);canvas.focus({preventScroll:true});
@@ -352,6 +452,7 @@ function applySelection(whole){
 $("applySection").onclick=()=>applySelection(false);$("promoteTrack").onclick=()=>applySelection(true);
 document.addEventListener("keydown",event=>{
     if(!project||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,select,textarea,button"))return;
+    if(["+","=","-"].includes(event.key)&&event.target.closest(".curves")){event.preventDefault();zoomTimeline(view.span_ms*(event.key==="-"?2:.5));}
     if(event.key.toLowerCase()==="i"){$("markIn").click();event.preventDefault();}
     if(event.key.toLowerCase()==="o"){$("markOut").click();event.preventDefault();}
 });
@@ -388,7 +489,7 @@ $("save").addEventListener("click",async()=>{
     if(!project)return;
     $("save").disabled=true;
     // Capture edits and the preview choice together before fetching the offline template.
-    const snapshot=structuredClone({...project,preview:{...project.preview,device:$("device").value}});
+    const snapshot=structuredClone({...project,preview:previewState()});
     const projectJSON=JSON.stringify(snapshot);
     try{
         if(!standaloneTemplate){
