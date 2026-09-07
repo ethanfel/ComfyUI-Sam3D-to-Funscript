@@ -1,4 +1,4 @@
-import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement} from "./curve.mjs";
+import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame} from "./curve.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -12,7 +12,7 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
-function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references})); if(history.length>40)history.shift(); $("undo").disabled=false; }
+function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 function dirty() { project.manual_edits = true; ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function install(data) {
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
@@ -86,7 +86,20 @@ function drawSkeleton(index) {
     const map=point=>project3([point[0]-center[0],-(point[1]-center[1]),-(point[2]-center[2])],w,h,Math.min(w,h)*.6*orbit.zoom);
     people.forEach((person,slot)=>{for(const [a,b]of EDGES)if(finitePoint(person[a])&&finitePoint(person[b]))line(ctx,map(person[a]),map(person[b]),COLORS[slot%COLORS.length],3);});
     const selected=(project.anchor_indices?.target||ANCHORS[project.config.target_anchor]).map(j=>target[j]);
-    if(selected.every(finitePoint)){const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();}
+    if(selected.every(finitePoint)){
+        const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();
+        const axis=$("axis").value,report=motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end);
+        if(report){
+            const d=report.direction,relative=project.config.frame==="reference_body";
+            let vector=[-d[2],d[0]*(relative?1:-1),d[1]];
+            if(relative){const frame=bodyFrame(people[project.config.reference_person]);if(frame)vector=[0,1,2].map(i=>frame.reduce((sum,v,j)=>sum+v[i]*vector[j],0));}
+            if(project.config.axis_settings[axis].invert)vector=vector.map(v=>-v);
+            const a=map(p.map((v,i)=>v-vector[i]*.12)),b=map(p.map((v,i)=>v+vector[i]*.18));
+            line(ctx,a,b,"#78baf7",3);const angle=Math.atan2(b[1]-a[1],b[0]-a[0]);
+            for(const turn of [-.5,.5])line(ctx,b,[b[0]-10*Math.cos(angle+turn),b[1]-10*Math.sin(angle+turn)],"#78baf7",3);
+            ctx.fillStyle="#78baf7";ctx.font="12px system-ui";ctx.fillText(`Auto ${axis}${axis.startsWith("R")?" rotation axis":" direction"}`,Math.max(4,Math.min(w-145,b[0]+8)),Math.max(14,Math.min(h-8,b[1]-8)));
+        }
+    }
     const origin=map(center);[[[.25,0,0],"#e89393"],[[0,-.25,0],"#8fd399"],[[0,0,-.25],"#8eb7f7"]].forEach(([p,c])=>line(ctx,origin,map(center.map((v,i)=>v+p[i])),c));
 }
 function drawRobot() {
@@ -109,10 +122,10 @@ function drawCurve() {
     for(let i=0;i<project.times_ms.length;i++)if(!project.valid[i]||(i&&project.segments[i]!==project.segments[i-1])){
         ctx.fillStyle="#8c593b66";ctx.fillRect(x(project.times_ms[i]),15,Math.max(2,x(project.times_ms[i+1]||project.times_ms[i]+10)-x(project.times_ms[i])),h-40);
     }
-    const s=project.config.axis_settings[axis],c=s.component+(axis.startsWith("R")?3:0);
+    const s=project.config.axis_settings[axis],source=motionForAxis(project,axis);
     for(const [key,color]of [["raw","#607689"],["processed","#bb9457"]]){
         ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();let pen=false;
-        project[key].forEach((row,i)=>{if(!project.valid[i]||!Number.isFinite(row[c])){pen=false;return;}const px=x(project.times_ms[i]),py=y(Math.max(0,Math.min(100,s.center+row[c]/s.range*100*(s.invert?-1:1))));if(i&&project.segments[i]!==project.segments[i-1])pen=false;if(pen)ctx.lineTo(px,py);else ctx.moveTo(px,py);pen=true;});ctx.stroke();
+        source[key].forEach((value,i)=>{if(!project.valid[i]||!Number.isFinite(value)){pen=false;return;}const px=x(project.times_ms[i]),py=y(Math.max(0,Math.min(100,s.center+value/s.range*100*(s.invert?-1:1))));if(i&&project.segments[i]!==project.segments[i-1])pen=false;if(pen)ctx.lineTo(px,py);else ctx.moveTo(px,py);pen=true;});ctx.stroke();
     }
     const actions=project.scripts[axis].actions;
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();ctx.strokeStyle="#75e2ba";ctx.lineWidth=2;ctx.beginPath();actions.forEach((a,i)=>i?ctx.lineTo(x(a.at),y(a.pos)):ctx.moveTo(x(a.at),y(a.pos)));ctx.stroke();
@@ -125,9 +138,12 @@ function drawCurve() {
         const m=comparisonCache.value;
         $("referenceMetrics").textContent=m?`Reference agreement · MAE ${m.mae.toFixed(1)} / 100 · RMSE ${m.rmse.toFixed(1)} · correlation ${m.correlation===null?"undefined":m.correlation.toFixed(3)} · full overlap`:'Reference does not overlap this analysis';
     }else $("referenceMetrics").textContent="No reference loaded for this axis";
-    const mapped=project.processed.filter((row,i)=>project.valid[i]&&Number.isFinite(row[c])).map(row=>s.center+row[c]/s.range*100*(s.invert?-1:1));
+    const mapped=source.processed.filter((v,i)=>project.valid[i]&&Number.isFinite(v)).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
     const clipped=mapped.length?mapped.filter(v=>v<0||v>100).length/mapped.length*100:0;
     $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${clipped.toFixed(1)}% source clipping`;
+    $("directionInfo").hidden=s.component!=="auto";
+    const direction=source.spans.find(span=>sampleIndex()>=span.start&&sampleIndex()<span.end);
+    if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${["Up","Forward","Left"].map((name,i)=>`${name} ${direction.direction[i]>=0?"+":""}${direction.direction[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
 }
 function render() {
     if(!project)return;
@@ -143,13 +159,28 @@ video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||vi
 video.addEventListener("seeked",()=>{currentMs=video.currentTime*1000;render();});
 video.addEventListener("error",()=>status("Choose the source video locally if this browser cannot load the server copy"));
 $("axis").addEventListener("change",()=>{controls();render();});$("zoom").addEventListener("change",render);
+function regenerate(axis) {
+    project.scripts[axis]=rebuildAxis(project,axis);
+    const source=motionForAxis(project,axis),s=project.config.axis_settings[axis];
+    const mapped=source.processed.filter(Number.isFinite).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
+    const raw=source.raw.filter(Number.isFinite);
+    project.metrics??={};project.metrics[axis]={actions:project.scripts[axis].actions.length,
+        clipped_fraction:mapped.filter(v=>v<0||v>100).length/mapped.length,
+        raw_span:raw.reduce((m,v)=>Math.max(m,v),-Infinity)-raw.reduce((m,v)=>Math.min(m,v),Infinity),units:axis.startsWith("R")?"deg":"m"};
+    if(s.component==="auto")project.metrics[axis].auto_direction=source.spans;
+}
 $("rebuild").addEventListener("click",()=>{
     if(!project)return;const range=Number($("range").value),center=Number($("center").value);
     if(!Number.isFinite(range)||range<=0||!Number.isFinite(center)||center<0||center>100){status("Range must be positive; center must be between 0 and 100");return;}
-    record();const axis=$("axis").value;project.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:Number($("component").value)};
-    project.scripts[axis]=rebuildAxis(project,axis);dirty();render();
+    record();const axis=$("axis").value;project.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:$("component").value==="auto"?"auto":Number($("component").value),auto_fit:false};
+    regenerate(axis);dirty();render();
 });
-$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;$("undo").disabled=!history.length;controls();dirty();render();});
+$("autoFit").addEventListener("click",()=>{
+    if(!project)return;
+    try{const axis=$("axis").value,settings=autoFitAxis(project,axis);record();project.config.axis_settings[axis]=settings;regenerate(axis);dirty();controls();render();}
+    catch(error){status(error.message);}
+});
+$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;$("undo").disabled=!history.length;controls();dirty();render();});
 function pointer(event){const rect=$("curve").getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
 function nearest(event){const a=pointer(event),rect=$("curve").getBoundingClientRect();return project.scripts[$("axis").value].actions.findIndex(p=>Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9);}
 $("curve").addEventListener("pointerdown",event=>{if(!project||event.button!==0)return;const index=nearest(event);if(index>=0){record();dragging=index;$("curve").setPointerCapture(event.pointerId);}else{currentMs=pointer(event).at;video.currentTime=currentMs/1000;render();}});

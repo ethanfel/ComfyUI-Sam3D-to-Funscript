@@ -13,6 +13,7 @@ from scipy.spatial.transform import Rotation
 from .anchors import ANCHORS
 from .standalone import standalone_html
 from .mouth import MOUTH_NOTE
+from .direction import auto_motion, fit_range
 
 AXES = ("L0", "L1", "L2", "R0", "R1", "R2")
 SUFFIXES = dict(zip(AXES, ("", ".surge", ".sway", ".twist", ".roll", ".pitch")))
@@ -147,7 +148,7 @@ def default_config():
             "max_gap_ms": 250.0, "neutral_window_ms": 500.0, "tolerance": 0.75,
             "enabled_axes": list(AXES), "axis_settings": {
                 axis: {"component": i % 3, "range": 0.2 if i < 3 else 60.0,
-                       "center": 50, "invert": False} for i, axis in enumerate(AXES)}}
+                       "center": 50, "invert": False, "auto_fit": False} for i, axis in enumerate(AXES)}}
 
 
 def build_project(sequence, overrides=None):
@@ -198,6 +199,7 @@ def build_project(sequence, overrides=None):
     raw = np.full((len(times), 6), np.nan)
     processed = raw.copy()
     ranges = list(spans(valid, sequence.segments, times, config["max_gap_ms"]))
+    orientation_hints = []
     for start, end in ranges:
         t = times[start:end]
         baseline = t <= t[0] + config["neutral_window_ms"]
@@ -206,6 +208,8 @@ def build_project(sequence, overrides=None):
         # Remove the neutral orientation; unwrap sign-continuous quaternion rotations
         # via a rotation vector (not independently wrapped Euler angles).
         neutral = Rotation.from_matrix(basis[start:end][baseline]).mean().as_matrix()
+        orientation_hints.append({"start": start, "end": end,
+            "axes": (np.stack((neutral[:, 1], neutral[:, 2], -neutral[:, 0])) @ mapping.T).tolist()})
         rotations = Rotation.from_matrix(basis[start:end] @ neutral.T)
         q = rotations.as_quat()
         for i in range(1, len(q)):
@@ -217,19 +221,32 @@ def build_project(sequence, overrides=None):
         raw[start:end, 3:] = np.rad2deg(vectors) @ mapping.T
         processed[start:end] = smooth_span(t, raw[start:end], config["smoothing_ms"])
     scripts, metrics = {}, {}
+    automatic = {}
     rounded_times = np.rint(times).astype(np.int64)
     if np.any(np.diff(rounded_times) <= 0):
         raise ValueError("Sampling resolution exceeds integer-millisecond funscript timing")
     for axis in config["enabled_axes"]:
         settings = config["axis_settings"][axis]
         component = settings["component"]
-        if type(component) is not int or component not in (0, 1, 2):
-            raise ValueError("Axis component must be 0, 1 or 2")
+        if component != "auto" and (type(component) is not int or component not in (0, 1, 2)):
+            raise ValueError("Axis component must be 0, 1, 2 or 'auto'")
+        if type(settings["auto_fit"]) is not bool:
+            raise ValueError("Axis auto_fit must be true or false")
+        rotational = axis.startswith("R")
+        reports = None
+        if component == "auto":
+            if rotational not in automatic:
+                automatic[rotational] = auto_motion(times, raw, processed, ranges, orientation_hints, rotational)
+            source_raw, source, reports = automatic[rotational]
+        else:
+            component += 3 if rotational else 0
+            source_raw, source = raw[:, component], processed[:, component]
+        if settings["auto_fit"]:
+            settings["range"], settings["center"] = fit_range(source[valid], rotational, settings["invert"])
         extent, center = settings["range"], settings["center"]
         if not isinstance(extent, (float, int)) or not np.isfinite(extent) or extent <= 0 or not np.isfinite(center) or not 0 <= center <= 100:
             raise ValueError("Axis range must be positive and center must be in 0–100")
-        component += 3 if axis.startswith("R") else 0
-        positions = center + processed[:, component] / extent * 100 * (-1 if settings["invert"] else 1)
+        positions = center + source / extent * 100 * (-1 if settings["invert"] else 1)
         quantized = np.rint(np.clip(positions, 0, 100))
         actions = []
         for start, end in ranges:
@@ -245,7 +262,9 @@ def build_project(sequence, overrides=None):
             actions.append({"at": duration_ms, "pos": actions[-1]["pos"]})
         scripts[axis] = {"version": "1.0", "inverted": False, "range": 100, "actions": validate_actions(actions)}
         metrics[axis] = {"actions": len(actions), "clipped_fraction": float(np.mean((positions[valid] < 0) | (positions[valid] > 100))),
-                         "raw_span": float(np.ptp(raw[valid, component])), "units": "m" if component < 3 else "deg"}
+                         "raw_span": float(np.ptp(source_raw[valid])), "units": "deg" if rotational else "m"}
+        if reports is not None:
+            metrics[axis]["auto_direction"] = reports
     warnings = list(sequence.metadata.get("warnings", []))
     if len(ranges) > 1:
         warnings.append("Gaps/cuts hold the previous position, then step at the next valid span. Review these boundaries before playback.")
@@ -257,7 +276,8 @@ def build_project(sequence, overrides=None):
             "anchor_indices": {"target": list(ANCHORS[config["target_anchor"]]),
                                "reference": list(ANCHORS[config["reference_anchor"]]) if reference >= 0 else None},
             "metrics": metrics, "warnings": warnings, "times_ms": times.tolist(), "valid": valid.tolist(),
-            "segments": sequence.segments.tolist(), "raw": nullable(raw), "processed": nullable(processed),
+            "segments": sequence.segments.tolist(), "orientation_hints": orientation_hints,
+            "raw": nullable(raw), "processed": nullable(processed),
             "pixels": nullable(sequence.pixels), "points": nullable(sequence.points)}
 
 
