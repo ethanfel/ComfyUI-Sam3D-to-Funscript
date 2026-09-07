@@ -2,7 +2,10 @@
   "1": {
     "class_type": "S3F_VideoPose",
     "inputs": {
-      "video_path": "videos/nsfw/rcowgirl_6.mp4",
+      "video": [
+        "4",
+        0
+      ],
       "model_file": "sam_3d_body_dinov3_bf16.safetensors",
       "sample_fps": 16.0,
       "start_seconds": 0.0,
@@ -39,6 +42,12 @@
         0
       ],
       "filename": "rcowgirl_6"
+    }
+  },
+  "4": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "videos/nsfw/rcowgirl_6.mp4"
     }
   }
 }

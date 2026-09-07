@@ -9,6 +9,7 @@ import numpy as np
 
 from sam3d_funscript.core import PoseSequence, build_project
 from sam3d_funscript.native import adapt_native_poses
+from sam3d_funscript.video import video_frames, video_input_range
 
 
 class FileVideo:
@@ -24,6 +25,12 @@ class FileVideo:
 
     def get_frame_rate(self):
         return Fraction(30)
+
+    def get_dimensions(self):
+        return (64, 64)
+
+    def get_components(self):
+        raise AssertionError("Streaming VIDEO handling must not materialize components")
 
 
 def write_video(path):
@@ -89,6 +96,35 @@ class NativeAdapterTests(unittest.TestCase):
         data["image_size"] = [32, 64]
         with self.assertRaisesRegex(ValueError, "matching, uncropped"):
             adapt_native_poses(data, FileVideo(self.path), self.cache)
+
+    def test_streaming_video_input_preserves_vfr_timing_and_composes_trims(self):
+        path, start, duration = video_input_range(FileVideo(self.path, .1, .15))
+        frames = list(video_frames(path, sample_fps=0, start_seconds=start, duration_seconds=duration))
+        self.assertEqual([t["time_ms"] for _, t in frames], [100, 180, 240])
+        self.assertEqual(start + duration, Fraction(1, 4))
+        path, start, duration = video_input_range(FileVideo(self.path, .1, .15), .05, 2)
+        frames = list(video_frames(path, sample_fps=0, start_seconds=start, duration_seconds=duration))
+        self.assertEqual([t["time_ms"] for _, t in frames], [180, 240])
+        self.assertEqual(start + duration, Fraction(1, 4))
+
+    def test_streaming_untrimmed_input_keeps_existing_cache_range(self):
+        path, start, duration = video_input_range(FileVideo(self.path))
+        self.assertEqual((path, start, duration), (self.path, 0, 0))
+        _, start, duration = video_input_range(FileVideo(self.path), .1, .3)
+        self.assertEqual((float(start), float(duration)), (.1, .3))
+        frames = list(video_frames(path, sample_fps=0, start_seconds=start, duration_seconds=duration))
+        self.assertEqual([t["time_ms"] for _, t in frames], [100, 180, 240])
+
+    def test_streaming_rejects_ignored_transforms_and_empty_ranges(self):
+        video = FileVideo(self.path)
+        video.get_dimensions = lambda: (32, 64)
+        with self.assertRaisesRegex(ValueError, "uncropped"):
+            video_input_range(video)
+        video.get_stream_source = lambda: b"encoded video"
+        with self.assertRaisesRegex(ValueError, "file-backed"):
+            video_input_range(video)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            video_input_range(FileVideo(self.path, .1, .15), .15)
 
 
 if __name__ == "__main__":

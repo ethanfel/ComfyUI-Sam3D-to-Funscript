@@ -3,6 +3,7 @@
 from fractions import Fraction
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
@@ -18,6 +19,38 @@ def fingerprint(path):
     path = Path(path).resolve(strict=True)
     stat = path.stat()
     return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def video_input_range(video, start_seconds=0.0, duration_seconds=0.0):
+    """Resolve a lazy core VIDEO without materializing its image components."""
+    source = video.get_stream_source()
+    if not isinstance(source, (str, Path)):
+        raise ValueError("Connect a file-backed VIDEO from core Load Video or Trim Video for streaming analysis.")
+    if not np.isfinite(start_seconds) or start_seconds < 0 or not np.isfinite(duration_seconds) or duration_seconds < 0:
+        raise ValueError("Video analysis start and duration must be finite and nonnegative")
+    path = Path(source).resolve(strict=True)
+    trim_start, trim_duration = video.get_active_trim_window()
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        first = next(container.decode(stream), None)
+        if first is None or first.pts is None:
+            raise ValueError("Source video has no timestamped frames")
+        if first.rotation:
+            raise ValueError("Streaming analysis needs video rotation baked into the pixels before loading.")
+        origin = first.pts * first.time_base
+        source_size = (first.width, first.height)
+        # Core trims use source-stream PTS; our extraction uses time from the first frame.
+        base = max(Fraction(0), int(trim_start / stream.time_base) * stream.time_base - origin)
+        limit = int((trim_start + trim_duration) / stream.time_base) * stream.time_base - origin if trim_duration else None
+    if video.get_dimensions() != source_size:
+        raise ValueError("Connect an uncropped VIDEO; use this node's person ROIs to crop for SAM3D inference.")
+    start = base + Fraction(str(start_seconds))
+    end = start + Fraction(str(duration_seconds)) if duration_seconds else None
+    if limit is not None:
+        end = min(end, limit) if end is not None else limit
+    if end is not None and end <= start:
+        raise ValueError("Analysis start lies outside the upstream VIDEO trim")
+    return path, start, end - start if end is not None else Fraction(0)
 
 
 def parse_rois(value):
@@ -36,7 +69,7 @@ def parse_rois(value):
 
 def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0, max_frames=2000):
     """Yield RGB frames on a sampling grid, retaining actual frame PTS, never invented FPS times."""
-    if not np.isfinite(sample_fps) or sample_fps < 0 or not np.isfinite(start_seconds) or start_seconds < 0 or not np.isfinite(duration_seconds) or duration_seconds < 0 or max_frames < 2:
+    if not math.isfinite(sample_fps) or sample_fps < 0 or not math.isfinite(start_seconds) or start_seconds < 0 or not math.isfinite(duration_seconds) or duration_seconds < 0 or max_frames < 2:
         raise ValueError("Invalid video range/sampling settings")
     start = Fraction(str(start_seconds))
     end = start + Fraction(str(duration_seconds)) if duration_seconds else None
@@ -92,6 +125,8 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
     if use_cache and cache.exists():
         sequence = PoseSequence.load(cache)
         sequence.metadata = {**sequence.metadata, "cache_hit": True, "cache_path": str(cache)}
+        if duration_seconds:
+            sequence.metadata["duration_ms"] = min(sequence.metadata["duration_ms"], float((start_seconds + duration_seconds) * 1000))
         return sequence
     started = time.perf_counter()
     model = SAM3DBody_Loader.execute(model_file).result[0]
@@ -142,6 +177,8 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
     times = np.array([t["time_ms"] for t in timestamps])
     # Export ends at the analysed range, not at an unanalysed tail of the video.
     duration = times[-1] + timestamps[-1]["frame_duration_ms"]
+    if duration_seconds:
+        duration = min(duration, float((start_seconds + duration_seconds) * 1000))
     metadata = {"source": key["video"], "model": key["model"], "image_size": list(image_size),
                 "duration_ms": duration, "analysed_start_ms": times[0], "analysed_end_ms": times[-1],
                 "timestamps": timestamps, "rois": rois, "cache_hit": False, "cache_path": str(cache),

@@ -10,6 +10,7 @@ from scipy.spatial.transform import Rotation
 from sam3d_funscript.core import (PoseSequence, build_project, body_basis, export_project,
                                   load_project, simplify, validate_actions)
 from sam3d_funscript.video import parse_rois, video_frames
+from sam3d_funscript.anchors import ANCHORS, MHR70_NAMES
 
 
 def fixture():
@@ -28,6 +29,25 @@ def fixture():
 
 
 class CoreTests(unittest.TestCase):
+    def test_all_landmarks_drive_translation_and_publish_matching_preview_indices(self):
+        self.assertEqual(len(MHR70_NAMES), 70)
+        self.assertEqual(len(set(MHR70_NAMES)), 70)
+        self.assertEqual(len(ANCHORS), 72)
+        self.assertEqual(ANCHORS["left_index_tip"], (46,))
+        self.assertEqual(ANCHORS["right_pinky_third_joint"], (40,))
+        self.assertEqual(ANCHORS["neck"], (69,))
+        sequence = fixture()
+        # Every landmark has distinct motion, preventing a wrong index from passing.
+        for joint in range(70):
+            sequence.points[:, 0, joint, 0] += sequence.times_ms / 1000 * (joint + 1) / 100
+        for name, indices in ANCHORS.items():
+            with self.subTest(anchor=name):
+                project = build_project(sequence, {"target_anchor": name, "reference_person": 1,
+                    "reference_anchor": name, "neutral_window_ms": 0, "smoothing_ms": 0})
+                expected = -sequence.times_ms / 1000 * np.mean(np.array(indices) + 1) / 100
+                np.testing.assert_allclose(np.array(project["raw"])[:, 2], expected, atol=1e-12)
+                self.assertEqual(project["anchor_indices"], {"target": list(indices), "reference": list(indices)})
+
     def test_camera_rigid_transform_cancels_in_reference_frame(self):
         sequence = fixture()
         config = {"reference_person": 1, "frame": "reference_body"}

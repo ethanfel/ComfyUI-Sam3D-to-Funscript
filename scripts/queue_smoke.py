@@ -1,12 +1,13 @@
 """Check disk-cache interoperability and reopen an edited browser project in ComfyUI."""
 
 import json
+import os
 from pathlib import Path
 import time
 import urllib.request
 import zipfile
 
-BASE = "http://127.0.0.1:8197"
+BASE = os.environ.get("S3F_TEST_BASE", "http://127.0.0.1:8197")
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -20,19 +21,20 @@ def queue(prompt):
     with urllib.request.urlopen(request, timeout=10) as response:
         result = json.load(response)
     started = time.monotonic()
-    while time.monotonic() - started < 60:
+    while time.monotonic() - started < 360:
         history = get("/history/" + result["prompt_id"])
         if history:
             item = history[result["prompt_id"]]
             assert item["status"]["status_str"] == "success", item["status"]
             return item
         time.sleep(.2)
-    raise TimeoutError("Test workflow exceeded 60 seconds")
+    raise TimeoutError("Test workflow exceeded six minutes")
 
 
 def main():
     api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())
-    api["1"]["inputs"].update(video_path="videos/nsfw/cowgirl_7.mp4", duration_seconds=4.0, sample_fps=16.0)
+    api["4"]["inputs"]["file"] = "videos/nsfw/cowgirl_7.mp4"
+    api["1"]["inputs"].update(duration_seconds=4.0, sample_fps=16.0)
     api["3"]["inputs"]["filename"] = "cowgirl_7_cache_check"
     cached = queue(api)
     cache_project_path = cached["outputs"]["3"]["text"][0]

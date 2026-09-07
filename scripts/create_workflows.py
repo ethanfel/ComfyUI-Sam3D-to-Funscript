@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 API = {
     "1": {"class_type": "S3F_VideoPose", "inputs": {
-        "video_path": "videos/nsfw/rcowgirl_6.mp4", "model_file": "sam_3d_body_dinov3_bf16.safetensors",
+        "video": ["4", 0], "model_file": "sam_3d_body_dinov3_bf16.safetensors",
         "sample_fps": 16.0, "start_seconds": 0.0, "duration_seconds": 0.0, "max_frames": 2000,
         "rois_json": "[[0,0,1,1]]", "batch_size": 8, "fov": 0.0, "use_cache": True}},
     "2": {"class_type": "S3F_BuildMotion", "inputs": {
@@ -15,6 +15,7 @@ API = {
         "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 80.0,
         "enabled_axes": "L0,L1,L2,R0,R1,R2", "settings_json": "{}"}},
     "3": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["2", 0], "filename": "rcowgirl_6"}},
+    "4": {"class_type": "LoadVideo", "inputs": {"file": "videos/nsfw/rcowgirl_6.mp4"}},
 }
 
 
@@ -84,10 +85,10 @@ def core_workflow():
 
 def main():
     nodes = [
-        make_node(1, API["1"], [80, 140], [380, 480], [],
+        make_node(1, API["1"], [80, 140], [380, 480], [{"name": "video", "type": "VIDEO", "link": 3}],
                   [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "links": [1], "slot_index": 0},
                    {"name": "cache_path", "type": "STRING", "links": None, "slot_index": 1}],
-                  list(API["1"]["inputs"].values()), "1 · Video & person ROI"),
+                  list(API["1"]["inputs"].values())[1:], "1 · Stream video & estimate poses"),
         make_node(2, API["2"], [550, 140], [380, 440],
                   [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "link": 1}],
                   [{"name": "S3F_MOTION_PROJECT", "type": "S3F_MOTION_PROJECT", "links": [2], "slot_index": 0}],
@@ -103,27 +104,37 @@ def main():
                            {"title": "Motion authoring", "bounding": [520, 60, 440, 610], "color": "#446958", "font_size": 22, "flags": {}},
                            {"title": "Preview · open full editor for more space", "bounding": [1000, 60, 890, 850], "color": "#655079", "font_size": 22, "flags": {}}],
                 "config": {}, "extra": {"ds": {"scale": .65, "offset": [30, 20]}}, "version": .4}
-    (ROOT / "workflows/video_to_funscript.json").write_text(json.dumps(workflow, indent=2))
-    (ROOT / "workflows/video_to_funscript.api.json").write_text(json.dumps(API, indent=2))
     cache_workflow = json.loads(json.dumps(workflow))
     node = cache_workflow["nodes"][0]
     node.update(type="S3F_LoadPoseCache", title="1 · Reopen cached poses", size=[380, 120],
-                widgets_values=["/absolute/path/to/poses.npz"], outputs=node["outputs"][:1],
+                widgets_values=["/absolute/path/to/poses.npz"], inputs=[], outputs=node["outputs"][:1],
                 properties={"Node name for S&R": "S3F_LoadPoseCache"})
     (ROOT / "workflows/cached_pose_to_funscript.json").write_text(json.dumps(cache_workflow, indent=2))
+    loader = make_node(4, API["4"], [-350, 140], [340, 550], [],
+        [{"name": "VIDEO", "type": "VIDEO", "links": [3], "slot_index": 0}],
+        [API["4"]["inputs"]["file"]], "Load video · core")
+    workflow["nodes"].append(loader)
+    workflow["links"].append([3, 4, 0, 1, 0, "VIDEO"])
+    workflow["last_node_id"] = 4; workflow["last_link_id"] = 3
+    workflow["groups"].insert(0, {"title": "Core video input", "bounding": [-380, 60, 400, 680],
+        "color": "#365770", "font_size": 22, "flags": {}})
+    workflow["extra"]["ds"] = {"scale": .6, "offset": [400, 20]}
+    (ROOT / "workflows/video_to_funscript.json").write_text(json.dumps(workflow, indent=2))
+    (ROOT / "workflows/video_to_funscript.api.json").write_text(json.dumps(API, indent=2))
     comparison = json.loads(json.dumps(workflow))
     comparison["nodes"][2]["pos"] = [1450, 140]
-    comparison["nodes"][2]["inputs"][0]["link"] = 3
+    comparison["nodes"][2]["inputs"][0]["link"] = 4
     comparison["nodes"][2]["order"] = 3
-    comparison["nodes"].append(make_node(4, {"class_type": "S3F_CompareReference"}, [1030, 140], [340, 240],
+    comparison["nodes"].append(make_node(5, {"class_type": "S3F_CompareReference"}, [1030, 140], [340, 240],
         [{"name": "project", "type": "S3F_MOTION_PROJECT", "link": 2}],
-        [{"name": "project_with_reference", "type": "S3F_MOTION_PROJECT", "links": [3], "slot_index": 0},
+        [{"name": "project_with_reference", "type": "S3F_MOTION_PROJECT", "links": [4], "slot_index": 0},
          {"name": "comparison_json", "type": "STRING", "links": None, "slot_index": 1}],
         ["/absolute/path/to/reference.funscript", "L0", 0.0], "3 · Compare reference"))
     comparison["nodes"][-1]["order"] = 2
-    comparison["links"] = [[1, 1, 0, 2, 0, "S3F_POSE_SEQUENCE"], [2, 2, 0, 4, 0, "S3F_MOTION_PROJECT"], [3, 4, 0, 3, 0, "S3F_MOTION_PROJECT"]]
-    comparison["last_node_id"] = 4; comparison["last_link_id"] = 3
-    comparison["groups"][2]["bounding"] = [1000, 60, 1320, 850]
+    comparison["links"] = [[1, 1, 0, 2, 0, "S3F_POSE_SEQUENCE"], [2, 2, 0, 5, 0, "S3F_MOTION_PROJECT"],
+                           [3, 4, 0, 1, 0, "VIDEO"], [4, 5, 0, 3, 0, "S3F_MOTION_PROJECT"]]
+    comparison["last_node_id"] = 5; comparison["last_link_id"] = 4
+    comparison["groups"][3]["bounding"] = [1000, 60, 1320, 850]
     (ROOT / "workflows/video_with_reference.json").write_text(json.dumps(comparison, indent=2))
     core_workflow()
 

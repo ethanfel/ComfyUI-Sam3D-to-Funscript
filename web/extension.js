@@ -1,8 +1,12 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { migrateVideoInputs } from "./migrate.mjs";
 
 app.registerExtension({
     name: "sam3d.funscript.preview",
+    beforeConfigureGraph(graphData) {
+        migrateVideoInputs(graphData);
+    },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "S3F_PreviewExport") return;
         const created = nodeType.prototype.onNodeCreated;

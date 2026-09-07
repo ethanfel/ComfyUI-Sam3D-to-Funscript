@@ -50,7 +50,7 @@ function drawOverlay(index) {
         const roi=project.metadata.rois?.[slot];
         if(roi){ctx.strokeStyle=COLORS[slot%COLORS.length];ctx.strokeRect(ox+roi[0]*iw*scale,oy+roi[1]*ih*scale,roi[2]*iw*scale,roi[3]*ih*scale);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(`ROI ${slot}`,ox+roi[0]*iw*scale+6,oy+roi[1]*ih*scale+15);}
     });
-    const slot=project.config.target_person,joints=ANCHORS[project.config.target_anchor];
+    const slot=project.config.target_person,joints=project.anchor_indices?.target||ANCHORS[project.config.target_anchor];
     const pointAt=i=>{const points=joints.map(j=>project.pixels?.[i]?.[slot]?.[j]);if(!points.every(finitePoint))return null;return [points.reduce((s,p)=>s+p[0],0)/points.length*scale+ox,points.reduce((s,p)=>s+p[1],0)/points.length*scale+oy];};
     let previous=null;
     for(let i=Math.max(0,index-40);i<=index;i++){
@@ -59,7 +59,12 @@ function drawOverlay(index) {
         const p=pointAt(i);if(p&&previous)line(ctx,previous,p,"#eabf71",2);previous=p;
     }
     const selected=pointAt(index);
-    if(selected){ctx.strokeStyle="#fff";ctx.fillStyle="#eabf71";ctx.lineWidth=2;ctx.beginPath();ctx.arc(...selected,7,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.font="bold 12px system-ui";ctx.fillText(`Target: ${project.config.target_anchor}`,Math.max(4,Math.min(w-155,selected[0]+12)),Math.max(18,Math.min(h-12,selected[1]-12)));}
+    if(selected){
+        ctx.strokeStyle="#fff";ctx.fillStyle="#eabf71";ctx.lineWidth=2;ctx.beginPath();ctx.arc(...selected,7,0,Math.PI*2);ctx.fill();ctx.stroke();
+        ctx.font="bold 12px system-ui";
+        const label=`Target: ${project.config.target_anchor.replaceAll("_"," ")}`;
+        ctx.fillText(label,Math.max(4,Math.min(w-ctx.measureText(label).width-4,selected[0]+12)),Math.max(18,Math.min(h-12,selected[1]-12)));
+    }
 }
 function project3(point,w,h,scale=1) {
     let [x,y,z]=point;
@@ -75,7 +80,7 @@ function drawSkeleton(index) {
     const center=target[9].map((v,i)=>(v+target[10][i])/2);
     const map=point=>project3([point[0]-center[0],-(point[1]-center[1]),-(point[2]-center[2])],w,h,Math.min(w,h)*.6*orbit.zoom);
     people.forEach((person,slot)=>{for(const [a,b]of EDGES)if(finitePoint(person[a])&&finitePoint(person[b]))line(ctx,map(person[a]),map(person[b]),COLORS[slot%COLORS.length],3);});
-    const selected=ANCHORS[project.config.target_anchor].map(j=>target[j]);
+    const selected=(project.anchor_indices?.target||ANCHORS[project.config.target_anchor]).map(j=>target[j]);
     if(selected.every(finitePoint)){const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();}
     const origin=map(center);[[[.25,0,0],"#e89393"],[[0,-.25,0],"#8fd399"],[[0,0,-.25],"#8eb7f7"]].forEach(([p,c])=>line(ctx,origin,map(center.map((v,i)=>v+p[i])),c));
 }

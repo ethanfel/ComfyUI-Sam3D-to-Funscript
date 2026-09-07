@@ -14,11 +14,16 @@ The project is linked into:
 /media/p5/Comfyui/custom_nodes/ComfyUI-Sam3D-to-Funscript
 ```
 
-Load [workflows/video_to_funscript.json](workflows/video_to_funscript.json) in ComfyUI. It is a canvas-editable workflow with three stages:
+Load [workflows/video_to_funscript.json](workflows/video_to_funscript.json) in ComfyUI. It is a canvas-editable workflow using core video input and streaming inference:
 
-1. **SAM3D Video → Cached Poses:** select the video, model and person ROI(s).
-2. **Poses → Multi-axis Motion:** choose anchors, reference frame, smoothing and enabled axes.
-3. **Preview & Export Funscripts:** write scripts and a project, then open the embedded preview or **Open full motion editor**.
+1. **Load Video** (core): select or upload a video and connect its `VIDEO` output.
+2. **SAM3D Video → Cached Poses:** select the model, sampling and person ROI(s).
+3. **Poses → Multi-axis Motion:** choose anchors, reference frame, smoothing and enabled axes.
+4. **Preview & Export Funscripts:** write scripts and a project, then open the embedded preview or **Open full motion editor**.
+
+Core **Load Video → SAM3D Video → Cached Poses** preserves the original node's lower-RAM streaming behavior. **Load Video** supplies a lazy file reference; the inference node decodes selected frames in small batches. No **Get Video Components** node is needed. Optional core **Trim Video** can sit between them.
+
+Saved path-based canvas workflows migrate on opening: the extension adds **Load Video**, transfers the saved filename and keeps the existing inference settings and downstream connections. If the old filename was an absolute path outside ComfyUI's input directory, select/upload it through **Load Video**. API clients should use the updated [API example](workflows/video_to_funscript.api.json).
 
 The development server uses port **8197** and stores results under this repository's `development/output/`. Your regular ComfyUI uses its own configured output directory. A regular ComfyUI process already running before installation needs to reload custom nodes, normally by restarting it when its queue is idle.
 
@@ -71,11 +76,11 @@ After reloading ComfyUI's custom nodes, both entry points appear under `motion/S
 | Preview & Export Funscripts | Save a new run directory and expose its synchronized editor. |
 | Compare Reference Funscript | Attach a paired authored script, measure curve agreement and display it in the editor. |
 
-Paths may be absolute, or relative to the ComfyUI input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
+Video selection now belongs to core **Load Video**, which reads ComfyUI's input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Cache, project and reference-script paths may still be absolute or relative to the input directory. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
 
-In the original combined node, `sample_fps=16` selects actual frames on a 16 Hz sampling grid. Set `0` for all frames. `max_frames` bounds memory and inference work; `duration_seconds=0` processes until EOF or that limit. Inference holds at most one batch of source frames and retains compact landmarks, rather than all meshes and images.
+In the original combined node, `sample_fps=16` selects actual frames on a 16 Hz sampling grid. Set `0` for all frames. `max_frames` bounds memory and inference work; `duration_seconds=0` processes until the upstream trim ends, EOF or that limit. Inference holds at most one batch of source frames and retains compact landmarks, rather than all meshes and images. Model memory requirements are unchanged. This streaming input supports file-backed **Load Video / Trim Video**; generated in-memory videos and spatial crops need saving/loading first. Use the node's person ROIs for inference crops, and bake any video rotation metadata into the pixels.
 
-`start_seconds` and `duration_seconds` select an analysis interval. **Export timestamps remain aligned to the original source video**, including when the interval starts after zero. The first position is held before the analysed interval; the last is held through its final sampled frame. An unanalysed tail is not extrapolated.
+`start_seconds` is an additional offset inside the connected video's trim; `duration_seconds` selects how much to analyse from there, capped at the upstream trim's end. **Export timestamps remain aligned to the original source video**, including when the interval starts after zero. The first position is held before the analysed interval; the last is held through its final sampled frame, capped at the selected end time. An unanalysed tail is not extrapolated.
 
 ### Person ROIs
 
@@ -99,7 +104,15 @@ camera_point = pred_keypoints_3d + pred_cam_t
 
 Units are estimated metres; camera X is right, Y down, Z forward. A torso basis is reconstructed from the two hips and shoulders, avoiding the separate native rig-rotation basis convention.
 
-Available anchors are pelvis midpoint, shoulder midpoint (`chest`), nose and either wrist. They are anatomical pose landmarks; no contact point or pressure is inferred.
+Both `target_anchor` and `reference_anchor` offer **72 choices**: all 70 named [MHR70 landmarks](https://github.com/facebookresearch/sam-3d-body/blob/main/sam_3d_body/metadata/mhr70.py), plus the original pelvis midpoint and shoulder midpoint (`chest`). Left/right refer to the person's anatomical sides.
+
+- Body: shoulders, elbows, hips, knees, ankles and neck.
+- Face: nose, eyes and ears.
+- Hands: both wrists and each finger's tip plus three joints. MHR numbers these joints from the fingertip toward the hand; `third_joint` is the base.
+- Feet: big-toe tips, small-toe tips and heels.
+- Additional surface landmarks: olecranon (back of elbow), cubital fossa (inner elbow) and acromion (shoulder tip), on both sides.
+
+Changing an anchor uses the landmarks already stored in the pose cache; no new inference is needed. The yellow target marker and its trail follow the selected point in the video and 3D preview. Anchor choice changes translation; rotation channels still use the torso basis. Finger and occluded-point estimates require review, especially with hand refinement disabled. These are anatomical pose landmarks; no contact point or pressure is inferred.
 
 - `reference_person=-1`, `frame=camera`: follows target motion in camera coordinates.
 - A second reference person with `frame=camera`: subtracts the reference anchor in camera coordinates.
@@ -180,7 +193,7 @@ PYTHONDONTWRITEBYTECODE=1 /media/p5/miniforge3/envs/13_env_py313/bin/python \
   --output development/calibration/example --name example
 ```
 
-This fits gain and center on the first 60% of the analysed overlap, selects among five anchors, three translation directions and four smoothing values on the next 20%, then evaluates the selected configuration on the final 20%. One-second gaps separate the partitions. The time offset stays at zero. Tests verify that changing test labels cannot change the selected configuration.
+This fits gain and center on the first 60% of the analysed overlap, selects among the available anchors, three translation directions and four smoothing values on the next 20%, then evaluates the selected configuration on the final 20%. The original published calibration reports used five anchors; expanding the selector does not update those historical results. One-second gaps separate the partitions. The time offset stays at zero. Tests verify that changing test labels cannot change the selected configuration.
 
 Outputs include `report.json`, `REPORT.md`, `selected-config.json`, PNG/PDF comparisons, and separate baseline/calibrated review projects. The report compares against a constant training-median baseline and matches same-direction reversals within 200 ms, using 10-position-unit prominence. Matched-event timing errors must be read together with precision/recall, since unmatched events otherwise disappear from a timing average. Reference-comparison browser metrics cover the full overlap; held-out metrics are explicitly identified in the report.
 
@@ -195,6 +208,7 @@ The tested environment is Python 3.13.11, Torch 2.11.0+cu130, RTX 5090, and the 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /media/p5/miniforge3/envs/13_env_py313/bin/python -m unittest discover -s tests -v
 node tests/test_curve.mjs /absolute/path/to/project.json
+node tests/test_migrate.mjs
 ```
 
 Tests cover variable-rate timestamps, rigid-camera invariance in a body reference frame, gap holds, filter isolation across cuts, fixed-gain behavior, interpolation error, cache/project round trips, action validation and browser/Python export parity.
@@ -211,9 +225,11 @@ The first full test produced 270 poses over the 16.844-second clip in 44.99 seco
 
 A second test on the first four seconds of `cowgirl_7.mp4` produced 64 finite poses in 26.79 seconds including model loading. No samples clipped under the default calibration in that interval.
 
-The complete three-node graph also passed the actual ComfyUI queue. Browser tests cover video decoding/seeking, regeneration, undo, action dragging, ZIP download, responsive layout and canvas preview restoration. Local diagnostic outputs are under `development/`; they are excluded from version control.
+The streaming graph is tested through the actual ComfyUI queue. Browser tests cover video decoding/seeking, regeneration, undo, action dragging, ZIP download, responsive layout, canvas preview restoration and migration of the original path-based graph. Local diagnostic outputs are under `development/`; they are excluded from version control.
 
 The additional eight-node core workflow passed a full 539-frame run and a 32-frame trim from 4–5 seconds, preserving original timestamps. Its canvas connections/native settings, editor controls and downloads passed browser checks. All 20 Python tests and JavaScript curve/export checks pass. Reproduce the core queue check with `scripts/core_queue_smoke.py --base http://127.0.0.1:8198` on the isolated test instance.
+
+The updated streaming `VIDEO` input passed a fresh 270-sample run in 42.90 seconds, a six-frame interval bounded by an upstream trim plus a node offset, and a change to `left_index_tip` that reused the existing pose cache. Earlier CLI caches still load through the node. The expanded Python suite passes 24 tests, including all 72 anchor mappings and variable-rate trim timing. Run `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/stream_queue_smoke.py` against the isolated test instance to reproduce the new queue checks.
 
 ## Next stages
 

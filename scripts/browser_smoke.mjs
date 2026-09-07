@@ -51,6 +51,13 @@ try{
     report.checks.push("Reference upload, agreement metrics, offset and undo work");
     // Real pointer input checks the drag path, including pointer capture.
     const data=await(await fetch(`${base}/sam3d_funscript/projects/${id}`)).json();
+    if(data.anchor_indices){
+        await evaluate(`(()=>{const ctx=document.querySelector('#overlay').getContext('2d');
+            const draw=ctx.fillText;ctx.fillText=function(text,...args){window.s3fAnchorLabel=text;return draw.call(this,text,...args);};
+            document.querySelector('#axis').dispatchEvent(new Event('change'));})()`);
+        await until(()=>evaluate(`window.s3fAnchorLabel===${JSON.stringify("Target: "+data.config.target_anchor.replaceAll("_"," "))}`),"selected anchor marker");
+        report.checks.push(`Preview marks ${data.config.target_anchor} using exported landmark indices`);
+    }
     const action=data.scripts.L0.actions[5];
     const rect=await evaluate("(()=>{const r=document.querySelector('#curve').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}})()");
     const x=rect.x+42+action.at/data.metadata.duration_ms*(rect.w-54),y=rect.y+rect.h-25-action.pos/100*(rect.h-40);
@@ -99,6 +106,28 @@ try{
         assert.equal(report.frontend.prompt["5"].inputs.batch_size,8);
         assert.equal(report.frontend.prompt["5"].inputs.bboxes,undefined);
         assert.deepEqual(report.frontend.prompt["6"].inputs.video,["2",0]);
+    }
+    if(report.frontend.prompt["1"]?.class_type==="S3F_VideoPose"){
+        assert.deepEqual(report.frontend.prompt["1"].inputs.video,["4",0]);
+        assert.equal(report.frontend.prompt["1"].inputs.video_path,undefined);
+        assert.equal(report.frontend.prompt["1"].inputs.model_file,"sam_3d_body_dinov3_bf16.safetensors");
+        assert.equal(report.frontend.prompt["1"].inputs.sample_fps,16);
+        assert.equal(report.frontend.prompt["1"].inputs.batch_size,8);
+        assert.equal(report.frontend.prompt["4"].inputs.file,"videos/nsfw/rcowgirl_6.mp4");
+        const legacy=structuredClone(workflow);
+        legacy.nodes=legacy.nodes.filter(n=>n.id!==4);
+        const extractor=legacy.nodes.find(n=>n.id===1);
+        extractor.inputs=[];
+        extractor.widgets_values.unshift("videos/nsfw/rcowgirl_6.mp4");
+        legacy.links=legacy.links.filter(l=>l[5]!=="VIDEO");
+        legacy.last_node_id=3;legacy.last_link_id=2;
+        await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(legacy)})`);
+        const prompt=(await evaluate("window.s3fTestApp.graphToPrompt()")).output;
+        // Core's display-only preview widget can initialize after graphToPrompt.
+        const expected=structuredClone(report.frontend.prompt);
+        delete prompt["4"].inputs["video-preview"];delete expected["4"].inputs["video-preview"];
+        assert.deepEqual(prompt,expected);
+        report.checks.push("Legacy path workflow migrates to core VIDEO without changing the generated prompt");
     }
     report.checks.push(`Canvas workflow loads all ${workflow.nodes.length} nodes, preserves connections/settings and restores the preview iframe`);
     fs.writeFileSync(output+"/report.json",JSON.stringify(report,null,2));

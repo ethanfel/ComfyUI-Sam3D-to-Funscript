@@ -1,6 +1,6 @@
 {
-  "last_node_id": 3,
-  "last_link_id": 2,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
@@ -16,7 +16,13 @@
       "flags": {},
       "order": 0,
       "mode": 0,
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 3
+        }
+      ],
       "outputs": [
         {
           "name": "poses",
@@ -37,7 +43,6 @@
         "Node name for S&R": "S3F_VideoPose"
       },
       "widgets_values": [
-        "videos/nsfw/rcowgirl_6.mp4",
         "sam_3d_body_dinov3_bf16.safetensors",
         16.0,
         0.0,
@@ -48,7 +53,7 @@
         0.0,
         true
       ],
-      "title": "1 \u00b7 Video & person ROI"
+      "title": "1 \u00b7 Stream video & estimate poses"
     },
     {
       "id": 2,
@@ -132,6 +137,39 @@
         "rcowgirl_6"
       ],
       "title": "3 \u00b7 Review, edit & export"
+    },
+    {
+      "id": 4,
+      "type": "LoadVideo",
+      "pos": [
+        -350,
+        140
+      ],
+      "size": [
+        340,
+        550
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVideo"
+      },
+      "widgets_values": [
+        "videos/nsfw/rcowgirl_6.mp4"
+      ],
+      "title": "Load video \u00b7 core"
     }
   ],
   "links": [
@@ -150,9 +188,29 @@
       3,
       0,
       "S3F_MOTION_PROJECT"
+    ],
+    [
+      3,
+      4,
+      0,
+      1,
+      0,
+      "VIDEO"
     ]
   ],
   "groups": [
+    {
+      "title": "Core video input",
+      "bounding": [
+        -380,
+        60,
+        400,
+        680
+      ],
+      "color": "#365770",
+      "font_size": 22,
+      "flags": {}
+    },
     {
       "title": "SAM3D extraction \u00b7 cached",
       "bounding": [
@@ -193,9 +251,9 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.65,
+      "scale": 0.6,
       "offset": [
-        30,
+        400,
         20
       ]
     }

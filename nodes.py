@@ -6,7 +6,7 @@ from pathlib import Path
 import folder_paths
 
 from .sam3d_funscript.core import ANCHORS, PoseSequence, build_project, export_project, load_project
-from .sam3d_funscript.video import extract_video, fingerprint
+from .sam3d_funscript.video import extract_video, fingerprint, video_input_range
 from .sam3d_funscript.calibration import load_reference, compare_project
 from .sam3d_funscript.native import adapt_native_poses
 
@@ -24,11 +24,11 @@ class S3F_VideoPose:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "video_path": ("STRING", {"default": "videos/nsfw/rcowgirl_6.mp4"}),
+            "video": ("VIDEO", {"tooltip": "Connect core Load Video or Trim Video. Decodes sampled frames in small batches without Get Video Components."}),
             "model_file": (folder_paths.get_filename_list("detection"),),
             "sample_fps": ("FLOAT", {"default": 16, "min": 0, "max": 120, "step": 1, "tooltip": "0 keeps every frame. Original PTS are preserved."}),
-            "start_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400}),
-            "duration_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "0 means until EOF or sample limit."}),
+            "start_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "Additional offset inside the connected VIDEO's trim."}),
+            "duration_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "0 uses the remaining input video, bounded by its trim and the sample limit."}),
             "max_frames": ("INT", {"default": 2000, "min": 2, "max": 100000}),
             "rois_json": ("STRING", {"default": "[[0,0,1,1]]", "multiline": True, "tooltip": "Ordered static person crops: normalized [x,y,width,height]. Not automatic tracking."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
@@ -42,14 +42,16 @@ class S3F_VideoPose:
     CATEGORY = CATEGORY
 
     @classmethod
-    def IS_CHANGED(cls, video_path, model_file, use_cache=True, **kwargs):
+    def IS_CHANGED(cls, video, model_file, use_cache=True, **kwargs):
         if not use_cache:
             return float("nan")
-        return json.dumps([fingerprint(resolve_input(video_path)), fingerprint(folder_paths.get_full_path_or_raise("detection", model_file))], sort_keys=True)
+        path, start, duration = video_input_range(video)
+        return json.dumps([fingerprint(path), float(start), float(duration), fingerprint(folder_paths.get_full_path_or_raise("detection", model_file))], sort_keys=True)
 
-    def run(self, video_path, **kwargs):
+    def run(self, video, start_seconds=0.0, duration_seconds=0.0, **kwargs):
         cache = Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "cache"
-        sequence = extract_video(resolve_input(video_path), cache_dir=cache, **kwargs)
+        path, start, duration = video_input_range(video, start_seconds, duration_seconds)
+        sequence = extract_video(path, cache_dir=cache, start_seconds=start, duration_seconds=duration, **kwargs)
         return sequence, sequence.metadata["cache_path"]
 
 
@@ -95,9 +97,9 @@ class S3F_BuildMotion:
         return {"required": {
             "poses": ("S3F_POSE_SEQUENCE",),
             "target_person": ("INT", {"default": 0, "min": 0, "max": 7}),
-            "target_anchor": (list(ANCHORS),),
+            "target_anchor": (list(ANCHORS), {"tooltip": "All 70 named MHR landmarks, plus pelvis/chest midpoints. Left/right are the person's anatomical sides. Changes translation; rotation still follows the torso."}),
             "reference_person": ("INT", {"default": -1, "min": -1, "max": 7, "tooltip": "-1 uses camera coordinates."}),
-            "reference_anchor": (list(ANCHORS),),
+            "reference_anchor": (list(ANCHORS), {"tooltip": "Landmark on the reference person, or pelvis/chest midpoint. Ignored when reference_person is -1."}),
             "frame": (["camera", "reference_body"],),
             "smoothing_ms": ("FLOAT", {"default": 80, "min": 0, "max": 2000}),
             "enabled_axes": ("STRING", {"default": "L0,L1,L2,R0,R1,R2"}),

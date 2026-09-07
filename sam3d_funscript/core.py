@@ -10,10 +10,10 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation
 
+from .anchors import ANCHORS
+
 AXES = ("L0", "L1", "L2", "R0", "R1", "R2")
 SUFFIXES = dict(zip(AXES, ("", ".surge", ".sway", ".twist", ".roll", ".pitch")))
-ANCHORS = {"pelvis": (9, 10), "chest": (5, 6), "nose": (0,),
-           "left_wrist": (62,), "right_wrist": (41,)}
 SCHEMA = "sam3d-funscript/1"
 
 
@@ -245,6 +245,8 @@ def build_project(sequence, overrides=None):
     if reference < 0:
         warnings.append("Camera-relative motion includes camera movement and monocular depth/scale drift.")
     return {"schema": SCHEMA, "metadata": sequence.metadata, "config": config, "scripts": scripts,
+            "anchor_indices": {"target": list(ANCHORS[config["target_anchor"]]),
+                               "reference": list(ANCHORS[config["reference_anchor"]]) if reference >= 0 else None},
             "metrics": metrics, "warnings": warnings, "times_ms": times.tolist(), "valid": valid.tolist(),
             "segments": sequence.segments.tolist(), "raw": nullable(raw), "processed": nullable(processed),
             "pixels": nullable(sequence.pixels), "points": nullable(sequence.points)}
