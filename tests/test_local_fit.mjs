@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {autoFitAxis, motionForAxis, rebuildAxis, invertAxis, evaluate} from "../assets/curve.mjs";
-import {initializeTimeline, fitSelectionTrack, trackProject, trackCoverage, applyTrack, mainPoseProject, assignTrack, restoreTimeline, timelineState} from "../assets/timeline.mjs";
+import {initializeTimeline, fitSelectionTrack, trackProject, trackCoverage, applyTrack, copyTrackToMain, mainPoseProject, assignTrack, restoreTimeline, timelineState} from "../assets/timeline.mjs";
 
 function fixture(amplitude=.03) {
     const times=Array.from({length:251},(_,i)=>i*40);
@@ -68,6 +68,22 @@ test("Window tracks survive composition, deletion, undo, project roundtrip and r
     assert.equal(project.timeline.tracks[1].window,undefined);
     assert.equal(trackProject(project,project.timeline.tracks[1]).times_ms[0],0);
     const rotation=fitSelectionTrack(project,project.timeline.tracks[1],[6000,10000]);assert.equal(rotation.settings.range,10);
+});
+
+test("A fitted row copies its authored axis and matching source axes with separate pose contexts",()=>{
+    const project=fixture(),track=project.timeline.tracks[0];
+    const fitted=fitSelectionTrack(project,track,[6000,10000]);
+    const sourceRotation=structuredClone(trackProject(project,track).scripts.R0);
+    copyTrackToMain(project,fitted,{start:6500,end:9500,method:"cut"});
+    assert.deepEqual(project.timeline.main.L0.regions[0].window,[6000,10000]);
+    assert.equal(project.timeline.main.R0.regions[0].window,undefined);
+    assert.equal(mainPoseProject(project,"L0",7500).data.times_ms[0],6000);
+    assert.equal(mainPoseProject(project,"R0",7500).data.times_ms[0],0);
+    assert.deepEqual(trackProject(project,track).scripts.R0,sourceRotation);
+    // Even when the fitted axis is locked, the shared selection cannot exceed
+    // the fitted row's window while copying the other axes.
+    project.timeline.main.L0.locked=true;
+    assert.throws(()=>copyTrackToMain(project,fitted,{start:5500,end:9500}),/analysis/);
 });
 
 test("Invalid selections fail before adding a track or changing main",()=>{

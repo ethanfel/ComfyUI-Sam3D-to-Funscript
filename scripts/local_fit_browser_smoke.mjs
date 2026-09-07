@@ -6,7 +6,7 @@ import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {evaluate as valueAt} from "../assets/curve.mjs";
-import {initializeTimeline,fitSelectionTrack,trackCoverage,applyTrack} from "../assets/timeline.mjs";
+import {initializeTimeline,fitSelectionTrack,trackCoverage,copyTrackToMain} from "../assets/timeline.mjs";
 
 const base=process.argv[2],id=process.argv[3],output=path.resolve(process.argv[4]||"development/local-fit-browser");
 assert.ok(base&&id,"Pass base URL and an existing project ID");fs.mkdirSync(output,{recursive:true});
@@ -65,7 +65,7 @@ try{
     report.checks.push("The real hand interval fits at about 5.9 cm instead of 41.9 cm, without clipping; local fitting, inversion and refitting preserve the original tracks and main");
     await click("#applySection");saved=JSON.parse((await download())["project.json"]);
     const expected=structuredClone(original);expected.timeline.tracks.push(fitted);
-    const [start,end]=trackCoverage(original,fitted);applyTrack(expected,fitted,"L0",{start,end,blendMs:200});expected.timeline.main.L0.edited=true;
+    const [start,end]=trackCoverage(original,fitted);copyTrackToMain(expected,fitted,{start,end,blendMs:200});
     assert.deepEqual(saved.scripts,expected.scripts);assert.deepEqual(saved.timeline.main,expected.timeline.main);
     await click("#selectMain");
     await evaluate("document.querySelector('#video').currentTime=10.285;document.querySelector('#video').muted=true;document.querySelector('#video').play()");

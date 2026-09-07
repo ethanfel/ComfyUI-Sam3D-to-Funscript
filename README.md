@@ -45,7 +45,7 @@ For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studi
 ## Edit the motion
 
 - **Combine anchors:** connect more motion projects to the preview node. Each becomes a source track.
-- **Use a section:** select a source row, Shift-drag a time range, then click **Use selection in main**. Choose **Blend** for a smooth join.
+- **Use a section:** select a source row, Shift-drag a time range, then click **Use selection in main**. All available axes copy to their matching main axes, preserving locks. Choose **Blend** for smooth joins.
 - **Fit motion automatically:** L0 defaults to **Adaptive · per anchor**, so large movements elsewhere in the clip do not set one range for the entire track. Use **Whole clip** for manual range control, or **Fit selection as track** for a separate section.
 - **Protect finished work:** click **Lock**. The device preview and exported scripts follow the **main** tracks.
 

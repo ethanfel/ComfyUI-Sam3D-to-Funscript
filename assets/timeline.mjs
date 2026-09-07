@@ -129,9 +129,17 @@ export function selectionTrack(project) {
     return project.timeline.tracks.find(t=>t.id===project.timeline.selection_track)??null;
 }
 
-export function selectionProblem(project, track, axis, whole=false) {
+export function trackCopyAxes(project, track) {
+    const scripts = track ? sourceProject(project, track.source).scripts : {};
+    const available = AXES.filter(axis => scripts[axis] && project.scripts[axis] && project.timeline.main[axis]);
+    return {updated: available.filter(axis => !project.timeline.main[axis].locked),
+        locked: available.filter(axis => project.timeline.main[axis].locked)};
+}
+
+export function selectionProblem(project, track, whole=false) {
     if(!track)return "Choose a source row with Edit or Shift-drag its curve.";
-    if(project.timeline.main[axis]?.locked)return `Main ${axis} is locked. Unlock it to copy a section.`;
+    const axes=trackCopyAxes(project,track);
+    if(!axes.updated.length)return axes.locked.length?`Main ${axes.locked.join(", ")} locked. Unlock an axis to copy into main.`:"No source axes are enabled in main.";
     if(whole)return "";
     const [start,end]=project.timeline.selection,coverage=trackCoverage(project,track);
     if(![start,end].every(Number.isFinite)||end<=start)return "Shift-drag a time range or set In and Out.";
@@ -256,4 +264,30 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
     project.scripts[outputAxis] = script;
     main.regions = regions.sort((a, b) => a.start - b.start); main.assembled = true;
     delete project.metrics[outputAxis];
+}
+
+// One anchor supplies all matching output axes. The displayed row contributes
+// its authored curve; the remaining axes use that row's source project. Prepare
+// every result before committing so a bad axis cannot leave a partial insert.
+export function copyTrackToMain(project, track, options = {}) {
+    const axes = trackCopyAxes(project, track);
+    if (!track || !axes.updated.length) throw new Error(selectionProblem(project, track, true));
+    const coverage = trackCoverage(project, track);
+    if (!options.whole && (options.start < coverage[0] || options.end > coverage[1])) throw new Error("Select within this track’s analysis");
+    const data = sourceProject(project, track.source);
+    const preview = {...project, scripts: {...project.scripts}, metrics: {...project.metrics},
+        timeline: {...project.timeline, main: copy(project.timeline.main)}};
+    for (const axis of axes.updated) {
+        const lane = axis === track.axis ? track : {...track, axis,
+            settings: data.config.axis_settings[axis], script: data.scripts[axis]};
+        // Local fitting changed only the displayed axis; other axes retain their
+        // original calibration and pose context, over the same selected interval.
+        if (lane !== track) delete lane.window;
+        validateReference(lane.script);
+        applyTrack(preview, lane, axis, options);
+        preview.timeline.main[axis].edited = true;
+    }
+    project.scripts = preview.scripts; project.metrics = preview.metrics;
+    project.timeline.main = preview.timeline.main;
+    return axes;
 }

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
-import {initializeTimeline,applyTrack} from "../assets/timeline.mjs";
+import {initializeTimeline,copyTrackToMain,sourceProject} from "../assets/timeline.mjs";
 import {roundEven,evaluate as curveValue} from "../assets/curve.mjs";
 
 const input=path.resolve(process.argv[2]),output=path.resolve(process.argv[3]||"development/selection-copy/browser");
@@ -47,25 +47,36 @@ try{
     await select('#selectionStart','9.5');await select('#selectionEnd','14.7');
     await click('#selectMain');
     assert.equal(await evaluate("document.querySelector('#applySection').disabled"),false);
-    assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/L0 → Main L0 · one axis only/);
+    assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/L0, L1, L2, R0, R1, R2 → matching main axes/);
     assert.equal(await evaluate("document.querySelectorAll('.track.copy-source').length"),1);
     assert.equal(await evaluate(`document.querySelector('${lane(hand)}').classList.contains('copy-source')`),true);
     await click('#applySection');let saved=JSON.parse((await download())['project.json']);
-    const expected=structuredClone(original);applyTrack(expected,track,'L0',{start:9500,end:14700,blendMs:200});
+    const expected=structuredClone(original);copyTrackToMain(expected,track,{start:9500,end:14700,blendMs:200});
     assert.deepEqual(saved.scripts,expected.scripts);
-    for(const axis of ['L1','L2','R0','R1','R2'])assert.deepEqual(saved.scripts[axis],original.scripts[axis]);
+    for(const axis of Object.keys(saved.scripts))assert.equal(saved.timeline.main[axis].regions.at(-1).axis,axis);
     assert.equal(saved.timeline.selection_track,track.id);assert.equal(saved.timeline.active,'main');
     assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/Selection copied/);
-    await click('#undo');assert.deepEqual(JSON.parse((await download())['project.json']).scripts,original.scripts);
+    await click('#undo');const undone=JSON.parse((await download())['project.json']);
+    assert.deepEqual(undone.scripts,original.scripts);
+    assert.deepEqual(undone.timeline.main,original.timeline.main,'Undo restores source regions and calibration provenance on every axis');
     // The copy action is also available directly on the source row.
     await click(`${lane(hand)} .copy-selection`);saved=JSON.parse((await download())['project.json']);
     assert.deepEqual(saved.scripts,expected.scripts);await click('#undo');
-    // Main lock reports the reason beside the action; it does not silently fail.
+    // A locked displayed axis stays intact while the other axes still copy.
     await click('#lockMain');
-    assert.equal(await evaluate("document.querySelector('#applySection').disabled"),true);
-    assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/Main L0 is locked/);
-    assert.equal(await evaluate(`document.querySelector('${lane(hand)} .copy-selection').disabled`),true);
+    assert.equal(await evaluate("document.querySelector('#applySection').disabled"),false);
+    assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/Locked: L0/);
+    await click('#applySection');saved=JSON.parse((await download())['project.json']);
+    assert.deepEqual(saved.scripts.L0,original.scripts.L0);
+    for(const axis of ['L1','L2','R0','R1','R2'])assert.deepEqual(saved.scripts[axis],expected.scripts[axis]);
+    await click('#undo');
+    assert.equal(JSON.parse((await download())['project.json']).timeline.main.L0.locked,true);
     await click('#lockMain');
+    // Main R2 is only the displayed output; it must not redirect a row's L0.
+    await select('#axis','R2');await click('#promoteTrack');saved=JSON.parse((await download())['project.json']);
+    const wholeExpected=structuredClone(original);copyTrackToMain(wholeExpected,track,{whole:true});
+    assert.deepEqual(saved.scripts,wholeExpected.scripts);
+    await click('#undo');await select('#axis','L0');
     // The last pose marks the START of the last frame; its script holds through
     // the clip duration. Selecting that held tail must not disable copying.
     const end=roundEven(original.metadata.duration_ms);
@@ -80,7 +91,7 @@ try{
     await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:drag.end,y:drag.y,button:'left',buttons:0,clickCount:1,modifiers:8});
     assert.equal(await evaluate("Number(document.querySelector('#selectionEnd').value)*1000"),end);
     assert.equal(await evaluate(`document.querySelector('${lane(hand)} .copy-selection').disabled`),false);
-    const tailExpected=structuredClone(original);applyTrack(tailExpected,track,'L0',{start:9500,end,blendMs:200});
+    const tailExpected=structuredClone(original);copyTrackToMain(tailExpected,track,{start:9500,end,blendMs:200});
     await click(`${lane(hand)} .copy-selection`);saved=JSON.parse((await download())['project.json']);
     assert.deepEqual(saved.scripts,tailExpected.scripts);await click('#undo');
     await click('#selectMain');await click('#applySection');saved=JSON.parse((await download())['project.json']);
@@ -88,7 +99,7 @@ try{
     await select('#join','cut');await click('#applySection');saved=JSON.parse((await download())['project.json']);
     assert.equal(saved.scripts.L0.actions.at(-1).at,end);
     assert.equal(saved.scripts.L0.actions.at(-1).pos,roundEven(curveValue(track.script.actions,end)));
-    for(const axis of ['L1','L2','R0','R1','R2'])assert.deepEqual(saved.scripts[axis],original.scripts[axis]);
+    for(const axis of ['L1','L2','R0','R1','R2'])assert.equal(saved.scripts[axis].actions.at(-1).pos,roundEven(curveValue(sourceProject(original,track.source).scripts[axis].actions,end)));
     await click('#undo');await select('#join','blend');
     await click('#selectTrack');assert.equal(await evaluate("Number(document.querySelector('#selectionEnd').value)*1000"),end);
     await select('#selectionStart','9.5');
@@ -103,7 +114,7 @@ try{
     await click('#applySection');saved=JSON.parse((await download())['project.json']);assert.deepEqual(saved.scripts,tailExpected.scripts);
     await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});await pause(100);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
-    report.checks.push('Selection retains its source when main is active; toolbar and row copies match expected blend on L0 only; lock, empty-range feedback, Undo, offline roundtrip and narrow layout');
-    report.checks.push('Shift-drag to the right edge, typed clip-end selection and Select track range include the final held frame; toolbar and row buttons copy to L0, cut retains the exact final source value, other axes stay unchanged and the end selection survives offline re-export');
+    report.checks.push('Selection retains its source when main is active; toolbar and row copies update all six matching axes; per-axis locks, whole-track replacement with Main R2 displayed, Undo, offline roundtrip and narrow layout');
+    report.checks.push('Shift-drag to the right edge, typed clip-end selection and Select track range include the final held frame; toolbar and row buttons copy all axes, cut retains each final source value and the end selection survives offline re-export');
     assert.deepEqual(report.errors,[]);fs.writeFileSync(output+'/report.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{ws?.close();chrome.kill('SIGTERM');}

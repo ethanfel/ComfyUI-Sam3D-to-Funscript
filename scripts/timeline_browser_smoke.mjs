@@ -6,7 +6,7 @@ import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {SUFFIX, evaluate as valueAt} from "../assets/curve.mjs";
-import {initializeTimeline,applyTrack} from "../assets/timeline.mjs";
+import {initializeTimeline,copyTrackToMain} from "../assets/timeline.mjs";
 
 const base=process.argv[2],id=process.argv[3],output=path.resolve(process.argv[4]||"development/timeline-browser");
 assert.ok(base&&id,"Pass base URL and an existing project ID");fs.mkdirSync(output,{recursive:true});
@@ -71,7 +71,7 @@ try{
     const selection=await evaluate("[Number(document.querySelector('#selectionStart').value)*1000,Number(document.querySelector('#selectionEnd').value)*1000]");
     assert.ok(Math.abs(selection[0]-1100)<=1&&Math.abs(selection[1]-2500)<=1);
     await click("#applySection");
-    const expected=structuredClone(saved);applyTrack(expected,expected.timeline.tracks[1],"L0",{start:selection[0],end:selection[1],blendMs:200});
+    const expected=structuredClone(saved);copyTrackToMain(expected,expected.timeline.tracks[1],{start:selection[0],end:selection[1],blendMs:200});
     saved=JSON.parse((await download())["project.json"]);assert.deepEqual(saved.scripts,expected.scripts);
     await click("#selectMain");assert.equal(await evaluate("document.querySelector('#autoFit').disabled"),true);
     assert.equal(await evaluate("document.querySelector('#rebuild').disabled"),true);
@@ -95,7 +95,7 @@ try{
     await select(`${lane(2)} .track-source`,"project_2");await select(`${lane(2)} .track-axis`,"L0");
     await select("#selectionStart","3.1");await select("#selectionEnd","4.2");await select("#join","cut");await click("#applySection");
     const withCut=JSON.parse((await download())["project.json"]);
-    applyTrack(expected,expected.timeline.tracks[2],"L0",{start:3100,end:4200,method:"cut"});
+    copyTrackToMain(expected,expected.timeline.tracks[2],{start:3100,end:4200,method:"cut"});
     assert.deepEqual(withCut.scripts,expected.scripts);
     await click(`${lane(0)} .track-select`);await click("#promoteTrack");
     assert.deepEqual(JSON.parse((await download())["project.json"]).scripts.L0,original.timeline.tracks[0].script);

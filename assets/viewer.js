@@ -1,5 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack, selectionTrack, selectionProblem} from "./timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
@@ -171,18 +171,22 @@ function selectLane(id) {
 }
 function selectionControls() {
     [$("selectionStart").value,$("selectionEnd").value]=project.timeline.selection.map(t=>(t/1000).toFixed(3));
-    const track=selectionTrack(project),axis=$("axis").value,problem=selectionProblem(project,track,axis);
-    $("applySection").disabled=!!problem;$("applySection").title=problem||`Copy only ${track.axis} from ${track.name} into main ${axis}`;
-    $("promoteTrack").disabled=!!selectionProblem(project,track,axis,true);
-    $("promoteTrack").title=selectionProblem(project,track,axis,true)||`Replace only main ${axis} with this source's ${track.axis}`;
+    const track=selectionTrack(project),problem=selectionProblem(project,track);
+    const describe=source=>{
+        const axes=trackCopyAxes(project,source);
+        return `${axes.updated.join(", ")} → matching main axes${axes.locked.length?` · Locked: ${axes.locked.join(", ")} (kept)`:""}`;
+    };
+    $("applySection").disabled=!!problem;$("applySection").title=problem||describe(track);
+    $("promoteTrack").disabled=!!selectionProblem(project,track,true);
+    $("promoteTrack").title=selectionProblem(project,track,true)||describe(track);
     $("selectTrack").disabled=!track;
-    $("selectionStatus").textContent=problem||(track?`Copy source: ${track.name} · ${track.axis} → Main ${axis} · one axis only`:"");
+    $("selectionStatus").textContent=problem||(track?`Copy source: ${track.name} · ${describe(track)}`:"");
     const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
     for(const row of $("tracks").children){
         row.classList.toggle("copy-source",row.dataset.track===track?.id);
         const source=tracks.get(row.dataset.track),button=row.querySelector(".copy-selection");
-        const reason=selectionProblem(project,source,axis);button.disabled=!!reason;button.title=reason||`Copy this row's ${source.axis} into main ${axis}`;
-        const label=`Copy selection → ${axis}`;if(button.textContent!==label)button.textContent=label;
+        const reason=selectionProblem(project,source);button.disabled=!!reason;button.title=reason||describe(source);
+        const label="Copy selection · all axes";if(button.textContent!==label)button.textContent=label;
     }
 }
 function setSelection(start,end) {
@@ -541,16 +545,16 @@ for(const id of ["selectionStart","selectionEnd"])$(id).onchange=()=>{
 $("selectTrack").onclick=()=>{const track=project&&selectionTrack(project);if(track)setSelection(...trackCoverage(project,track));};
 $("join").onchange=()=>$("blendMs").disabled=$("join").value!=="blend";
 function applySelection(whole){
-    if(!project)return;const track=selectionTrack(project),problem=selectionProblem(project,track,$("axis").value,whole);
+    if(!project)return;const track=selectionTrack(project),problem=selectionProblem(project,track,whole);
     if(problem){$("selectionStatus").textContent=problem;return;}
     try{
         const [start,end]=project.timeline.selection,blendMs=$("blendMs").valueAsNumber;
         // Validate on a small copy before recording history or changing the main.
-        const preview={...project,scripts:{...project.scripts},metrics:{...project.metrics},timeline:{...project.timeline,main:structuredClone(project.timeline.main)}};
-        applyTrack(preview,track,$("axis").value,{start,end,method:$("join").value,blendMs,whole});
+        const preview={...project,timeline:{...project.timeline}};
+        const axes=copyTrackToMain(preview,track,{start,end,method:$("join").value,blendMs,whole});
         record();project.scripts=preview.scripts;project.metrics=preview.metrics;project.timeline.main=preview.timeline.main;
-        project.timeline.main[$("axis").value].edited=true;dirty(false);controls();render();
-        const message=`${whole?"Whole track":"Selection"} copied: ${track.name} · ${track.axis} → Main ${$("axis").value}. Other axes unchanged. Undo restores the previous main.`;
+        dirty(false);controls();render();
+        const message=`${whole?"Whole track":"Selection"} copied: ${track.name} → Main ${axes.updated.join(", ")}.${axes.locked.length?` Locked axes kept: ${axes.locked.join(", ")}.`:""} Undo restores all copied axes.`;
         status(message);$("selectionStatus").textContent=message;
     }catch(error){status(error.message);$("selectionStatus").textContent=error.message;}
 }

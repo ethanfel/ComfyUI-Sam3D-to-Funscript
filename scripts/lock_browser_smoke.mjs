@@ -69,7 +69,8 @@ try{
     for(const selector of ['#invert','#autoFit','#rebuild'])assert.equal(await evaluate(`document.querySelector('${selector}').disabled`),true);
     await click(`${lane(0)} .track-select`);
     for(const selector of ['.track-source','.track-axis','.track-name','.remove-track'])assert.equal(await evaluate(`document.querySelector('${lane(0)} ${selector}').disabled`),true);
-    assert.equal(await evaluate("document.querySelector('#promoteTrack').disabled"),true,'Locked main rejects section replacement');
+    assert.equal(await evaluate("document.querySelector('#promoteTrack').disabled"),false,'Other main axes remain available while L0 is locked');
+    assert.match(await evaluate("document.querySelector('#promoteTrack').title"),/Locked: L0/);
     // Editing events on a locked canvas may seek, but must never move/add/delete actions.
     await evaluate(`(()=>{const canvas=document.querySelector('${lane(0)} canvas'),r=canvas.getBoundingClientRect();for(const type of ['pointerdown','pointermove','dblclick','contextmenu','pointerup'])canvas.dispatchEvent(new MouseEvent(type,{button:0,clientX:r.left+110,clientY:r.top+40,bubbles:true}));})()`);
     await evaluate('window.s3fFlush()');state=await(await fetch(endpoint)).json();
