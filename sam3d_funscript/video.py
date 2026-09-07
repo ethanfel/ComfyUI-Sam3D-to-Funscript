@@ -14,6 +14,7 @@ import numpy as np
 from .core import PoseSequence
 from .masks import MaskVideoReader, timestamp_seconds
 from .mouth import mouth_corners, mouth_regressor
+from .inference import predict_rgb
 
 CACHE_VERSION = 2
 
@@ -81,6 +82,9 @@ def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0,
     origin, previous, count = None, None, 0
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
+        # Bounded decoder parallelism, independent of the inference batch.
+        stream.thread_type = "AUTO"
+        stream.codec_context.thread_count = 4
         for frame in container.decode(stream):
             if frame.pts is None or frame.time_base is None:
                 raise ValueError("Video lacks presentation timestamps; remux it before extraction")
@@ -112,7 +116,6 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                   duration_seconds=0.0, max_frames=2000, rois_json="[[0,0,1,1]]",
                   batch_size=8, fov=0.0, use_cache=True, mask_video_range=None):
     # Imports stay here so the geometry/editor can run without ComfyUI or CUDA.
-    import torch
     import folder_paths
     import comfy.model_management
     from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
@@ -138,6 +141,7 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         return sequence
     started = time.perf_counter()
     model, regressor = None, None
+    performance = {"backend": "native_pose_only", "requested_batch_crops": int(batch_size)}
     rows, timestamps, segments = [], [], []
     images, batch_times = [], []
     batch_masks, mask_boxes = [], []
@@ -153,18 +157,17 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         predictions = {}
         if active:
             if model is None:
+                load_started = time.perf_counter()
                 model = SAM3DBody_Loader.execute(model_file).result[0]
                 regressor = mouth_regressor(model)
+                performance["model_load_seconds"] = time.perf_counter() - load_started
             bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
-            batch = torch.from_numpy(np.stack([images[i] for i in active]).astype(np.float32) / 255.0)
-            track_data = None
-            if mask_video_range is not None:
-                track_data = {"packed_masks": torch.from_numpy(np.stack([batch_masks[i] for i in active])[:, None])}
-            prediction = SAM3DBody_Predict.execute(model, batch, track_data=track_data, bboxes=bboxes,
-                run_hand_refinement=False, fov=fov, batch_size=batch_size).result[0]
-            if len(prediction["frames"]) != len(active):
+            prediction = predict_rgb(model, [images[i] for i in active], bboxes,
+                packed_masks=[batch_masks[i] for i in active] if mask_video_range is not None else None,
+                fov=fov, batch_size=batch_size, timings=performance)
+            if len(prediction) != len(active):
                 raise ValueError("SAM3D returned a different number of frames than the input batch")
-            predictions = dict(zip(active, prediction["frames"]))
+            predictions = dict(zip(active, prediction))
         for i in range(len(images)):
             points = np.full((people_count, 72, 3), np.nan, dtype=np.float32)
             pixels = np.full((people_count, 72, 2), np.nan, dtype=np.float32)
@@ -217,6 +220,7 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                 "duration_ms": duration, "analysed_start_ms": times[0], "analysed_end_ms": times[-1],
                 "timestamps": timestamps, "rois": rois, "cache_hit": False, "cache_path": str(cache),
                 "inference_seconds": time.perf_counter() - started, "sample_count": len(rows),
+                "performance": performance,
                 "settings": key, "units": "metres", "basis": "camera: X right, Y down, Z forward",
                 "extra_landmarks": {"70": "right_outer_mouth_corner", "71": "left_outer_mouth_corner"},
                 "warnings": ["Static ROI slots are not identity tracking. Inspect overlap, occlusion and subject changes.",
@@ -232,4 +236,9 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
     sequence = PoseSequence(times, np.stack([r[0] for r in rows]), np.stack([r[1] for r in rows]),
                             np.stack([r[2] for r in rows]), np.array(segments), metadata).validate()
     sequence.save(cache)
+    print(f"SAM3D Funscript: {len(rows)} samples in {time.perf_counter() - started:.2f}s; "
+          f"model load {performance.get('model_load_seconds', 0):.2f}s, "
+          f"crop preparation {performance.get('prepare_seconds', 0):.2f}s, "
+          f"native prediction/copy {performance.get('predict_seconds', 0):.2f}s; "
+          f"largest forward {performance.get('max_batch_crops', 0)} person crops", flush=True)
     return sequence

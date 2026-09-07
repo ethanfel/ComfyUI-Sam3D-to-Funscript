@@ -115,6 +115,17 @@ class NativeAdapterTests(unittest.TestCase):
         frames = list(video_frames(path, sample_fps=0, start_seconds=start, duration_seconds=duration))
         self.assertEqual([t["time_ms"] for _, t in frames], [100, 180, 240])
 
+    def test_parallel_decode_preserves_serial_pixels_pts_and_duration(self):
+        with av.open(str(self.path)) as container:
+            serial = [(frame.to_ndarray(format="rgb24"), frame.pts, frame.duration)
+                      for frame in container.decode(video=0)]
+        parallel = list(video_frames(self.path, sample_fps=0))
+        self.assertEqual(len(serial), len(parallel))
+        for (rgb, pts, duration), (decoded, timing) in zip(serial, parallel):
+            np.testing.assert_array_equal(decoded, rgb)
+            self.assertEqual(timing["pts"], pts)
+            self.assertEqual(timing["frame_duration_ms"], float(duration * Fraction(*timing["time_base"]) * 1000))
+
     def test_streaming_rejects_ignored_transforms_and_empty_ranges(self):
         video = FileVideo(self.path)
         video.get_dimensions = lambda: (32, 64)

@@ -33,7 +33,7 @@ class S3F_VideoPose:
             "duration_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "0 uses the remaining input video, bounded by its trim and the sample limit."}),
             "max_frames": ("INT", {"default": 2000, "min": 2, "max": 100000}),
             "rois_json": ("STRING", {"default": "[[0,0,1,1]]", "multiline": True, "tooltip": "Ordered static person crops: normalized [x,y,width,height]. Ignored when mask_video is connected."}),
-            "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
+            "batch_size": ("INT", {"default": 8, "min": 1, "max": 128, "tooltip": "Maximum person crops per model forward. Larger batches use more VRAM and buffered RGB RAM; CPU crop buffers stay bounded separately. Try 16–32 first; very large batches may not be faster. Cache hits skip inference."}),
             "fov": ("FLOAT", {"default": 0, "min": 0, "max": 179}),
             "use_cache": ("BOOLEAN", {"default": True}),
         }, "optional": {

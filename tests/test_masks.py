@@ -47,7 +47,7 @@ class MaskTests(unittest.TestCase):
         write_masks(self.mask, missing=(2, 3), size=(32, 32))
 
     def fake_native(self):
-        """Record the public predictor boundary; any unmasked fallback fails."""
+        """Record the RGB predictor boundary; any unmasked fallback fails."""
         state = {"loads": 0, "batches": []}
         class Loader:
             @classmethod
@@ -55,19 +55,19 @@ class MaskTests(unittest.TestCase):
                 state["loads"] += 1
                 return types.SimpleNamespace(result=[object()])
         class Predictor:
-            @classmethod
-            def execute(cls, model, batch, track_data=None, **kwargs):
-                assert track_data is not None
-                packed = track_data["packed_masks"]
-                masks = np.unpackbits(packed, axis=-1, bitorder="little")
-                assert masks.shape[:2] == (len(batch), 1)
-                assert masks.any(axis=(-1, -2)).all(), "Empty masks must not reach native full-frame fallback"
-                state["batches"].append(len(batch))
-                assert len(batch) <= kwargs["batch_size"]
-                data = payload(len(batch))
-                for i, people in enumerate(data["frames"]):
-                    people[0]["pred_cam_t"][0] = np.nonzero(masks[i, 0])[1].mean()
-                return types.SimpleNamespace(result=[data])
+            pass
+        def predict(model, batch, bboxes, packed_masks=None, **kwargs):
+            assert packed_masks is not None
+            assert all(frame.dtype == np.uint8 for frame in batch)
+            masks = np.unpackbits(np.stack(packed_masks)[:, None], axis=-1, bitorder="little")
+            assert masks.shape[:2] == (len(batch), 1)
+            assert masks.any(axis=(-1, -2)).all(), "Empty masks must not reach native full-frame fallback"
+            state["batches"].append(len(batch))
+            assert len(batch) <= kwargs["batch_size"]
+            data = payload(len(batch))
+            for i, people in enumerate(data["frames"]):
+                people[0]["pred_cam_t"][0] = np.nonzero(masks[i, 0])[1].mean()
+            return data["frames"]
         Predictor.__module__ = "comfy_extras.nodes_sam3d_body"
         modules = {name: types.ModuleType(name) for name in (
             "torch", "folder_paths", "comfy", "comfy.model_management", "comfy_extras", "comfy_extras.nodes_sam3d_body")}
@@ -79,7 +79,7 @@ class MaskTests(unittest.TestCase):
         native.SAM3DBody_Loader, native.SAM3DBody_Predict, native.__file__ = Loader, Predictor, __file__
         @contextmanager
         def mocked():
-            with patch.dict(sys.modules, modules), patch("sam3d_funscript.video.mouth_regressor", return_value=None):
+            with patch.dict(sys.modules, modules), patch("sam3d_funscript.video.mouth_regressor", return_value=None), patch("sam3d_funscript.video.predict_rgb", side_effect=predict):
                 yield
         return mocked(), state
 

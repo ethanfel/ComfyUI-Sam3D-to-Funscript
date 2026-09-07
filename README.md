@@ -23,6 +23,8 @@ Load [workflows/video_to_funscript.json](workflows/video_to_funscript.json) in C
 
 Core **Load Video → SAM3D Video → Cached Poses** preserves the original node's lower-RAM streaming behavior. **Load Video** supplies a lazy file reference; the inference node decodes selected frames in small batches. No **Get Video Components** node is needed. Optional core **Trim Video** can sit between them.
 
+The streaming extractor feeds uint8 frames directly into native SAM3D crop processing, bounds full-resolution working buffers separately from the GPU batch, and skips unused mesh-preview calculations. On the tested RTX 5090, repeated 128-frame runs were about **2× faster**, with batch-64 peak process RAM reduced from **10.4 GiB to 4.2 GiB**. Start with batch **32**, then try **64** if memory permits. Batch 128 provided little additional throughput on that clip. See [performance measurements and reproduction commands](docs/performance.md).
+
 Saved path-based canvas workflows migrate on opening: the extension adds **Load Video**, transfers the saved filename and keeps the existing inference settings and downstream connections. If the old filename was an absolute path outside ComfyUI's input directory, select/upload it through **Load Video**. API clients should use the updated [API example](workflows/video_to_funscript.api.json).
 
 The development server uses port **8197** and stores results under this repository's `development/output/`. Your regular ComfyUI uses its own configured output directory. A regular ComfyUI process already running before installation needs to reload custom nodes, normally by restarting it when its queue is idle.
