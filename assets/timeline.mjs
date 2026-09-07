@@ -1,4 +1,4 @@
-import {AXES, evaluate, roundEven, validateReference} from "./curve.mjs";
+import {AXES, evaluate, roundEven, validateReference, autoFitAxis, rebuildAxis} from "./curve.mjs";
 
 const geometryFields = ["points", "pixels", "times_ms", "segments"];
 const sourceFields = ["metadata", "config", "scripts", "metrics", "warnings", "valid", "raw", "processed", "orientation_hints", "anchor_indices", "references"];
@@ -24,6 +24,7 @@ export function initializeTimeline(project) {
     }
     for (const track of timeline.tracks) {
         if (!AXES.includes(track.axis) || !sourceProject(project, track.source).scripts[track.axis]) throw new Error("Unknown track axis");
+        if (track.window) windowProject(project, track.source, track.window);
         validateReference(track.script);
     }
     if (timeline.active !== "main" && !timeline.tracks.some(t => t.id === timeline.active)) timeline.active = "main";
@@ -49,12 +50,16 @@ export function sourceProject(project, id) {
     });
 }
 
+function nextTrackId(project) {
+    let n = 0;
+    while (project.timeline.tracks.some(t => t.id === `track_${n}`)) ++n;
+    return `track_${n}`;
+}
+
 export function newTrack(project, source, axis) {
     const timeline = project.timeline, data = sourceProject(project, source);
     if (!data.scripts[axis]) axis = Object.keys(data.scripts)[0];
-    let n = 0;
-    while (timeline.tracks.some(t => t.id === `track_${n}`)) ++n;
-    const track = {id: `track_${n}`, name: timeline.sources.find(s => s.id === source).label, source, axis,
+    const track = {id: nextTrackId(project), name: timeline.sources.find(s => s.id === source).label, source, axis,
         settings: copy(data.config.axis_settings[axis]), script: copy(data.scripts[axis])};
     timeline.tracks.push(track);
     return track;
@@ -66,12 +71,13 @@ export function assignTrack(project, track, source, axis) {
     track.source = source; track.axis = axis;
     track.settings = copy(data.config.axis_settings[axis]); track.script = copy(data.scripts[axis]);
     delete track.metrics;
+    delete track.window;
     // A reassigned lane needs a fresh auto-direction cache; other lanes retain theirs.
     contexts.get(project)?.delete(track);
 }
 
 export function trackProject(project, track) {
-    const source = sourceProject(project, track.source);
+    const source = windowProject(project, track.source, track.window);
     const data = cached(project, track, () => ({...source, config: {...source.config, axis_settings: {...source.config.axis_settings}}, scripts: {...source.scripts}, metrics: {}}));
     data.config.axis_settings[track.axis] = track.settings;
     data.scripts[track.axis] = track.script;
@@ -90,7 +96,7 @@ export function editProject(project, outputAxis, active = project.timeline.activ
 export function mainPoseProject(project, axis, time) {
     const main = project.timeline.main[axis], region = main.regions.find(r => time >= r.start && time < r.end);
     if (!region) return editProject(project, axis, "main");
-    const source = sourceProject(project, region.source);
+    const source = windowProject(project, region.source, region.window);
     const data = cached(project, region, () => ({...source, config: {...source.config,
         axis_settings: {...source.config.axis_settings, [region.axis]: region.settings}}}));
     data.config.axis_settings[region.axis] = region.settings;
@@ -108,8 +114,56 @@ export function restoreTimeline(project, state) {
 }
 
 export function trackCoverage(project, track) {
-    const source = sourceProject(project, track.source);
+    const source = windowProject(project, track.source, track.window);
     return [Math.ceil(source.times_ms[0]), Math.floor(source.times_ms.at(-1))];
+}
+
+function windowProject(project, sourceId, window) {
+    const source = sourceProject(project, sourceId);
+    if (!window) return source;
+    if (!Array.isArray(window) || window.length !== 2 || !window.every(Number.isFinite) || window[0] < 0 || window[1] <= window[0]) throw new Error("Select a nonempty time range for local fitting");
+    return cached(project, `window:${sourceId}:${window[0]}:${window[1]}`, () => {
+        const start = source.times_ms.findIndex(t => t >= window[0]);
+        let end = source.times_ms.findIndex(t => t > window[1]);
+        if (end < 0) end = source.times_ms.length;
+        if (start < 0 || end - start < 2) throw new Error("Select at least two analysed frames for local fitting");
+        const data = {...source, metadata: {...source.metadata, duration_ms: Math.min(window[1], source.metadata.duration_ms)}};
+        for (const key of [...geometryFields, "valid", "raw", "processed"]) data[key] = source[key]?.slice(start, end);
+        for (const key of ["mask_boxes", "timestamps"]) if (source.metadata[key]) data.metadata[key] = source.metadata[key].slice(start, end);
+        data.metadata.analysed_start_ms = data.times_ms[0]; data.metadata.analysed_end_ms = data.times_ms.at(-1);
+        data.orientation_hints = (source.orientation_hints || []).filter(h => h.end > start && h.start < end)
+            .map(h => ({...h, start: Math.max(0, h.start - start), end: Math.min(end, h.end) - start}));
+        // Subtract a local neutral from cached motion, never from the displayed
+        // pose coordinates. Each valid span has its own origin across cuts/gaps.
+        data.raw = data.raw.map(row => [...row]); data.processed = data.processed.map(row => [...row]);
+        let first = null;
+        for (let i = 0; i <= data.times_ms.length; ++i) {
+            const good = i < data.times_ms.length && data.valid[i];
+            const boundary = i > 0 && i < data.times_ms.length && (data.segments[i] !== data.segments[i - 1] || data.times_ms[i] - data.times_ms[i - 1] > source.config.max_gap_ms);
+            if (first !== null && (!good || boundary)) {
+                const origin = Array.from({length: 6}, (_, c) => {
+                    const values = data.processed.slice(first, i).map(row => row[c]).filter(Number.isFinite).sort((a, b) => a - b);
+                    return values.length ? (values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2 : 0;
+                });
+                for (const key of ["raw", "processed"]) for (let j = first; j < i; ++j) data[key][j] = data[key][j].map((v, c) => Number.isFinite(v) ? v - origin[c] : null);
+                first = null;
+            }
+            if (good && first === null) first = i;
+        }
+        return data;
+    });
+}
+
+export function fitSelectionTrack(project, track, window) {
+    const coverage = trackCoverage(project, track);
+    if (!Array.isArray(window) || window.length !== 2 || window[0] < coverage[0] || window[1] > coverage[1]) throw new Error(`Select within this track’s analysis: ${(coverage[0] / 1000).toFixed(3)}–${(coverage[1] / 1000).toFixed(3)} s`);
+    const source = windowProject(project, track.source, window), axis = track.axis;
+    const data = {...source, config: {...source.config, axis_settings: {...source.config.axis_settings, [axis]: copy(track.settings)}}};
+    // A local section has already excluded the unrelated large movements.
+    // Retain its complete filtered shape with 5–95 headroom, including peaks.
+    data.config.axis_settings[axis] = autoFitAxis(data, axis, true);
+    return {id: nextTrackId(project), name: `${track.name} · selection`, source: track.source, axis, window: [...window],
+        settings: data.config.axis_settings[axis], script: rebuildAxis(data, axis)};
 }
 
 // Blend inside the selection. Outside it, preserve the authored main exactly
@@ -160,6 +214,7 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
         return pieces;
     });
     regions.push({start, end, source: track.source, axis: track.axis, settings: copy(track.settings),
+        ...(track.window ? {window: [...track.window]} : {}),
         name: track.name, join: whole ? "whole" : method, blend_ms: whole || method === "cut" ? 0 : Math.min(blendMs, (end - start) / 2)});
     project.scripts[outputAxis] = script;
     main.regions = regions.sort((a, b) => a.start - b.start); main.assembled = true;

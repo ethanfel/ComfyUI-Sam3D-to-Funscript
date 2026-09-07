@@ -1,5 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
-import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, applyTrack} from "./timeline.mjs";
+import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -39,7 +39,8 @@ function controls() {
     for(const id of ["component","range","center","rebuild","autoFit"])$(id).disabled=assembled();
     $("editing").textContent=track?`Editing ${track.name} · ${axis}. Source edits are independent; apply a selection to update main.`:
         assembled()?"Editing main · assembled sections. Drag points to adjust joins, or calibrate a source track and apply it again.":`Editing main · ${axis}`;
-    for(const id of ["applySection","promoteTrack","selectTrack"])$(id).disabled=!track;
+    for(const id of ["applySection","promoteTrack","selectTrack","fitSelection"])$(id).disabled=!track;
+    if(track?.window)$("editing").textContent=`Editing ${track.name} · ${axis} · local origin within ${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s. Apply a selection to update main.`;
     const ref=project.references?.[$("axis").value];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
     document.querySelectorAll(".track").forEach(row=>row.classList.toggle("selected",row.dataset.track===project.timeline.active));
     $("selectMain").textContent=`Main · ${$("axis").value} · export`;
@@ -70,13 +71,14 @@ function buildTracks() {
         source.replaceChildren(...project.timeline.sources.map(s=>new Option(s.label,s.id)));source.value=track.source;
         const axis=document.createElement("select");axis.className="track-axis";axis.setAttribute("aria-label","Source axis");
         const axes=()=>{axis.replaceChildren(...Object.keys(sourceProject(project,source.value).scripts).map(a=>new Option(a,a)));axis.value=track.axis;};axes();
-        source.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);axes();project.timeline.active=track.id;dirty();controls();render();};
-        axis.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;dirty();controls();render();};
+        source.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};
+        axis.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};
         const remove=document.createElement("button");remove.className="remove-track";remove.textContent="Remove";
         remove.onclick=()=>{record();project.timeline.tracks=project.timeline.tracks.filter(t=>t!==track);if(project.timeline.active===track.id)project.timeline.active="main";buildTracks();dirty();controls();render();};
         const sourceLabel=document.createElement("label");sourceLabel.append("Project ",source);
         const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
         head.append(select,name,sourceLabel,axisLabel,remove);
+        if(track.window){const scope=document.createElement("span");scope.className="track-scope";scope.textContent=`${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s · local fit`;head.append(scope);}
         const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${track.name} motion timeline`);
         row.append(head,canvas);$("tracks").append(row);bindCurve(canvas,track.id);
     }
@@ -160,7 +162,7 @@ function drawRobot() {
     $("deviceReach").hidden=frame.reachable!==false;
     $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
-function drawCurve(canvas, data, axis, isMain, active) {
+function drawCurve(canvas, data, axis, isMain, active, window) {
     const [ctx,w,h]=resize(canvas), composed=isMain&&project.timeline.main[axis].assembled;
     const color=isMain?"#75e2ba":"#78baf7";
     const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
@@ -168,6 +170,10 @@ function drawCurve(canvas, data, axis, isMain, active) {
     for(const p of [0,25,50,75,100]){line(ctx,[42,y(p)],[w-12,y(p)],"#2a3c4c",1);ctx.fillText(p,9,y(p)+4);}
     for(let i=0;i<=5;i++){const t=bounds[0]+(bounds[1]-bounds[0])*i/5;ctx.fillText((t/1000).toFixed(1)+"s",x(t)-12,h-6);}
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
+    if(window){
+        ctx.fillStyle="#0c121977";ctx.fillRect(42,10,x(window[0])-42,h-30);ctx.fillRect(x(window[1]),10,w-12-x(window[1]),h-30);
+        ctx.beginPath();ctx.rect(x(window[0]),10,x(window[1])-x(window[0]),h-30);ctx.clip();
+    }
     for(let i=0;!composed&&i<data.times_ms.length;i++)if(!data.valid[i]||(i&&data.segments[i]!==data.segments[i-1])){
         ctx.fillStyle="#8c593b66";ctx.fillRect(x(data.times_ms[i]),15,Math.max(2,x(data.times_ms[i+1]||data.times_ms[i]+10)-x(data.times_ms[i])),h-40);
     }
@@ -221,7 +227,7 @@ function render() {
     const listRect=$("tracks").getBoundingClientRect();
     for(const track of project.timeline.tracks){
         const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
-        if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active);
+        if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);
     }
 }
 function frameCallback(_,metadata){currentMs=metadata.mediaTime*1000;render();video.requestVideoFrameCallback(frameCallback);}
@@ -259,8 +265,17 @@ $("rebuild").addEventListener("click",()=>{
 });
 $("autoFit").addEventListener("click",()=>{
     if(!project||assembled())return;
-    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
+    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis,!!track?.window);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
     catch(error){status(error.message);}
+});
+$("fitSelection").addEventListener("click",()=>{
+    if(!project)return;const track=selected().track;if(!track)return;
+    try{
+        const fitted=fitSelectionTrack(project,track,project.timeline.selection);
+        record();project.timeline.tracks.push(fitted);project.timeline.active=fitted.id;project.timeline.selection=trackCoverage(project,fitted);
+        buildTracks();selectionControls();controls();dirty();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});
+        status("Selection fitted as a new track · review its motion, then use selection in main");
+    }catch(error){status(error.message);}
 });
 $("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();dirty();render();});
 function pointer(event,canvas){const rect=canvas.getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}

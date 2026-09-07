@@ -169,11 +169,11 @@ export function motionForAxis(project, axis, component=project.config.axis_setti
     }
     cache[offset]=output;return output;
 }
-export function autoFitAxis(project,axis) {
+export function autoFitAxis(project,axis,includeExtremes=false) {
     const source=motionForAxis(project,axis,"auto").processed.filter(Number.isFinite);
     if(!source.length)throw new Error("No usable samples for automatic fitting");
-    const low=percentile(source,.05),high=percentile(source,.95),midpoint=(low+high)/2;
-    const range=Math.ceil(Math.max(axis.startsWith("R")?10:.04,(high-low)/.8,2*Math.abs(midpoint))*1e6)/1e6;
+    const low=percentile(source,includeExtremes?0:.05),high=percentile(source,includeExtremes?1:.95),midpoint=(low+high)/2;
+    const range=Math.ceil(Math.max(axis.startsWith("R")?10:.04,(high-low)/(includeExtremes ? .9 : .8),2*Math.abs(midpoint))*1e6)/1e6;
     const invert=project.config.axis_settings[axis].invert;
     const center=Math.floor(Math.max(0,Math.min(100,50-midpoint/range*100*(invert?-1:1)))*1000+.5)/1000;
     return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,range,center};

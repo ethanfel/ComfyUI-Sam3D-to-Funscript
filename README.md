@@ -188,6 +188,10 @@ Choose **Source component → Auto · 3D direction**, then **Regenerate selected
 
 **Auto fit selected axis** also fits range and center, preserving Invert and every other channel. It maps the central 90% of the projected samples approximately into positions 10–90. A minimum range of **0.04 m for translation / 10° for rotation** prevents tiny motion from being stretched across the whole script. Range may expand further to keep Center within 0–100. This gain is fitted across the analysed clip; a later large movement can compress earlier small strokes. Direction-only Auto plus a manual range is useful in that case. Both controls replace edits on the selected axis and support Undo. They work on existing projects and offline exports, without rerunning SAM3D.
 
+When one part of a clip has much smaller motion than the rest, select its time interval on a source row and click **Fit selection as track**. This creates a new row that fits direction and gain only within that interval. It subtracts a local neutral position from the cached motion in each uninterrupted span, so a large offset from the initial pose cannot force the range wider or clip the curve when the gain increases. The original source row and main stay intact. The new row shows its time window, shades the unused timeline, and snaps the selection inward to available pose timestamps. Review the result, then use **Use selection in main** with a blend or manual join.
+
+The section track maps its full filtered range into positions 5–95 to retain peak shape, keeping the 4 cm / 10° minimum range and the source row's Invert setting. **Auto fit selected axis** and regeneration remain local on that row. Reassigning its project or source axis resets it to that project's full curve. Window calibration and pose provenance survive Undo, removing the source row after insertion, saving, and offline reopening. This changes motion mapping; it does not improve or independently verify the underlying pose estimates. For example, the provided hand clip's later interval occupied about 8 points with a 41.9 cm whole-clip range; local fitting used about 5.9 cm and gave approximately 63 points over the central 90% of its estimated samples, with no filtered samples clipped.
+
 Automatic direction is a principal-component fit to short-window displacements of the filtered 3D signal, sampled uniformly at up to 30 Hz. Mean displacement removal keeps constant drift from selecting the direction; clipping large displacement-vector lengths reduces outlier influence. For short or constant-speed spans it falls back to position variation. Each uninterrupted valid span gets a fixed direction, so cuts and missing poses cannot influence the fit across a boundary. The target's neutral torso orientation resolves the sign; mixed motion without a dominant direction uses a torso axis. Older projects derive that orientation from their stored pose geometry. The displayed **directional share describes measured variation, not tracking confidence**. Camera movement, depth-estimation errors, changing motion direction within a span and nonrigid motion can still mislead the fit. Body orientation does not establish an interaction/contact axis.
 
 Auto is an independent mapping for the selected channel. Applying it to several translation channels selects the same dominant translation; likewise, rotation channels share one dominant rotation. The remaining channels keep their authored mappings. To enable automatic L0 direction and fitting directly in the ComfyUI motion node, use:
@@ -287,12 +291,14 @@ The multitrack suite covers geometry deduplication, different sampling, mismatch
 
 ```bash
 python -m unittest discover -s tests
-node --test tests/test_curve.mjs tests/test_migrate.mjs tests/test_invert.mjs tests/test_timeline.mjs
+node --test tests/test_curve.mjs tests/test_migrate.mjs tests/test_invert.mjs tests/test_timeline.mjs tests/test_local_fit.mjs
 S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/timeline_queue_smoke.py /absolute/path/to/72-point-poses.npz
 node scripts/timeline_browser_smoke.mjs http://127.0.0.1:8198 PROJECT_ID development/timeline-browser development/timeline-workflow.json
 ```
 
 The queue script writes the project ID and a local canvas fixture under `development/`. The browser fixture uses the supplied five-second side-view clip and verifies calibration, selection, blends/cuts, manual main edits, assignment, promotion, track removal, offline round trips and actual ComfyUI socket save/reload/queue behavior. Source video is hidden in saved QA screenshots.
+
+`tests/test_local_fit.mjs` covers a small late movement on a different axis, large neutral offsets, gaps/cuts, minimum gain, inversion, unchanged pose geometry, and window provenance. `scripts/local_fit_browser_smoke.mjs BASE PROJECT_ID OUTPUT_DIRECTORY` exercises the provided 13.6-second hand clip with mouth/right-hand source rows, including locally fitted playback, blends, Undo and offline export/reimport.
 
 The real-video runner is reproducible:
 
