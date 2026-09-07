@@ -194,13 +194,13 @@ The section track maps its full filtered range into positions 5–95 to retain p
 
 Automatic direction is a principal-component fit to short-window displacements of the filtered 3D signal, sampled uniformly at up to 30 Hz. Mean displacement removal keeps constant drift from selecting the direction; clipping large displacement-vector lengths reduces outlier influence. For short or constant-speed spans it falls back to position variation. Each uninterrupted valid span gets a fixed direction, so cuts and missing poses cannot influence the fit across a boundary. The target's neutral torso orientation resolves the sign; mixed motion without a dominant direction uses a torso axis. Older projects derive that orientation from their stored pose geometry. The displayed **directional share describes measured variation, not tracking confidence**. Camera movement, depth-estimation errors, changing motion direction within a span and nonrigid motion can still mislead the fit. Body orientation does not establish an interaction/contact axis.
 
-Auto is an independent mapping for the selected channel. Applying it to several translation channels selects the same dominant translation; likewise, rotation channels share one dominant rotation. The remaining channels keep their authored mappings. To enable automatic L0 direction and fitting directly in the ComfyUI motion node, use:
+**New motion projects default to Auto 3D direction and Auto fit for L0 stroke.** The other five channels keep their distinct component mappings. Existing saved projects keep their saved calibration. Applying Auto to several translation channels would select the same dominant translation; rotation channels likewise share one dominant rotation. The equivalent explicit configuration is:
 
 ```json
 {"axis_settings": {"L0": {"component": "auto", "auto_fit": true}}}
 ```
 
-Set `auto_fit` to `false` or omit it to keep a specified `range` and `center`.
+Set `auto_fit` to `false` to keep a specified `range` and `center`. Providing an explicit `component`, `range`, or `center` also disables automatic fitting unless `auto_fit: true` is explicitly supplied. An empty configuration uses the new L0 defaults.
 
 Simplification limits vertical interpolation error to `tolerance` position units relative to the rounded, filtered sample curve. Position quantization adds up to 0.5 units relative to the unrounded curve; no accuracy claim is made between unsampled video frames. The editor and export both use linear interpolation and matching rounding.
 
@@ -223,7 +223,17 @@ Copied sections are snapshots: later source edits, reassignment or removal leave
 
 Connected projects must reference the **same original video**. Different sampling rates, analysed trims and per-person masks can share that timeline; section copying is bounded by the selected source's first and last pose timestamps. Whole-track replacement holds its endpoint values outside the authored action range. There is no clip retiming or automatic detection of when to switch anchors. Shared pose arrays are stored once in the project, while each source keeps its own motion/calibration. Additional curves still consume memory; offscreen source rows skip drawing during playback.
 
-`project.json` and the offline viewer preserve source projects, track assignments, calibrations, authored curves, selection and section provenance. Only the six **main** axes produce `.funscript` files. To resume an assembled project through ComfyUI, connect **Load Funscript Project** to one preview input by itself. To start another composition, connect the original anchor projects together. Requeuing upstream branches creates a new export; download browser edits before replacing the open project.
+`project.json` and the offline viewer preserve source projects, track assignments, calibrations, authored curves, selection and section provenance. Only the six **main** axes produce `.funscript` files. To resume an assembled project through ComfyUI, connect **Load Funscript Project** to one preview input by itself. To start another composition, connect the original anchor projects together. Requeuing upstream branches creates a new export using the saved editor state for that preview node.
+
+### Locks and reruns
+
+Each source row and each main axis has a **Lock / Unlock** button. A locked track keeps its curve, calibration, source assignment and pose provenance through reruns, changed upstream motion, added inputs, browser reloads and project exports. It cannot be dragged, regenerated, inverted, reassigned or removed. A locked main rejects section insertion and whole-track replacement. You can still seek, select time, inspect a locked source, derive a new fitted row from it, or copy it into an unlocked main. **Unlock** is explicit; changing a lock clears Undo history so Undo cannot reach behind it and replace protected work.
+
+The ComfyUI editor automatically saves edits and locks under `output/sam3d_funscript/editor_sessions/`. Wait for **Edits and locks saved locally** after locking. The embedded and full editor share that state. The normal ComfyUI Run action flushes pending changes in both views before queuing, and the preview/export node runs again even when upstream poses are cached. Save the workflow to retain its preview session ID across restarts. Existing generated export folders remain unchanged; the next run writes a new export containing the saved main curves.
+
+Reruns refresh untouched tracks, preserve edited or locked tracks, and append rows for newly connected inputs. Copied main sections and selection-fitted tracks retain their source snapshots. Updated source versions appear in the Project selector; explicitly reassign an unlocked row to use one. Historical geometry is retained only while a track or main section uses it. Removing a connection does not delete authored rows. A different source video cannot replace a session containing locked tracks: use a new preview node for that video, or explicitly unlock the old tracks.
+
+If two editors write from different revisions, the older save is rejected with a visible message, preserving the saved state. Download that unsaved draft before reloading it. Offline viewers retain locks in the exported project but require **Download project + scripts** to persist further edits. API prompts without a workflow session remain independent exports; to use a session through the API, supply the preview node's saved `s3f_session` property in `extra_data.extra_pnginfo.workflow`.
 
 ### Playback and curve editing
 
@@ -237,10 +247,10 @@ Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1
 - Select main or a source row before changing its calibration; reference-script comparisons apply to main.
 - **Invert** immediately mirrors the selected curve as `100 − position`, including manually edited points. It also mirrors Center as `100 − center`, keeping the range, timestamps and existing clipping unchanged. No regeneration is needed; Undo restores the previous curve.
 - Adjust range, center or component, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
-- Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference.
+- Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference. Untouched tracks refresh; edited or locked rows retain their curves. To adopt the new motion on an authored row, unlock it and select the updated source in its Project selector.
 - **Download project + scripts** saves a ZIP containing all active axes, `project.json`, and a self-contained `viewer.html` with the selected device and current edits.
 
-Browser edits remain in memory until downloaded. They do not silently overwrite the node's original exports. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Node exports also include this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI.
+ComfyUI session edits are saved locally; standalone browser edits need downloading. Original export folders are preserved. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Node exports also include this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI.
 
 If an older Invert operation already flattened a curve, use Undo to recover the earlier curve, or **Auto fit selected axis** to rebuild it from the cached motion. Mirroring alone cannot recover samples already clipped in the saved actions.
 
@@ -346,3 +356,5 @@ The evidence and ecosystem comparison are in [the research blueprint](research/S
 This project is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`). See [LICENSE](LICENSE).
 
 Third-party dependencies and model weights retain their respective licenses.
+
+Lock regression checks: `tests/test_editor.py` covers default Auto/manual overrides, immutable locked source revisions, unchanged reruns, disconnections, incompatible video protection, restart persistence, stale-save rejection and exact exported actions. `scripts/lock_browser_smoke.mjs BASE MULTITRACK_PROJECT_ID OUTPUT_DIRECTORY` tests UI locks, actual Comfy execution, full/embedded editor synchronization, repeated reruns and offline locks. It uses the cached three-anchor fixture in `development/timeline-workflow.json` produced by the timeline queue smoke script.

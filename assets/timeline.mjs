@@ -66,6 +66,7 @@ export function newTrack(project, source, axis) {
 }
 
 export function assignTrack(project, track, source, axis) {
+    if (track.locked) throw new Error("Unlock this track before changing its source or axis");
     const data = sourceProject(project, source);
     if (!data.scripts[axis]) axis = Object.keys(data.scripts)[0];
     track.source = source; track.axis = axis;
@@ -201,6 +202,7 @@ export function spliceActions(main, source, start, end, method = "blend", blendM
 
 export function applyTrack(project, track, outputAxis, {start, end, method = "blend", blendMs = 200, whole = false} = {}) {
     const main = project.timeline.main[outputAxis], duration = roundEven(project.metadata.duration_ms);
+    if (main.locked) throw new Error("Unlock the main track before replacing its curve");
     const coverage = trackCoverage(project, track);
     if (!whole && (start < coverage[0] || end > coverage[1])) throw new Error(`Select within this track’s analysis: ${(coverage[0] / 1000).toFixed(3)}–${(coverage[1] / 1000).toFixed(3)} s`);
     const script = whole ? copy(track.script) : {...project.scripts[outputAxis], actions:

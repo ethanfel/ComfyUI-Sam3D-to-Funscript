@@ -135,7 +135,7 @@ class S3F_BuildMotion:
             "smoothing_ms": ("FLOAT", {"default": 80, "min": 0, "max": 2000}),
             "enabled_axes": ("STRING", {"default": "L0,L1,L2,R0,R1,R2"}),
             "settings_json": ("STRING", {"default": "{}", "multiline": True,
-                "tooltip": "Optional max_gap_ms, neutral_window_ms, tolerance and axis_settings. Use {\"axis_settings\":{\"L0\":{\"component\":\"auto\",\"auto_fit\":true}}} for automatic stroke direction and range. Translation ranges in metres; rotations in degrees."}),
+                "tooltip": "Optional max_gap_ms, neutral_window_ms, tolerance and axis_settings. L0 defaults to automatic stroke direction and range. Explicit component/range/center keeps manual calibration unless auto_fit is true. Translation ranges in metres; rotations in degrees."}),
         }, "optional": {
             "target_anchor_override": ("S3F_ANCHOR", {"tooltip": "Connect Detailed Anchor Override to replace target_anchor with a specific landmark."}),
             "reference_anchor_override": ("S3F_ANCHOR", {"tooltip": "Connect Detailed Anchor Override to replace reference_anchor. Ignored when reference_person is -1."}),
@@ -190,7 +190,8 @@ class S3F_LoadProject:
 class S3F_PreviewExport:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"filename": ("STRING", {"default": "motion"})}, "optional": ProjectInputs()}
+        return {"required": {"filename": ("STRING", {"default": "motion"})}, "optional": ProjectInputs(),
+                "hidden": {"unique_id": "UNIQUE_ID", "extra_pnginfo": "EXTRA_PNGINFO"}}
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("project_path",)
@@ -198,11 +199,24 @@ class S3F_PreviewExport:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
 
-    def run(self, project=None, filename="motion", **projects):
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Editor changes live outside the graph's cached upstream pose inputs.
+        return float("nan")
+
+    def run(self, project=None, filename="motion", unique_id=None, extra_pnginfo=None, **projects):
         if project is not None:
             projects["project"] = project
         root = Path(folder_paths.get_output_directory()) / "sam3d_funscript"
-        path = export_project(combine_projects(projects), root, filename)
+        from .sam3d_funscript.editor import EditorStore
+        combined = combine_projects(projects)
+        workflow = (extra_pnginfo or {}).get("workflow", {})
+        node = next((n for n in workflow.get("nodes", []) if str(n["id"]) == str(unique_id)), {})
+        session = node.get("properties", {}).get("s3f_session")
+        if session:
+            path, _ = EditorStore(root).export(session, combined, lambda data: export_project(data, root, filename))
+        else:
+            path = export_project(combined, root, filename)
         return {"ui": {"s3f_project": [path.parent.name], "text": [str(path)]}, "result": (str(path),)}
 
 

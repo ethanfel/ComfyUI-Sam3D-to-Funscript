@@ -1,0 +1,112 @@
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from test_core import fixture
+from sam3d_funscript.core import build_project, default_config, export_project
+from sam3d_funscript.timeline import combine_projects
+from sam3d_funscript.editor import initialize, merge_projects, EditorStore, Conflict
+
+
+class EditorTests(unittest.TestCase):
+    def setUp(self):
+        sequence = fixture(72)
+        self.mouth = build_project(sequence, {'target_anchor': 'mouth'})
+        self.hand = build_project(sequence, {'target_anchor': 'right_hand'})
+        self.initial = initialize(copy.deepcopy(self.mouth))
+
+    def test_auto_default_and_explicit_manual_calibration(self):
+        self.assertEqual(default_config()['axis_settings']['L0']['component'], 'auto')
+        self.assertTrue(self.mouth['config']['axis_settings']['L0']['auto_fit'])
+        for i, axis in enumerate(('L1', 'L2', 'R0', 'R1', 'R2'), 1):
+            self.assertEqual(self.mouth['config']['axis_settings'][axis], default_config()['axis_settings'][axis])
+            self.assertEqual(default_config()['axis_settings'][axis]['component'], i % 3)
+        for override in ({'range': .3}, {'component': 1}, {'center': 60}):
+            config = build_project(fixture(), {'axis_settings': {'L0': override}})['config']['axis_settings']['L0']
+            self.assertFalse(config['auto_fit'])
+            for key, value in override.items(): self.assertEqual(config[key], value)
+
+    def test_locked_main_and_source_survive_changed_geometry_and_new_input(self):
+        previous = self.initial
+        track = previous['timeline']['tracks'][0]
+        track.update(locked=True, window=[200, 1800])
+        track['script']['actions'] = [{'at': 220, 'pos': 17}, {'at': 1780, 'pos': 89}]
+        track['settings'].update(invert=True, center=37, range=.053)
+        previous['timeline']['main']['L0'].update(locked=True, assembled=True, regions=[
+            dict(source='project_0', axis='L0', start=200, end=1800, window=[200, 1800], settings=copy.deepcopy(track['settings']))])
+        previous['scripts']['L0']['actions'] = [{'at': 0, 'pos': 28}, {'at': 2000, 'pos': 66}]
+        before = json.dumps(previous)
+        changed = copy.deepcopy(self.mouth)
+        changed['points'][0][0][0][0] += 42
+        changed['scripts']['L0']['actions'][0]['pos'] = 1
+        incoming = combine_projects({'project_0': changed, 'project_1': self.hand})
+        merged = merge_projects(previous, incoming)
+        self.assertEqual(json.dumps(previous), before, 'Do not mutate the saved draft while preparing a rerun')
+        self.assertEqual(merged['timeline']['tracks'][0], track)
+        self.assertEqual(merged['timeline']['main']['L0'], previous['timeline']['main']['L0'])
+        self.assertEqual(merged['scripts']['L0'], previous['scripts']['L0'])
+        self.assertEqual(merged['config']['axis_settings']['L0'], previous['config']['axis_settings']['L0'])
+        self.assertEqual(merged['points'], previous['points'])
+        self.assertEqual(len(merged['timeline']['tracks']), 2)
+        self.assertEqual(merged['timeline']['tracks'][1]['source'], 'project_1')
+        self.assertEqual(len(merged['timeline']['sources']), 3)
+        self.assertEqual(merge_projects(merged, incoming), merged, 'Identical reruns must not add tracks or source revisions')
+        disconnected = merge_projects(merged, self.hand)
+        self.assertEqual(disconnected['timeline']['tracks'][0], track)
+        self.assertEqual(disconnected['scripts']['L0'], previous['scripts']['L0'])
+
+    def test_untouched_refreshes_but_edited_and_deleted_lanes_stay_authored(self):
+        incoming = copy.deepcopy(self.mouth)
+        incoming['scripts']['L0']['actions'][0]['pos'] = 3
+        merged = merge_projects(self.initial, incoming)
+        self.assertEqual(merged['scripts']['L0'], incoming['scripts']['L0'])
+        self.assertEqual(merged['timeline']['tracks'][0]['script'], incoming['scripts']['L0'])
+        self.initial['timeline']['tracks'][0]['edited'] = True
+        self.initial['timeline']['main']['L0']['edited'] = True
+        merged = merge_projects(self.initial, incoming)
+        self.assertEqual(merged['timeline']['tracks'], self.initial['timeline']['tracks'])
+        self.assertEqual(merged['scripts']['L0'], self.initial['scripts']['L0'])
+        self.initial['timeline']['tracks'] = []
+        self.assertEqual(merge_projects(self.initial, incoming)['timeline']['tracks'], [])
+
+    def test_other_video_cannot_replace_any_locked_lane(self):
+        incoming = copy.deepcopy(self.mouth)
+        incoming['metadata']['source']['path'] = 'different.mp4'
+        for target in (self.initial['timeline']['tracks'][0], self.initial['timeline']['main']['R2']):
+            target['locked'] = True
+            with self.assertRaisesRegex(ValueError, 'locked tracks from another video'):
+                merge_projects(self.initial, incoming)
+            target['locked'] = False
+        self.assertEqual(merge_projects(self.initial, incoming)['metadata'], incoming['metadata'])
+
+    def test_browser_roundtrip_does_not_change_video_or_create_source_versions(self):
+        self.initial['metadata']['source']['mtime_ns'] = 1780595540152825100
+        self.initial['timeline']['sources'][0]['data']['metadata']['source']['mtime_ns'] = 1780595540152825100
+        self.initial['timeline']['tracks'][0]['locked'] = True
+        browser = copy.deepcopy(self.initial)
+        browser['metadata']['source']['mtime_ns'] = int(float(1780595540152825100))
+        data = browser['timeline']['sources'][0]['data']
+        data['metadata']['source']['mtime_ns'] = int(float(1780595540152825100))
+        data['config']['smoothing_ms'] = int(data['config']['smoothing_ms'])
+        merged = merge_projects(browser, self.initial)
+        self.assertEqual(len(merged['timeline']['sources']), 1)
+        self.assertEqual(merged['timeline']['tracks'], browser['timeline']['tracks'])
+
+    def test_store_restart_conflicts_and_actual_export(self):
+        session = 'a' * 32
+        with tempfile.TemporaryDirectory() as root:
+            store = EditorStore(root)
+            self.initial['timeline']['main']['L0']['locked'] = True
+            self.initial['scripts']['L0']['actions'] = [{'at': 0, 'pos': 12}, {'at': 1900, 'pos': 88}]
+            store.save(session, self.initial, 0)
+            with self.assertRaises(Conflict): store.save(session, self.mouth, 0)
+            restarted = EditorStore(root)
+            path, revision = restarted.export(session, self.hand, lambda p: export_project(p, root, 'locked'))
+            self.assertEqual(revision, 2)
+            self.assertEqual(json.loads((path.parent / 'locked.funscript').read_text()), self.initial['scripts']['L0'])
+            self.assertTrue(json.loads(path.read_text())['timeline']['main']['L0']['locked'])
+            self.assertIn('id="lockMain"', (path.parent / 'viewer.html').read_text())
+            with self.assertRaises(ValueError): store.read('../elsewhere')
+            with self.assertRaises(Conflict): store.save(session, self.initial, 1)

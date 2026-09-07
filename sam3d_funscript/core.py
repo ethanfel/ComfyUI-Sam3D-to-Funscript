@@ -147,8 +147,8 @@ def default_config():
             "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 80.0,
             "max_gap_ms": 250.0, "neutral_window_ms": 500.0, "tolerance": 0.75,
             "enabled_axes": list(AXES), "axis_settings": {
-                axis: {"component": i % 3, "range": 0.2 if i < 3 else 60.0,
-                       "center": 50, "invert": False, "auto_fit": False} for i, axis in enumerate(AXES)}}
+                axis: {"component": "auto" if i == 0 else i % 3, "range": 0.2 if i < 3 else 60.0,
+                       "center": 50, "invert": False, "auto_fit": i == 0} for i, axis in enumerate(AXES)}}
 
 
 def build_project(sequence, overrides=None):
@@ -162,6 +162,9 @@ def build_project(sequence, overrides=None):
     for axis, values in overrides.get("axis_settings", {}).items():
         if axis not in AXES or set(values) - set(config["axis_settings"][axis]):
             raise ValueError(f"Unknown axis or settings for {axis}")
+        # Explicit calibration remains manual unless fitting is explicitly requested.
+        if "auto_fit" not in values and any(k in values for k in ("component", "range", "center")):
+            config["axis_settings"][axis]["auto_fit"] = False
         config["axis_settings"][axis].update(values)
     if not config["enabled_axes"] or len(set(config["enabled_axes"])) != len(config["enabled_axes"]) or set(config["enabled_axes"]) - set(AXES):
         raise ValueError("enabled_axes must be a nonempty unique list of L0,L1,L2,R0,R1,R2")

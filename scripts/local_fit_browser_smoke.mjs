@@ -38,7 +38,7 @@ try{
     async function file(selector,file){const doc=await call("DOM.getDocument"),input=await call("DOM.querySelector",{nodeId:doc.root.nodeId,selector});await call("DOM.setFileInputFiles",{nodeId:input.nodeId,files:[path.resolve(file)]});}
     async function download(){const folder=fs.mkdtempSync(path.join(downloads,"export-"));await call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:folder});await click("#save");let name;await until(()=>{name=fs.readdirSync(folder).find(f=>f.endsWith(".zip"));return name;},"ZIP download");return unzip(path.join(folder,name));}
     const original=await(await fetch(`${base}/sam3d_funscript/projects/${id}`)).json();initializeTimeline(original);
-    const source=original.timeline.tracks[1],fitted=fitSelectionTrack(original,source,[9500,13596]);
+    const source=original.timeline.tracks[1],fitted={...fitSelectionTrack(original,source,[9500,13596]),edited:true};
     await call("Runtime.enable");await call("Page.enable");await call("Network.enable");
     await call("Emulation.setDeviceMetricsOverride",{width:1500,height:1260,deviceScaleFactor:1,mobile:false});
     await call("Page.navigate",{url:`${base}/sam3d_funscript/assets/viewer.html?project=${id}`});
@@ -65,7 +65,7 @@ try{
     report.checks.push("The real hand interval fits at about 5.9 cm instead of 41.9 cm, without clipping; local fitting, inversion and refitting preserve the original tracks and main");
     await click("#applySection");saved=JSON.parse((await download())["project.json"]);
     const expected=structuredClone(original);expected.timeline.tracks.push(fitted);
-    const [start,end]=trackCoverage(original,fitted);applyTrack(expected,fitted,"L0",{start,end,blendMs:200});
+    const [start,end]=trackCoverage(original,fitted);applyTrack(expected,fitted,"L0",{start,end,blendMs:200});expected.timeline.main.L0.edited=true;
     assert.deepEqual(saved.scripts,expected.scripts);assert.deepEqual(saved.timeline.main,expected.timeline.main);
     await click("#selectMain");
     await evaluate("document.querySelector('#video').currentTime=10.285;document.querySelector('#video').muted=true;document.querySelector('#video').play()");
