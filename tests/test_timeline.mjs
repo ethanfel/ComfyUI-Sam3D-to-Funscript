@@ -147,8 +147,11 @@ test("Dynamic sockets preserve connected IDs and converted widgets through disco
     assert.equal(node.inputs[3].name,"project_2");assert.equal(node.inputs[3].link,12);
     const old=JSON.stringify(node.inputs);syncProjectInputs(node);assert.equal(JSON.stringify(node.inputs),old);
     node.inputs.at(-2).link=null;syncProjectInputs(node);assert.equal(node.inputs.at(-1).name,"project_149");
-    const graph={nodes:[{type:"S3F_PreviewExport",inputs:[{name:"project",link:9}]}]};migrateProjectInputs(graph);
+    const graph={nodes:[{type:"S3F_PreviewExport",inputs:[{name:"project",link:9}]}],
+        definitions:{subgraphs:[{nodes:[{type:"S3F_StandaloneExport",inputs:[{name:"project",link:12}]}]}]}};
+    migrateProjectInputs(graph);
     assert.deepEqual(graph.nodes[0].inputs,[{name:"project_0",link:9}]);
+    assert.deepEqual(graph.definitions.subgraphs[0].nodes[0].inputs,[{name:"project_0",link:12}]);
 });
 
 for(const file of process.argv.slice(2)){

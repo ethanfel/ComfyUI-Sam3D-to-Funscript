@@ -220,6 +220,19 @@ class S3F_PreviewExport:
         return {"ui": {"s3f_project": [path.parent.name], "text": [str(path)]}, "result": (str(path),)}
 
 
+class S3F_StandaloneExport(S3F_PreviewExport):
+    """Same authoring/export path, with a compact node and a dedicated editor tab."""
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("project_path", "viewer_path")
+
+    def run(self, **kwargs):
+        output = super().run(**kwargs)
+        path = Path(output["result"][0]).with_name("viewer.html")
+        output["result"] = (*output["result"], str(path))
+        return output
+
+
 class S3F_CompareReference:
     @classmethod
     def INPUT_TYPES(cls):
@@ -246,11 +259,12 @@ class S3F_CompareReference:
         return output, json.dumps(report, indent=2)
 
 
-NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_CompareReference)}
+NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_StandaloneExport, S3F_CompareReference)}
 NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_VideoPose": "SAM3D Video → Cached Poses", "S3F_LoadPoseCache": "Load SAM3D Pose Cache",
     "S3F_BuildMotion": "Poses → Multi-axis Motion", "S3F_LoadProject": "Load Funscript Project",
     "S3F_PreviewExport": "Preview & Export Funscripts",
+    "S3F_StandaloneExport": "Motion Studio · Standalone",
     "S3F_CompareReference": "Compare Reference Funscript",
     "S3F_CorePoseAdapter": "Core SAM3D → Funscript Poses",
     "S3F_AnchorOverride": "Detailed Anchor Override",

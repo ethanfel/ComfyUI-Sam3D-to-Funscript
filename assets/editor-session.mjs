@@ -11,6 +11,7 @@ export function editorSession({install, snapshot, status}) {
     const endpoint = `../editors/${encodeURIComponent(session)}`;
     let revision = 0, pending = false, timer, saving, failure, output = params.get('project');
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(`s3f-editor-${session}`) : null;
+    const editor = Array.from(crypto.getRandomValues(new Uint8Array(16)), b=>b.toString(16).padStart(2,'0')).join('');
     async function read() {
         const response = await fetch(endpoint, {cache: 'no-store'});
         if (!response.ok) throw new Error(await response.text());
@@ -46,7 +47,15 @@ export function editorSession({install, snapshot, status}) {
             status(sameMedia ? 'Latest run loaded · locked curves and composed sections preserved' : 'Source video changed · new project loaded');
         }
     }
-    channel && (channel.onmessage = () => {if (!pending && !saving && !failure) refresh().catch(error => status(error.message));});
+    channel && (channel.onmessage = ({data}) => {
+        if(data?.type==='prepare-run'){
+            channel.postMessage({type:'preparing',request:data.request,editor});
+            flush().then(()=>channel.postMessage({type:'prepared',request:data.request,editor}),
+                error=>channel.postMessage({type:'prepared',request:data.request,editor,error:error.message}));
+        }else if(data?.type==='run')refresh(data.project).catch(error=>status(error.message));
+        else if(!data?.type&&!pending&&!saving&&!failure)refresh().catch(error=>status(error.message));
+    });
+    window.addEventListener('focus',()=>refresh().catch(error=>status(error.message)));
     window.addEventListener('beforeunload', event => {if (pending || saving || failure) {event.preventDefault();event.returnValue = '';}});
     window.s3fFlush = flush;
     window.s3fUpdate = refresh;
@@ -54,7 +63,11 @@ export function editorSession({install, snapshot, status}) {
         async load(fallback) {
             const state = await read();
             if (state) {revision = state.revision; output = state.output || output; install(state.project, false, output); status('Saved editor restored · locks survive reruns');}
-            else {install(await fallback(), false, output); pending = true; await flush();}
+            else {
+                const data=await fallback();
+                if(!data){status('Waiting for workflow · connect projects and run the standalone node');return;}
+                install(data, false, output); pending = true; await flush();
+            }
         },
         changed() {pending = true; clearTimeout(timer); timer = setTimeout(() => flush().catch(() => {}), 300);},
         flush,

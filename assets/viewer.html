@@ -4,6 +4,7 @@
 <body>
 <header><div><span class="badge">SAM3D</span><strong>Motion Studio</strong><span id="name"></span></div><span id="status" role="status">Open a project to begin</span></header>
 <main>
+  <div id="workflowWaiting" class="panel" hidden><h2>Waiting for your workflow</h2><p>Connect motion projects to the standalone node and run the workflow. This tab will load the result automatically.</p></div>
   <div class="toolbar"><label class="button">Open project<input id="projectFile" type="file" accept=".json"></label><label class="button">Choose source video<input id="videoFile" type="file" accept="video/*"></label><label class="button">Open reference script<input id="referenceFile" type="file" accept=".funscript,.json"></label><button id="save">Download project + scripts</button><button id="undo" disabled>Undo</button></div>
   <section class="stage">
     <div class="panel video-panel"><h2>Source & projected pose</h2><div class="video-wrap"><video id="video" controls playsinline preload="metadata"></video><canvas id="overlay"></canvas></div></div>

@@ -81,6 +81,7 @@ After reloading ComfyUI's custom nodes, both entry points appear under `motion/S
 | Detailed Anchor Override | Select any of the 70 native landmarks and override the target or reference anchor through an optional connection. |
 | Load Funscript Project | Reopen `project.json`, including manual browser edits. |
 | Preview & Export Funscripts | Combine numbered anchor projects into source tracks, save a new run directory and expose the synchronized main timeline. |
+| Motion Studio · Standalone | Accept the same numbered projects in a compact node, open the editor in a dedicated tab and output `project_path` plus the offline HTML `viewer_path`. |
 | Compare Reference Funscript | Attach a paired authored script, measure curve agreement and display it in the editor. |
 
 Video selection now belongs to core **Load Video**, which reads ComfyUI's input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Cache, project and reference-script paths may still be absolute or relative to the input directory. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
@@ -220,7 +221,7 @@ Simplification limits vertical interpolation error to `tolerance` position units
 
 Load [workflows/multitrack_anchors.json](../workflows/multitrack_anchors.json) for a shared pose cache feeding **mouth**, **left hand** and **right hand** motion projects into one editor. Set the cache path, or connect the same `poses` output from your streaming/core workflow to the three **Poses → Multi-axis Motion** nodes. Each branch has independent anchor, reference and axis calibration. Changing these branches does not rerun pose inference.
 
-**Preview & Export Funscripts** starts with `project_0`. Connecting it adds `project_1`, and each connected last socket adds another. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket automatically; existing API prompts using `project` still work. The [multitrack API example](../workflows/multitrack_anchors.api.json) shows numbered inputs.
+**Preview & Export Funscripts** and **Motion Studio · Standalone** start with `project_0`. Connecting it adds `project_1`, and each connected last socket adds another. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket automatically; existing API prompts using `project` still work. The [multitrack API example](../workflows/multitrack_anchors.api.json) shows numbered inputs.
 
 1. Select the **Main axis** to assemble, such as **L0 · stroke**. The first numbered project supplies its initial main curve; other enabled axes are retained too.
 2. Every connected project adds a source row. Click **Edit** or its curve to select it; the yellow marker and 3D view show that row's anchor. Its **Project** and **Axis** selectors can be reassigned freely. Reassignment resets that row to the chosen project's calibration and curve; Undo restores its previous edits. **Add track** creates another independently editable row, including alternate calibrations of the same project. Track names are editable.
@@ -245,7 +246,17 @@ The Project dropdown separates **Latest inputs** from **Saved versions used in t
 
 Same-video reruns keep the loaded video and playback position. Changing the source file reloads the player in both editor views, releases any previously selected local video, and opens the new video's timeline view. A changed size or modification time also triggers a reload when a file is replaced at the same path.
 
-The ComfyUI editor automatically saves edits and locks under `output/sam3d_funscript/editor_sessions/`. Wait for **Edits saved locally** after locking. The embedded and full editor share that state. The normal ComfyUI Run action flushes pending changes in both views before queuing, and the preview/export node runs again even when upstream poses are cached. Save the workflow to retain its preview session ID across restarts. Existing generated export folders remain unchanged; the next run writes a new export containing the saved main curves.
+The ComfyUI editor automatically saves edits and locks under `output/sam3d_funscript/editor_sessions/`. Wait for **Edits saved locally** after locking. The embedded and dedicated-tab editor share that state. The normal ComfyUI Run action flushes pending changes in those views before queuing, and either export node runs again even when upstream poses are cached. Save the workflow to retain its editor session ID across restarts. Existing generated export folders remain unchanged; the next run writes a new export containing the saved main curves.
+
+### Dedicated-tab editing
+
+Add **Motion Studio · Standalone** from `motion/SAM3D Funscript` and connect the same motion projects you would send to the preview node. It has no embedded editor, so it stays compact. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
+
+Keep the tab open while running your workflow. It receives the latest projects automatically, including newly connected anchors, using the same track refresh, composition and lock rules as the embedded editor. This connection also survives reloading the ComfyUI page when you reopen the saved workflow. Separate export nodes have separate editor sessions. The existing preview node's **Open full motion editor** button uses this same dedicated-tab behaviour.
+
+Each run outputs `project_path` (`project.json`) and `viewer_path` (`viewer.html`), alongside the exported scripts. The tab opened by the node stays connected to the running ComfyUI server and saves edits locally. The generated HTML file is a self-contained offline snapshot: open it directly to edit without ComfyUI, choose the matching video and download your edits. It does not receive later workflow runs.
+
+After updating the node pack, restart ComfyUI and refresh its browser page to register the new node and extension.
 
 Reruns follow changed inputs on unlocked full-length tracks and append rows for newly connected inputs; locks preserve finished curves. Copied main sections and selection-fitted tracks retain their source snapshots. Updated source versions appear in the Project selector; explicitly reassign an unlocked row to use one. Historical geometry is retained only while a track or main section uses it. Removing a connection does not delete authored rows. A different source video cannot replace a session containing locked tracks: use a new preview node for that video, or explicitly unlock the old tracks.
 
@@ -274,7 +285,7 @@ Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1
 - Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference. Unlocked full-length tracks refresh when their input changes; locked rows retain their curves. The Project selector identifies the latest input and any saved versions still in use.
 - **Download project + scripts** saves a ZIP containing all active axes, `project.json`, and a self-contained `viewer.html` with the selected device and current edits.
 
-ComfyUI session edits are saved locally; standalone browser edits need downloading. Original export folders are preserved. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Node exports also include this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI.
+ComfyUI session edits are saved locally; offline HTML edits need downloading. Original export folders are preserved. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Both export nodes also produce this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** or **Motion Studio · Standalone** to save those edits through ComfyUI.
 
 If an older Invert operation already flattened a curve, use Undo to recover the earlier curve, or **Auto fit selected axis** to rebuild it from the cached motion. Mirroring alone cannot recover samples already clipped in the saved actions.
 

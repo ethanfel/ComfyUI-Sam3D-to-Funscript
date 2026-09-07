@@ -1,4 +1,6 @@
 // Preserve socket names and connected slot indices; only trim unused tail sockets.
+export const EDITOR_NODES = ["S3F_PreviewExport", "S3F_StandaloneExport"];
+
 export function syncProjectInputs(node) {
     if (node.s3fSyncingProjects) return;
     node.s3fSyncingProjects = true;
@@ -20,7 +22,7 @@ export function syncProjectInputs(node) {
 }
 
 export function migrateProjectInputs(graph) {
-    for (const node of graph.nodes || []) if (node.type === "S3F_PreviewExport") {
+    for (const node of graph.nodes || []) if (EDITOR_NODES.includes(node.type)) {
         for (const input of node.inputs || []) if (input.name === "project") input.name = "project_0";
     }
     for (const subgraph of graph.definitions?.subgraphs || []) migrateProjectInputs(subgraph);

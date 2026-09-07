@@ -6,6 +6,7 @@
 
 - **Track motion** using body, hand or mouth anchors. Add mask videos to select individual people.
 - **Build your timeline** with multiple tracks, zoom, section blending and locks that protect edits across reruns.
+- **Edit in a dedicated tab:** use **Motion Studio · Standalone** for a compact workflow node that sends results to the full editor.
 - **Preview devices** with Handy 2 for stroke or SR6 for all six axes.
 - **Compare device output:** use [stroke profiles](docs/device-output.md) to derive a separate L0 script for a physical range and speed limit.
 - **Export and keep editing** with `.funscript` files, your project and a standalone offline editor.
@@ -31,6 +32,8 @@ Download [`sam_3d_body_dinov3_bf16.safetensors`](https://huggingface.co/Comfy-Or
 5. Edit the curves, preview a device and choose **Download project + scripts**.
 
 The default workflow streams video in batches and caches the poses. Changing anchors or calibration reuses that cache.
+
+For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studio · Standalone**, connect the same `project_0`, `project_1`, … inputs, and click **Open Motion Studio in new tab**. The tab receives workflow reruns automatically. The node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
 
 | Setting | What to know |
 |---|---|

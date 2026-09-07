@@ -111,11 +111,12 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
-const session = editorSession({install, snapshot:()=>({...project,preview:previewState()}), status});
+const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status});
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function install(data, keepPlayback=false, output=null) {
     const oldAxis=$("axis").value, previousMs=currentMs, hadVideo=!!video.getAttribute("src");
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
+    document.body.classList.remove("waiting-for-workflow");$("workflowWaiting").hidden=true;
     keepPlayback=!!(keepPlayback&&sameVideoSource(project?.metadata?.source,data.metadata.source));
     dragging=null;
     if(!keepPlayback){video.pause(); video.removeAttribute("src"); video.load();
@@ -630,7 +631,8 @@ new ResizeObserver(render).observe(document.body);
 const id=new URLSearchParams(location.search).get("project");
 const embedded=document.getElementById("s3f-project");
 if(embedded){try{const data=JSON.parse(embedded.textContent);if(data)install(data);}catch(error){status(error.message);}}
-else if(id){try{
-    const fetchProject=async()=>{const response=await fetch(`../projects/${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Project load failed (${response.status})`);return response.json();};
+else if(id||session){try{
+    if(!id){document.body.classList.add("waiting-for-workflow");$("workflowWaiting").hidden=false;}
+    const fetchProject=async()=>{if(!id)return null;const response=await fetch(`../projects/${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Project load failed (${response.status})`);return response.json();};
     if(session)await session.load(fetchProject);else install(await fetchProject(),false,id);
 }catch(error){status(error.message);}}
