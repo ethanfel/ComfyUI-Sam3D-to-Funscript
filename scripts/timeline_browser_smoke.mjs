@@ -79,6 +79,7 @@ try{
     assert.deepEqual(mirror.scripts.L0.actions,saved.scripts.L0.actions.map(a=>({...a,pos:100-a.pos})));
     await click("#undo");assert.deepEqual(JSON.parse((await download())["project.json"]).scripts,saved.scripts);
     // Manual point adjustment remains available on the assembled main.
+    await click("#editPoints");
     const point=saved.scripts.L0.actions.find(a=>a.at>1300&&a.at<1600),p=await coordinates("#curve",point.at,point.pos);
     await mouse("mousePressed",p.x,p.y,{button:"left",buttons:1,clickCount:1});
     await mouse("mouseMoved",p.x,p.y+12,{button:"left",buttons:1});

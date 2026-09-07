@@ -1,6 +1,7 @@
 """ComfyUI nodes. Native SAM3D owns inference and model memory management."""
 
 import json
+import uuid
 from pathlib import Path
 
 import folder_paths
@@ -190,11 +191,11 @@ class S3F_LoadProject:
 class S3F_PreviewExport:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"filename": ("STRING", {"default": "motion"})}, "optional": ProjectInputs(),
+        return {"required": {"filename": ("STRING", {"default": "motion"})}, "optional": ProjectInputs(editor=True),
                 "hidden": {"unique_id": "UNIQUE_ID", "extra_pnginfo": "EXTRA_PNGINFO"}}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("project_path",)
+    RETURN_TYPES = ("STRING", "S3F_EDITOR_SESSION")
+    RETURN_NAMES = ("project_path", "editor_session")
     FUNCTION = "run"
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
@@ -204,32 +205,35 @@ class S3F_PreviewExport:
         # Editor changes live outside the graph's cached upstream pose inputs.
         return float("nan")
 
-    def run(self, project=None, filename="motion", unique_id=None, extra_pnginfo=None, **projects):
-        if project is not None:
-            projects["project"] = project
+    def run(self, project=None, filename="motion", unique_id=None, extra_pnginfo=None, editor_session=None, **projects):
         root = Path(folder_paths.get_output_directory()) / "sam3d_funscript"
         from .sam3d_funscript.editor import EditorStore
-        combined = combine_projects(projects)
-        workflow = (extra_pnginfo or {}).get("workflow", {})
-        node = next((n for n in workflow.get("nodes", []) if str(n["id"]) == str(unique_id)), {})
-        session = node.get("properties", {}).get("s3f_session")
-        if session:
-            path, _ = EditorStore(root).export(session, combined, lambda data: export_project(data, root, filename))
+        store = EditorStore(root)
+        if editor_session is not None:
+            session = editor_session['session']
+            path = store.export_path(session)
         else:
-            path = export_project(combined, root, filename)
-        return {"ui": {"s3f_project": [path.parent.name], "text": [str(path)]}, "result": (str(path),)}
+            if project is not None:
+                projects["project"] = project
+            combined = combine_projects(projects)
+            workflow = (extra_pnginfo or {}).get("workflow", {})
+            node = next((n for n in workflow.get("nodes", []) if str(n["id"]) == str(unique_id)), {})
+            session = node.get("properties", {}).get("s3f_session") or uuid.uuid4().hex
+            path, _ = store.export(session, combined, lambda data: export_project(data, root, filename))
+        return {"ui": {"s3f_project": [path.parent.name], "text": [str(path)]},
+                "result": (str(path), {"session": session})}
 
 
 class S3F_StandaloneExport(S3F_PreviewExport):
     """Same authoring/export path, with a compact node and a dedicated editor tab."""
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("project_path", "viewer_path")
+    RETURN_TYPES = ("STRING", "STRING", "S3F_EDITOR_SESSION")
+    RETURN_NAMES = ("project_path", "viewer_path", "editor_session")
 
     def run(self, **kwargs):
         output = super().run(**kwargs)
         path = Path(output["result"][0]).with_name("viewer.html")
-        output["result"] = (*output["result"], str(path))
+        output["result"] = (output["result"][0], str(path), output["result"][1])
         return output
 
 

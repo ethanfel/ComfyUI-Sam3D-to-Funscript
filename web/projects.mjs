@@ -5,6 +5,10 @@ export function syncProjectInputs(node) {
     if (node.s3fSyncingProjects) return;
     node.s3fSyncingProjects = true;
     try {
+        if (EDITOR_NODES.includes(node.type)) {
+            if (!node.inputs?.some(i => i.name === "editor_session")) node.addInput("editor_session", "S3F_EDITOR_SESSION");
+            if (!node.outputs?.some(o => o.name === "editor_session")) node.addOutput("editor_session", "S3F_EDITOR_SESSION");
+        }
         for (const input of node.inputs || []) if (input.name === "project") input.name = "project_0";
         const slots = () => (node.inputs || []).filter(input => /^project_\d+$/.test(input.name));
         if (!slots().length) node.addInput("project_0", "S3F_MOTION_PROJECT");

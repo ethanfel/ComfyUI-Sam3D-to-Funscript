@@ -26,7 +26,7 @@ try{
     const target=await(await fetch(`http://127.0.0.1:${port}/json/new?about:blank`,{method:'PUT'})).json();
     const main=await attach(target),workflow=JSON.parse(fs.readFileSync(workflowFile,'utf8'));
     const info=await(await fetch(base+'/object_info/S3F_StandaloneExport')).json();
-    assert.deepEqual(info.S3F_StandaloneExport.output_name,['project_path','viewer_path']);
+    assert.deepEqual(info.S3F_StandaloneExport.output_name,['project_path','viewer_path','editor_session']);
     assert.equal(info.S3F_StandaloneExport.output_node,true);
     await main.call('Emulation.setDeviceMetricsOverride',{width:1500,height:1080,deviceScaleFactor:1,mobile:false});
     async function app(){
@@ -95,6 +95,30 @@ try{
     await until(async()=>!!(await(await fetch(base+'/sam3d_funscript/editors/'+clone.session)).json()),'independent clone export');
     assert.equal((await(await fetch(endpoint)).json()).project.timeline.tracks.length,3);
     await main.evaluate('window.s3fApp.graph.remove(window.s3fApp.graph.getNodeById(window.s3fCloneId))');
+    // A session wire makes the embedded node a second view, not another export.
+    await main.evaluate("(()=>{const owner=window.s3fApp.graph.getNodeById(9),peer=LiteGraph.createNode('S3F_PreviewExport');window.s3fApp.graph.add(peer);window.s3fPeerId=peer.id;owner.connect(owner.outputs.findIndex(o=>o.name==='editor_session'),peer,peer.inputs.findIndex(i=>i.name==='editor_session'));})()");
+    await queue();
+    await until(()=>main.evaluate("document.querySelector('iframe[title=\"SAM3D motion preview\"]')?.contentDocument?.querySelectorAll('#tracks .track').length===3"),'linked embedded view');
+    await main.evaluate("window.s3fPeerFrame=document.querySelector('iframe[title=\"SAM3D motion preview\"]')");
+    assert.equal(await main.evaluate("new URL(window.s3fPeerFrame.src).searchParams.get('session')"),compact.session);
+    await until(()=>main.evaluate("window.s3fApp.graph.getNodeById(window.s3fPeerId).properties.s3f_project===window.s3fApp.graph.getNodeById(9).properties.s3f_project"),'shared export path');
+    const beforePeer=(await(await fetch(endpoint)).json()).project;
+    const originalInvert=await tab.evaluate("document.querySelector('#invert').checked");
+    await main.evaluate("(async()=>{const w=window.s3fPeerFrame.contentWindow;w.document.querySelector('#selectMain').click();w.document.querySelector('#lockMain').click();w.document.querySelector('#invert').click();w.document.querySelector('#lockMain').click();await w.s3fFlush();})()");
+    await until(()=>tab.evaluate(`document.querySelector('#invert').checked!==${originalInvert}`),'embedded edit reaches tab');
+    assert.deepEqual((await(await fetch(endpoint)).json()).project.scripts.L0.actions,beforePeer.scripts.L0.actions.map(a=>({...a,pos:100-a.pos})));
+    await tab.evaluate("(async()=>{document.querySelector('#lockMain').click();document.querySelector('#invert').click();document.querySelector('#lockMain').click();await window.s3fFlush();})()");
+    await until(()=>main.evaluate(`window.s3fPeerFrame.contentDocument.querySelector('#invert').checked===${originalInvert}`),'tab edit reaches embedded view');
+    assert.deepEqual((await(await fetch(endpoint)).json()).project.scripts,beforePeer.scripts);
+    await main.evaluate("(()=>{const peer=window.s3fApp.graph.getNodeById(window.s3fPeerId);peer.disconnectInput(peer.inputs.findIndex(i=>i.name==='editor_session'));window.s3fApp.graph.getNodeById(1).connect(0,peer,peer.inputs.findIndex(i=>i.name==='project_0'));})()");
+    await queue();
+    await until(()=>main.evaluate(`new URL(window.s3fPeerFrame.src).searchParams.get('session')!==${JSON.stringify(compact.session)}`),'disconnected view has its own session');
+    await until(()=>main.evaluate("!!window.s3fPeerFrame.contentWindow.s3fFlush&&window.s3fPeerFrame.contentDocument.querySelector('#lockMain').textContent==='Unlock'"),'independent draft loaded');
+    const sharedBefore=(await(await fetch(endpoint)).json()).project.scripts;
+    await main.evaluate("(async()=>{const w=window.s3fPeerFrame.contentWindow;w.document.querySelector('#lockMain').click();w.document.querySelector('#invert').click();await w.s3fFlush();})()");
+    assert.deepEqual((await(await fetch(endpoint)).json()).project.scripts,sharedBefore,'Disconnected edits cannot change the shared session');
+    await main.evaluate('window.s3fApp.graph.remove(window.s3fApp.graph.getNodeById(window.s3fPeerId))');
+    report.checks.push('An explicit editor_session connection shares the export and edits in both directions; disconnecting restores an independent session without changing the owner');
     fs.writeFileSync(output+'/compact-node.png',Buffer.from((await main.call('Page.captureScreenshot')).data,'base64'));
 
     state=await(await fetch(endpoint)).json();

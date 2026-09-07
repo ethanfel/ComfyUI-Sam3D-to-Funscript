@@ -33,7 +33,7 @@ Download [`sam_3d_body_dinov3_bf16.safetensors`](https://huggingface.co/Comfy-Or
 
 The default workflow streams video in batches and caches the poses. Changing anchors or calibration reuses that cache.
 
-For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studio · Standalone**, connect the same `project_0`, `project_1`, … inputs, and click **Open Motion Studio in new tab**. The tab receives workflow reruns automatically. The node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
+For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studio · Standalone**, connect the same `project_0`, `project_1`, … inputs, and click **Open Motion Studio in new tab**. The tab receives workflow reruns automatically. The node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. Connect its `editor_session` output to the embedded preview’s `editor_session` input to share edits between both views. Unconnected nodes keep separate sessions. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
 
 | Setting | What to know |
 |---|---|
@@ -47,6 +47,7 @@ For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studi
 - **Combine anchors:** connect more motion projects to the preview node. Each becomes a source track.
 - **Use a section:** select a source row, Shift-drag a time range, then click **Use selection in main**. All available axes copy to their matching main axes, preserving locks. Choose **Blend** for smooth joins.
 - **Fit motion automatically:** L0 defaults to **Adaptive · per anchor**, so large movements elsewhere in the clip do not set one range for the entire track. Use **Whole clip** for manual range control, or **Fit selection as track** for a separate section.
+- **Seek and refine:** dragging moves the playhead by default. Enable **Edit points** for manual changes, or select a range and apply smoothing in milliseconds.
 - **Protect finished work:** click **Lock**. The device preview and exported scripts follow the **main** tracks.
 
 Your download includes `project.json` and `viewer.html`. Open the viewer and choose the matching source video to keep editing offline. The video itself stays separate.

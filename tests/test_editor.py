@@ -17,6 +17,21 @@ class EditorTests(unittest.TestCase):
         self.hand = build_project(sequence, {'target_anchor': 'right_hand'})
         self.initial = initialize(copy.deepcopy(self.mouth))
 
+    def test_linked_view_reads_the_latest_export_without_creating_another_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EditorStore(root)
+            session = 'a' * 32
+            with self.assertRaisesRegex(ValueError, 'upstream'):
+                store.export_path(session)
+            path, _ = store.export(session, self.mouth, lambda data: export_project(data, root))
+            before = store.read(session)
+            self.assertEqual(store.export_path(session), path)
+            self.assertEqual(store.read(session), before)
+            newer, _ = store.export(session, self.mouth, lambda data: export_project(data, root))
+            self.assertNotEqual(newer, path)
+            self.assertEqual(store.export_path(session), newer)
+
     def test_auto_default_and_explicit_manual_calibration(self):
         self.assertEqual(default_config()['axis_settings']['L0']['component'], 'auto')
         self.assertTrue(self.mouth['config']['axis_settings']['L0']['auto_fit'])

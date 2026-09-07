@@ -121,8 +121,8 @@ export function mainPoseProject(project, axis, time) {
 }
 
 export function timelineState(project) {
-    const {tracks, main, active, selection, selection_track} = project.timeline;
-    return {tracks, main, active, selection, selection_track};
+    const {tracks, main, active, selection, selection_track, selection_lane} = project.timeline;
+    return {tracks, main, active, selection, selection_track, selection_lane};
 }
 
 export function selectionTrack(project) {

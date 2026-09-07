@@ -72,6 +72,7 @@ try{
     assert.equal(await evaluate("document.querySelector('#promoteTrack').disabled"),false,'Other main axes remain available while L0 is locked');
     assert.match(await evaluate("document.querySelector('#promoteTrack').title"),/Locked: L0/);
     // Editing events on a locked canvas may seek, but must never move/add/delete actions.
+    await click("#editPoints");
     await evaluate(`(()=>{const canvas=document.querySelector('${lane(0)} canvas'),r=canvas.getBoundingClientRect();for(const type of ['pointerdown','pointermove','dblclick','contextmenu','pointerup'])canvas.dispatchEvent(new MouseEvent(type,{button:0,clientX:r.left+110,clientY:r.top+40,bubbles:true}));})()`);
     await evaluate('window.s3fFlush()');state=await(await fetch(endpoint)).json();
     assert.deepEqual(state.project.timeline.tracks[0],protectedProject.timeline.tracks[0]);

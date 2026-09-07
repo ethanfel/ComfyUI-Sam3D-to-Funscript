@@ -1,6 +1,7 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
 import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
+import {smoothActions} from "./curve-edit.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
@@ -181,6 +182,10 @@ function selectionControls() {
     $("promoteTrack").title=selectionProblem(project,track,true)||describe(track);
     $("selectTrack").disabled=!track;
     $("selectionStatus").textContent=problem||(track?`Copy source: ${track.name} · ${describe(track)}`:"");
+    const selectedCurve=selected(),range=project.timeline.selection;
+    const scope=selectedCurve.track?trackCoverage(project,selectedCurve.track):[0,roundEven(project.metadata.duration_ms)];
+    $("smoothSelection").disabled=locked()||range[1]<=range[0]||range[0]<scope[0]||range[1]>scope[1];
+    $("smoothTarget").textContent=`${selectedCurve.track?.name||"Main"} · ${selectedCurve.axis}${locked()?" · locked":" · selected range only"}`;
     const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
     for(const row of $("tracks").children){
         row.classList.toggle("copy-source",row.dataset.track===track?.id);
@@ -191,6 +196,7 @@ function selectionControls() {
 }
 function setSelection(start,end) {
     const duration=roundEven(project.metadata.duration_ms);
+    project.timeline.selection_lane=project.timeline.active;
     project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,roundEven(t)))).sort((a,b)=>a-b);
     selectionControls();render();
 }
@@ -385,7 +391,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
     const [start,end]=project.timeline.selection;
     if(end>start){
-        const source=selectionTrack(project),chosen=!!source&&canvas.dataset.track===source.id;
+        const source=selectionTrack(project),chosen=(canvas.dataset.track||"main")===(project.timeline.selection_lane||source?.id);
         if(chosen){ctx.fillStyle="#78baf733";ctx.fillRect(x(start),10,x(end)-x(start),h-35);}else ctx.setLineDash([4,4]);
         for(const t of [start,end])line(ctx,[x(t),10],[x(t),h-25],chosen?"#78baf7":isMain&&source?"#eabf71":"#607689",1);
         ctx.setLineDash([]);
@@ -504,23 +510,42 @@ function bindCurve(canvas,id){
     canvas.addEventListener("pointerdown",event=>{
         if(!project||event.button!==0)return;selectLane(id);canvas.focus({preventScroll:true});
         const p=pointer(event,canvas);
-        if(event.shiftKey){dragging={canvas,start:p.at,selection:true};setSelection(p.at,p.at);canvas.setPointerCapture(event.pointerId);return;}
-        const index=nearest(event,canvas,actions());
-        if(index>=0&&!locked(id)){record();dragging={canvas,index};canvas.setPointerCapture(event.pointerId);}else seek(p.at);
+        if(event.shiftKey){dragging={canvas,start:p.at,selection:true};setSelection(p.at,p.at);if(event.isTrusted)canvas.setPointerCapture(event.pointerId);return;}
+        const index=$("editPoints").checked?nearest(event,canvas,actions()):-1;
+        if(index>=0&&!locked(id)){dragging={canvas,index,startX:event.clientX,startY:event.clientY};}
+        else {seek(p.at);dragging={canvas,seek:true};}
+        if(event.isTrusted)canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener("pointermove",event=>{
         if(dragging?.canvas!==canvas)return;
         const p=pointer(event,canvas);
         if(dragging.selection){setSelection(dragging.start,p.at);return;}
+        if(dragging.seek){seek(p.at);return;}
+        if(!$("editPoints").checked)return;
+        if(!dragging.recorded){
+            if(Math.hypot(event.clientX-dragging.startX,event.clientY-dragging.startY)<3)return;
+            record();dragging.recorded=true;
+        }
         if(locked(id))return;
         const list=actions(),i=dragging.index,min=i?list[i-1].at+1:0,max=i+1<list.length?list[i+1].at-1:roundEven(project.metadata.duration_ms);
         list[i]={at:Math.max(min,Math.min(max,p.at)),pos:p.pos};dirty();render();
     });
     const release=()=>{if(dragging?.canvas===canvas){dragging=null;render();}};
     for(const name of ["pointerup","pointercancel","lostpointercapture"])canvas.addEventListener(name,release);
-    canvas.addEventListener("dblclick",event=>{if(!project||event.shiftKey||locked(id))return;selectLane(id);const list=actions(),p=pointer(event,canvas);if(list.some(a=>a.at===p.at))return;record();list.push(p);list.sort((a,b)=>a.at-b.at);dirty();render();});
-    canvas.addEventListener("contextmenu",event=>{event.preventDefault();if(!project||locked(id))return;selectLane(id);const list=actions(),i=nearest(event,canvas,list);if(i>=0&&list.length>1){record();list.splice(i,1);dirty();render();}});
+    canvas.addEventListener("dblclick",event=>{if(!project||!$("editPoints").checked||event.shiftKey||locked(id))return;selectLane(id);const list=actions(),p=pointer(event,canvas);if(list.some(a=>a.at===p.at))return;record();list.push(p);list.sort((a,b)=>a.at-b.at);dirty();render();});
+    canvas.addEventListener("contextmenu",event=>{event.preventDefault();if(!project||!$("editPoints").checked||locked(id))return;selectLane(id);const list=actions(),i=nearest(event,canvas,list);if(i>=0&&list.length>1){record();list.splice(i,1);dirty();render();}});
 }
+$("editPoints").onchange=()=>{dragging=null;document.body.classList.toggle("editing-points",$("editPoints").checked);};
+$("smoothSelection").onclick=()=>{
+    if(!project||locked()||$("smoothSelection").disabled)return;
+    try{
+        const {data,axis,track}=selected(),[start,end]=project.timeline.selection;
+        const actions=smoothActions(data.scripts[axis].actions,start,end,$("smoothMs").valueAsNumber);
+        record();data.scripts[axis]={...data.scripts[axis],actions};delete data.metrics?.[axis];
+        commitSelected(data,axis,track);dirty();controls();render();
+        status(`Smoothed ${track?.name||"Main"} · ${axis} over ${(start/1000).toFixed(3)}–${(end/1000).toFixed(3)} s · ${$("smoothMs").value} ms. Undo restores this curve.`);
+    }catch(error){status(error.message);}
+};
 async function toggleLock(target) {
     target.locked=!target.locked;
     // Unlock is explicit: Undo cannot reach behind a lock and replace its curve.

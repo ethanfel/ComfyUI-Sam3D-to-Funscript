@@ -248,13 +248,23 @@ Same-video reruns keep the loaded video and playback position. Changing the sour
 
 The ComfyUI editor automatically saves edits and locks under `output/sam3d_funscript/editor_sessions/`. Wait for **Edits saved locally** after locking. The embedded and dedicated-tab editor share that state. The normal ComfyUI Run action flushes pending changes in those views before queuing, and either export node runs again even when upstream poses are cached. Save the workflow to retain its editor session ID across restarts. Existing generated export folders remain unchanged; the next run writes a new export containing the saved main curves.
 
+### Seeking, point edits and smoothing
+
+Timeline dragging **seeks by default**, including when starting directly on a curve point. Enable **Edit points** to move points, double-click to add one, or right-click to delete one. A short movement threshold helps avoid accidental edits even in point mode. New editor views start with point editing off. Track locks still protect every edit action.
+
+**Shift-drag any curve** to select a time range, or use In and Out. Select the main or source row you want to soften, enter a **Smoothing** duration (try **200 ms**), and click **Smooth selected range**. The label beside it identifies the affected row and axis. This edits only that displayed curve; smoothing a source does not change main until you copy it there. For a rough join already in main, select a range around the join and smooth main directly. When initially copying a section, **Blend** remains available for creating the transition at insertion time.
+
+The smoother averages the interpolated motion over elapsed milliseconds, so extra or sparse action points do not change its weighting. A larger duration softens motion more. The effect tapers to the original curve at the selection edges, preserving the outside actions and boundary values (within integer-position rounding). It adds samples where needed to represent the smoothed curve. Locks disable smoothing; **Undo** restores the curve and its source-region metadata. Smoothing changes the authored output only, without rerunning pose estimation or changing the physical device profile.
+
 ### Dedicated-tab editing
 
 Add **Motion Studio · Standalone** from `motion/SAM3D Funscript` and connect the same motion projects you would send to the preview node. It has no embedded editor, so it stays compact. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
 
 Keep the tab open while running your workflow. It receives the latest projects automatically, including newly connected anchors, using the same track refresh, composition and lock rules as the embedded editor. This connection also survives reloading the ComfyUI page when you reopen the saved workflow. Separate export nodes have separate editor sessions. The existing preview node's **Open full motion editor** button uses this same dedicated-tab behaviour.
 
-Each run outputs `project_path` (`project.json`) and `viewer_path` (`viewer.html`), alongside the exported scripts. The tab opened by the node stays connected to the running ComfyUI server and saves edits locally. The generated HTML file is a self-contained offline snapshot: open it directly to edit without ComfyUI, choose the matching video and download your edits. It does not receive later workflow runs.
+To use both views together, connect the standalone node's **`editor_session` output → `editor_session` input** on **Preview & Export Funscripts**. Either export node can supply or receive this connection. The linked node displays the upstream session and reuses its export; connect motion projects to the upstream node. Its own project inputs and filename are ignored while linked. Edits, source tracks and locks are shared between the tab and embedded view. Without this connection, the nodes have separate sessions even when they receive identical projects. Disconnecting restores the node's own session; connect its project inputs to run it independently.
+
+Each standalone run outputs `project_path` (`project.json`) and `viewer_path` (`viewer.html`), alongside the exported scripts and the `editor_session` connection. The tab opened by the node stays connected to the running ComfyUI server and saves edits locally. The generated HTML file is a self-contained offline snapshot: open it directly to edit without ComfyUI, choose the matching video and download your edits. It does not receive later workflow runs.
 
 After updating the node pack, restart ComfyUI and refresh its browser page to register the new node and extension.
 
@@ -276,7 +286,7 @@ Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1
 
 **Device output · stroke profiles**, below main, adds a separate L0 comparison and download using a physical stroke zone and an explicit speed limit. Factory templates distinguish Handy, Handy 2 Standard and Handy 2 Pro normal mode; custom single-axis settings are also available. Switch **Device preview → Motion** to **Adjusted L0** to play the orange comparison; other channels then hold neutral. Main/source scripts and locks remain intact. Configure the same physical range once in your player/device. This checks segment speed only; see [device output profiles](device-output.md) for evidence status, exports, limits and the distinction from pose smoothing.
 
-- Click the timeline to seek; double-click to add an action.
+- Drag the timeline to seek. Enable **Edit points** to drag actions, double-click to add one or right-click to delete one.
 - Drag a point to edit its time and position; right-click to remove it.
 - Use the zoom slider, +/− buttons or time presets to choose the visible interval, from the full clip down to 250 ms.
 - Select main or a source row before changing its calibration; reference-script comparisons apply to main.

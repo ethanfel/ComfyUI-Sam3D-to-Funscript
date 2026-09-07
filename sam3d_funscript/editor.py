@@ -182,6 +182,12 @@ class EditorStore:
             path = self.path(session)
             return json.loads(path.read_text()) if path.is_file() else None
 
+    def export_path(self, session):
+        state = self.read(session)
+        if not state or not state.get('output'):
+            raise ValueError('Run the upstream Motion Studio node before opening its shared session.')
+        return self.root.parent / state['output'] / 'project.json'
+
     def write(self, session, state):
         path = self.path(session)
         path.parent.mkdir(parents=True, exist_ok=True)

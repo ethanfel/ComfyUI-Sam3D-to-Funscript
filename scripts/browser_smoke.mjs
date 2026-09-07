@@ -61,6 +61,7 @@ try{
         await until(()=>evaluate(`window.s3fAnchorLabel===${JSON.stringify("Target: "+data.config.target_anchor.replaceAll("_"," "))}`),"selected anchor marker");
         report.checks.push(`Preview marks ${data.config.target_anchor} using exported landmark indices`);
     }
+    await evaluate("document.querySelector('#editPoints').click()");
     const action=data.scripts.L0.actions[5];
     const rect=await evaluate("(()=>{const r=document.querySelector('#curve').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}})()");
     const x=rect.x+42+action.at/data.metadata.duration_ms*(rect.w-54),y=rect.y+rect.h-25-action.pos/100*(rect.h-40);

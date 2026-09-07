@@ -14,3 +14,5 @@
 .device-output{border:1px solid #66523e;border-radius:7px;padding:12px;margin-top:10px}.device-output summary{color:#ffc07d}.device-output .controls{gap:10px;margin-top:12px}.device-output select{max-width:260px}.device-output input[type=number]{width:95px}.device-output .setup-label{flex:1;min-width:0;flex-wrap:wrap}.device-output input[type=text]{flex:1;min-width:160px;border:1px solid #3b5266;background:#223343;color:inherit;border-radius:6px;padding:8px;font:inherit}.device-output a{color:#9cccf1}#outputStatus{color:#ffc07d;font-size:12px;line-height:1.6}#downloadDevice{background:#62472e;border-color:#94704c}.output-preview{margin:10px 0}#deviceMotionStatus{min-height:28px}#outputEvidence{line-height:1.6}
 #mainOutputBadge{color:#ffc07d;font-size:11px}
 .waiting-for-workflow .stage,.waiting-for-workflow .curves,.waiting-for-workflow main>details{display:none}#workflowWaiting{margin-bottom:16px}
+
+.editing-points .track canvas{cursor:crosshair}

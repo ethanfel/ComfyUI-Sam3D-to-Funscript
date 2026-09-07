@@ -8,6 +8,13 @@ from sam3d_funscript.timeline import combine_projects, ProjectInputs
 
 
 class TimelineTests(unittest.TestCase):
+    def test_editor_session_port_keeps_numbered_project_types(self):
+        inputs = ProjectInputs(editor=True)
+        self.assertEqual(inputs['editor_session'][0], 'S3F_EDITOR_SESSION')
+        self.assertEqual(inputs['project_72'][0], 'S3F_MOTION_PROJECT')
+        self.assertNotIn('filename', inputs)
+        self.assertNotIn('editor_session', ProjectInputs())
+
     def setUp(self):
         sequence = fixture(72)
         self.mouth = build_project(sequence, {"target_anchor": "mouth", "enabled_axes": ["L0"]})

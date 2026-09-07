@@ -15,14 +15,20 @@ SOURCE_FIELDS = ("metadata", "config", "scripts", "metrics", "warnings", "valid"
 class ProjectInputs(dict):
     """Typed, numbered optional inputs; only project_0 is advertised initially."""
 
-    def __init__(self):
+    def __init__(self, editor=False):
+        self.editor = editor
         super().__init__(project_0=("S3F_MOTION_PROJECT", {"tooltip":
             "Connect anchor/calibration projects from the same video. Another input appears automatically."}))
+        if editor:
+            self['editor_session'] = ('S3F_EDITOR_SESSION', {'tooltip':
+                'Share the connected Motion Studio session. This view uses the upstream projects; its own project inputs are ignored.'})
 
     def __contains__(self, name):
-        return name == "project" or bool(re.fullmatch(r"project_\d+", name))
+        return (self.editor and name == 'editor_session') or name == "project" or bool(re.fullmatch(r"project_\d+", name))
 
     def __getitem__(self, name):
+        if self.editor and name == 'editor_session':
+            return dict.__getitem__(self, name)
         if name not in self:
             raise KeyError(name)
         return ("S3F_MOTION_PROJECT",)
