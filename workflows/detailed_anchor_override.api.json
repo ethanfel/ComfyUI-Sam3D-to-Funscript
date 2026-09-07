@@ -1,0 +1,45 @@
+{
+  "1": {
+    "class_type": "S3F_LoadPoseCache",
+    "inputs": {
+      "cache_path": "/absolute/path/to/poses.npz"
+    }
+  },
+  "2": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "1",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "left_hand",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{}",
+      "target_anchor_override": [
+        "4",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "project": [
+        "2",
+        0
+      ],
+      "filename": "detailed_anchor"
+    }
+  },
+  "4": {
+    "class_type": "S3F_AnchorOverride",
+    "inputs": {
+      "anchor": "left_index_tip"
+    }
+  }
+}

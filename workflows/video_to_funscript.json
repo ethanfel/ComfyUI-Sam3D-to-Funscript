@@ -74,6 +74,16 @@
           "name": "poses",
           "type": "S3F_POSE_SEQUENCE",
           "link": 1
+        },
+        {
+          "name": "target_anchor_override",
+          "type": "S3F_ANCHOR",
+          "link": null
+        },
+        {
+          "name": "reference_anchor_override",
+          "type": "S3F_ANCHOR",
+          "link": null
         }
       ],
       "outputs": [

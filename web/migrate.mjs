@@ -43,3 +43,47 @@ export function migrateVideoInputs(graph) {
         graph.last_link_id = linkId;
     }
 }
+
+// Catalogs come from the server node definitions, keeping UI and Python in sync.
+export function migrateAnchorOverrides(graph, generalAnchors, detailedAnchors) {
+    if (!Array.isArray(graph.nodes) || !Array.isArray(graph.links) ||
+        !generalAnchors?.length || !detailedAnchors?.length) return;
+    let nodeId = Math.max(graph.last_node_id || 0, ...graph.nodes.map(n => Number(n.id) || 0));
+    let linkId = Math.max(graph.last_link_id || 0, ...graph.links.map(l => Number(l[0]) || 0));
+    const left = Math.min(0, ...graph.nodes.map(n => n.pos?.[0] || 0)) - 430;
+    const top = Math.min(0, ...graph.nodes.map(n => n.pos?.[1] || 0));
+    let migrated = 0;
+    for (const node of [...graph.nodes]) {
+        if (node.type !== "S3F_BuildMotion" || !Array.isArray(node.widgets_values)) continue;
+        for (const [name, widgetIndex] of [["target_anchor", 1], ["reference_anchor", 3]]) {
+            const value = node.widgets_values[widgetIndex];
+            if (generalAnchors.includes(value) || !detailedAnchors.includes(value)) continue;
+            // Dynamic converted widgets retain their upstream connection; the
+            // backend accepts the full catalog for compatibility with old APIs.
+            if (node.inputs?.some(i => i.name === name && i.link != null)) continue;
+            node.widgets_values[widgetIndex] = generalAnchors[0];
+            node.inputs ||= [];
+            for (const socket of ["target_anchor_override", "reference_anchor_override"]) {
+                if (!node.inputs.some(i => i.name === socket))
+                    node.inputs.push({name: socket, type: "S3F_ANCHOR", link: null});
+            }
+            const slot = node.inputs.findIndex(i => i.name === `${name}_override`);
+            if (node.inputs[slot].link != null) continue; // Preserve an existing override.
+            const selectorId = ++nodeId, link = ++linkId;
+            graph.nodes.push({
+                id: selectorId, type: "S3F_AnchorOverride", pos: [left, top + migrated * 180], size: [350, 100],
+                flags: {}, order: 0, mode: 0, inputs: [],
+                outputs: [{name: "anchor", type: "S3F_ANCHOR", links: [link], slot_index: 0}],
+                properties: {"Node name for S&R": "S3F_AnchorOverride"}, widgets_values: [value],
+                title: `${name === "target_anchor" ? "Target" : "Reference"} · detailed anchor`,
+            });
+            node.inputs[slot].link = link;
+            graph.links.push([link, selectorId, 0, node.id, slot, "S3F_ANCHOR"]);
+            migrated++;
+        }
+    }
+    if (migrated) {
+        graph.last_node_id = nodeId;
+        graph.last_link_id = linkId;
+    }
+}

@@ -20,6 +20,10 @@ API = {
 
 
 def make_node(node_id, spec, position, size, inputs, outputs, widgets, title):
+    if spec["class_type"] == "S3F_BuildMotion":
+        for name in ("target_anchor_override", "reference_anchor_override"):
+            if not any(port["name"] == name for port in inputs):
+                inputs.append({"name": name, "type": "S3F_ANCHOR", "link": None})
     return {"id": node_id, "type": spec["class_type"], "pos": position, "size": size,
             "flags": {}, "order": node_id - 1, "mode": 0, "inputs": inputs, "outputs": outputs,
             "properties": {"Node name for S&R": spec["class_type"]}, "widgets_values": widgets,
@@ -110,6 +114,24 @@ def main():
                 widgets_values=["/absolute/path/to/poses.npz"], inputs=[], outputs=node["outputs"][:1],
                 properties={"Node name for S&R": "S3F_LoadPoseCache"})
     (ROOT / "workflows/cached_pose_to_funscript.json").write_text(json.dumps(cache_workflow, indent=2))
+    detailed = json.loads(json.dumps(cache_workflow))
+    detailed["nodes"][1]["inputs"][1]["link"] = 3
+    detailed["nodes"][1]["widgets_values"][1] = "left_hand"
+    detailed["nodes"].append(make_node(4, {"class_type": "S3F_AnchorOverride"}, [80, 350], [350, 100], [],
+        [{"name": "anchor", "type": "S3F_ANCHOR", "links": [3], "slot_index": 0}],
+        ["left_index_tip"], "Optional · target landmark override"))
+    detailed["links"].append([3, 4, 0, 2, 1, "S3F_ANCHOR"])
+    detailed["last_node_id"] = 4; detailed["last_link_id"] = 3
+    detailed["groups"][0]["title"] = "Cached poses & detailed anchor"
+    (ROOT / "workflows/detailed_anchor_override.json").write_text(json.dumps(detailed, indent=2))
+    detailed_api = {
+        "1": {"class_type": "S3F_LoadPoseCache", "inputs": {"cache_path": "/absolute/path/to/poses.npz"}},
+        "2": {"class_type": "S3F_BuildMotion", "inputs": {
+            **API["2"]["inputs"], "target_anchor": "left_hand", "target_anchor_override": ["4", 0]}},
+        "3": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["2", 0], "filename": "detailed_anchor"}},
+        "4": {"class_type": "S3F_AnchorOverride", "inputs": {"anchor": "left_index_tip"}},
+    }
+    (ROOT / "workflows/detailed_anchor_override.api.json").write_text(json.dumps(detailed_api, indent=2))
     loader = make_node(4, API["4"], [-350, 140], [340, 550], [],
         [{"name": "VIDEO", "type": "VIDEO", "links": [3], "slot_index": 0}],
         [API["4"]["inputs"]["file"]], "Load video · core")

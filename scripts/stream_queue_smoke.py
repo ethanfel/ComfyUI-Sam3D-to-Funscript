@@ -18,7 +18,9 @@ def main():
     info = get("/object_info")
     assert info["S3F_VideoPose"]["input"]["required"]["video"][0] == "VIDEO"
     choices = info["S3F_BuildMotion"]["input"]["required"]["target_anchor"][0]
-    assert len(choices) == 72 and "left_index_tip" in choices and "neck" in choices
+    assert len(choices) == 8 and "left_hand" in choices and "neck" in choices
+    detailed = info["S3F_AnchorOverride"]["input"]["required"]["anchor"][0]
+    assert len(detailed) == 70 and "left_index_tip" in detailed
     api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())
     api["1"]["inputs"]["use_cache"] = False
     full, full_path = project_from_history(queue(api))
@@ -43,7 +45,8 @@ def main():
     print(f"Upstream trim and additional offset: {trimmed_path}", flush=True)
 
     api["1"]["inputs"]["use_cache"] = True
-    api["2"]["inputs"]["target_anchor"] = "left_index_tip"
+    api["6"] = {"class_type": "S3F_AnchorOverride", "inputs": {"anchor": "left_index_tip"}}
+    api["2"]["inputs"]["target_anchor_override"] = ["6", 0]
     anchor, anchor_path = project_from_history(queue(api))
     assert anchor["metadata"]["cache_hit"]
     assert anchor["anchor_indices"]["target"] == [46]

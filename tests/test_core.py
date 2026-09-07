@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation
 from sam3d_funscript.core import (PoseSequence, build_project, body_basis, export_project,
                                   load_project, simplify, validate_actions)
 from sam3d_funscript.video import parse_rois, video_frames
-from sam3d_funscript.anchors import ANCHORS, MHR70_NAMES
+from sam3d_funscript.anchors import ANCHORS, GENERAL_ANCHORS, MHR70_NAMES
 
 
 def fixture():
@@ -32,7 +32,10 @@ class CoreTests(unittest.TestCase):
     def test_all_landmarks_drive_translation_and_publish_matching_preview_indices(self):
         self.assertEqual(len(MHR70_NAMES), 70)
         self.assertEqual(len(set(MHR70_NAMES)), 70)
-        self.assertEqual(len(ANCHORS), 72)
+        self.assertEqual(len(ANCHORS), 74)
+        self.assertEqual(len(GENERAL_ANCHORS), 8)
+        self.assertEqual(ANCHORS["left_hand"], tuple(range(42, 63)))
+        self.assertEqual(ANCHORS["right_hand"], tuple(range(21, 42)))
         self.assertEqual(ANCHORS["left_index_tip"], (46,))
         self.assertEqual(ANCHORS["right_pinky_third_joint"], (40,))
         self.assertEqual(ANCHORS["neck"], (69,))
@@ -47,6 +50,17 @@ class CoreTests(unittest.TestCase):
                 expected = -sequence.times_ms / 1000 * np.mean(np.array(indices) + 1) / 100
                 np.testing.assert_allclose(np.array(project["raw"])[:, 2], expected, atol=1e-12)
                 self.assertEqual(project["anchor_indices"], {"target": list(indices), "reference": list(indices)})
+
+    def test_hand_averages_are_independent_and_include_wrist_and_fingers(self):
+        sequence = fixture()
+        baseline = build_project(sequence, {"target_anchor": "left_hand", "neutral_window_ms": 0})
+        # Finger motion alone moves the centroid; moving the opposite hand does not.
+        sequence.points[:, 0, 46, 1] += sequence.times_ms / 1000
+        left = build_project(sequence, {"target_anchor": "left_hand", "neutral_window_ms": 0})
+        np.testing.assert_allclose(np.array(left["raw"])[:, 0] - np.array(baseline["raw"])[:, 0],
+                                   -sequence.times_ms / 1000 / 21)
+        right = build_project(sequence, {"target_anchor": "right_hand", "neutral_window_ms": 0})
+        np.testing.assert_allclose(np.array(right["raw"])[:, 0], np.array(baseline["raw"])[:, 0])
 
     def test_camera_rigid_transform_cancels_in_reference_frame(self):
         sequence = fixture()

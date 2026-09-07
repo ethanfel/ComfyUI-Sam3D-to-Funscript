@@ -1,13 +1,18 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { migrateVideoInputs } from "./migrate.mjs";
+import { migrateVideoInputs, migrateAnchorOverrides } from "./migrate.mjs";
+
+let generalAnchors, detailedAnchors;
 
 app.registerExtension({
     name: "sam3d.funscript.preview",
     beforeConfigureGraph(graphData) {
         migrateVideoInputs(graphData);
+        migrateAnchorOverrides(graphData, generalAnchors, detailedAnchors);
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === "S3F_BuildMotion") generalAnchors = nodeData.input.required.target_anchor[0];
+        if (nodeData.name === "S3F_AnchorOverride") detailedAnchors = nodeData.input.required.anchor[0];
         if (nodeData.name !== "S3F_PreviewExport") return;
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {

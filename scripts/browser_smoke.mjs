@@ -141,6 +141,30 @@ try{
         assert.equal(report.frontend.prompt["7"].inputs.target_person,0);
         report.checks.push("Two person branches share the source VIDEO and keep separate mask connections");
     }
+    if(report.frontend.prompt["4"]?.class_type==="S3F_AnchorOverride"){
+        assert.deepEqual(report.frontend.prompt["2"].inputs.target_anchor_override,["4",0]);
+        assert.equal(report.frontend.prompt["4"].inputs.anchor,"left_index_tip");
+        const options=await evaluate("window.s3fTestApp.graph.getNodeById(2).widgets.find(w=>w.name==='target_anchor').options.values");
+        assert.equal(options.length,8);assert.ok(options.includes("left_hand"));assert.ok(!options.includes("left_index_tip"));
+        const legacy=structuredClone(workflow);
+        legacy.nodes=legacy.nodes.filter(n=>n.id!==4);
+        legacy.links=legacy.links.filter(l=>l[5]!=="S3F_ANCHOR");
+        const motion=legacy.nodes.find(n=>n.id===2);
+        motion.inputs=motion.inputs.filter(i=>!i.name.endsWith("_override"));
+        motion.widgets_values[1]="left_index_tip";motion.widgets_values[3]="right_pinky_tip";
+        legacy.last_node_id=3;legacy.last_link_id=2;
+        await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(legacy)})`);
+        const migrated=(await evaluate("window.s3fTestApp.graphToPrompt()")).output;
+        assert.equal(migrated["2"].inputs.target_anchor,"pelvis");
+        assert.equal(migrated["2"].inputs.reference_anchor,"pelvis");
+        assert.equal(migrated[migrated["2"].inputs.target_anchor_override[0]].inputs.anchor,"left_index_tip");
+        assert.equal(migrated[migrated["2"].inputs.reference_anchor_override[0]].inputs.anchor,"right_pinky_tip");
+        const saved=await evaluate("window.s3fTestApp.graph.serialize()");
+        await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(saved)})`);
+        assert.deepEqual((await evaluate("window.s3fTestApp.graphToPrompt()")).output,migrated);
+        report.checks.push("Eight general anchors, detailed override connection, both legacy selections and save/reload are preserved");
+        await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
+    }
     report.checks.push(`Canvas workflow loads all ${workflow.nodes.length} nodes, preserves connections/settings and restores the preview iframe`);
     fs.writeFileSync(output+"/report.json",JSON.stringify(report,null,2));
     console.log(JSON.stringify(report,null,2));

@@ -1,4 +1,4 @@
-"""Named MHR70 landmarks and the original midpoint anchors.
+"""General motion anchors and the complete named MHR70 landmark catalog.
 
 Index convention: https://github.com/facebookresearch/sam-3d-body/blob/main/sam_3d_body/metadata/mhr70.py
 """
@@ -24,3 +24,11 @@ MHR70_NAMES = (
 ANCHORS = {"pelvis": (9, 10), "chest": (5, 6), "nose": (0,),
            "left_wrist": (62,), "right_wrist": (41,)}
 ANCHORS.update({name: (index,) for index, name in enumerate(MHR70_NAMES)})
+ANCHORS.update(left_hand=tuple(range(42, 63)), right_hand=tuple(range(21, 42)))
+
+# Keep everyday controls short. Detailed landmarks remain valid in saved projects
+# and API prompts, and are available through the optional selector node.
+GENERAL_ANCHORS = (
+    "pelvis", "chest", "nose", "left_wrist", "right_wrist",
+    "left_hand", "right_hand", "neck",
+)

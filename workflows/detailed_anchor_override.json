@@ -1,28 +1,22 @@
 {
-  "last_node_id": 5,
-  "last_link_id": 4,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
-      "type": "S3F_VideoPose",
+      "type": "S3F_LoadPoseCache",
       "pos": [
         80,
         140
       ],
       "size": [
         380,
-        480
+        120
       ],
       "flags": {},
       "order": 0,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "link": 3
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
           "name": "poses",
@@ -31,29 +25,15 @@
             1
           ],
           "slot_index": 0
-        },
-        {
-          "name": "cache_path",
-          "type": "STRING",
-          "links": null,
-          "slot_index": 1
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_VideoPose"
+        "Node name for S&R": "S3F_LoadPoseCache"
       },
       "widgets_values": [
-        "sam_3d_body_dinov3_bf16.safetensors",
-        16.0,
-        0.0,
-        0.0,
-        2000,
-        "[[0,0,1,1]]",
-        8,
-        0.0,
-        true
+        "/absolute/path/to/poses.npz"
       ],
-      "title": "1 \u00b7 Stream video & estimate poses"
+      "title": "1 \u00b7 Reopen cached poses"
     },
     {
       "id": 2,
@@ -78,7 +58,7 @@
         {
           "name": "target_anchor_override",
           "type": "S3F_ANCHOR",
-          "link": null
+          "link": 3
         },
         {
           "name": "reference_anchor_override",
@@ -101,7 +81,7 @@
       },
       "widgets_values": [
         0,
-        "pelvis",
+        "left_hand",
         -1,
         "pelvis",
         "camera",
@@ -115,7 +95,7 @@
       "id": 3,
       "type": "S3F_PreviewExport",
       "pos": [
-        1450,
+        1030,
         140
       ],
       "size": [
@@ -123,13 +103,13 @@
         720
       ],
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [
         {
           "name": "project",
           "type": "S3F_MOTION_PROJECT",
-          "link": 4
+          "link": 2
         }
       ],
       "outputs": [
@@ -150,14 +130,14 @@
     },
     {
       "id": 4,
-      "type": "LoadVideo",
+      "type": "S3F_AnchorOverride",
       "pos": [
-        -350,
-        140
+        80,
+        350
       ],
       "size": [
-        340,
-        550
+        350,
+        100
       ],
       "flags": {},
       "order": 3,
@@ -165,8 +145,8 @@
       "inputs": [],
       "outputs": [
         {
-          "name": "VIDEO",
-          "type": "VIDEO",
+          "name": "anchor",
+          "type": "S3F_ANCHOR",
           "links": [
             3
           ],
@@ -174,59 +154,12 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "LoadVideo"
+        "Node name for S&R": "S3F_AnchorOverride"
       },
       "widgets_values": [
-        "videos/nsfw/rcowgirl_6.mp4"
+        "left_index_tip"
       ],
-      "title": "Load video \u00b7 core"
-    },
-    {
-      "id": 5,
-      "type": "S3F_CompareReference",
-      "pos": [
-        1030,
-        140
-      ],
-      "size": [
-        340,
-        240
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "project",
-          "type": "S3F_MOTION_PROJECT",
-          "link": 2
-        }
-      ],
-      "outputs": [
-        {
-          "name": "project_with_reference",
-          "type": "S3F_MOTION_PROJECT",
-          "links": [
-            4
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "comparison_json",
-          "type": "STRING",
-          "links": null,
-          "slot_index": 1
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "S3F_CompareReference"
-      },
-      "widgets_values": [
-        "/absolute/path/to/reference.funscript",
-        "L0",
-        0.0
-      ],
-      "title": "3 \u00b7 Compare reference"
+      "title": "Optional \u00b7 target landmark override"
     }
   ],
   "links": [
@@ -242,7 +175,7 @@
       2,
       2,
       0,
-      5,
+      3,
       0,
       "S3F_MOTION_PROJECT"
     ],
@@ -250,34 +183,14 @@
       3,
       4,
       0,
+      2,
       1,
-      0,
-      "VIDEO"
-    ],
-    [
-      4,
-      5,
-      0,
-      3,
-      0,
-      "S3F_MOTION_PROJECT"
+      "S3F_ANCHOR"
     ]
   ],
   "groups": [
     {
-      "title": "Core video input",
-      "bounding": [
-        -380,
-        60,
-        400,
-        680
-      ],
-      "color": "#365770",
-      "font_size": 22,
-      "flags": {}
-    },
-    {
-      "title": "SAM3D extraction \u00b7 cached",
+      "title": "Cached poses & detailed anchor",
       "bounding": [
         50,
         60,
@@ -305,7 +218,7 @@
       "bounding": [
         1000,
         60,
-        1320,
+        890,
         850
       ],
       "color": "#655079",
@@ -316,9 +229,9 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6,
+      "scale": 0.65,
       "offset": [
-        400,
+        30,
         20
       ]
     }

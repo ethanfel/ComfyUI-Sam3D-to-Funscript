@@ -8,7 +8,7 @@ The node uses ComfyUI's native SAM 3D Body implementation and your existing mode
 
 ## Open it locally
 
-The project is linked into:
+The project is installed in:
 
 ```text
 /media/p5/Comfyui/custom_nodes/ComfyUI-Sam3D-to-Funscript
@@ -72,6 +72,7 @@ After reloading ComfyUI's custom nodes, both entry points appear under `motion/S
 | Load SAM3D Pose Cache | Resume authoring from an NPZ without loading model weights. |
 | Core SAM3D → Funscript Poses | Adapt native `MHR_POSE_DATA` and its source `VIDEO`, preserving timestamps and writing an editor-compatible pose cache. |
 | Poses → Multi-axis Motion | Build body/camera-relative curves and map them to normalized axes. |
+| Detailed Anchor Override | Select any of the 70 native landmarks and override the target or reference anchor through an optional connection. |
 | Load Funscript Project | Reopen `project.json`, including manual browser edits. |
 | Preview & Export Funscripts | Save a new run directory and expose its synchronized editor. |
 | Compare Reference Funscript | Attach a paired authored script, measure curve agreement and display it in the editor. |
@@ -120,13 +121,21 @@ camera_point = pred_keypoints_3d + pred_cam_t
 
 Units are estimated metres; camera X is right, Y down, Z forward. A torso basis is reconstructed from the two hips and shoulders, avoiding the separate native rig-rotation basis convention.
 
-Both `target_anchor` and `reference_anchor` offer **72 choices**: all 70 named [MHR70 landmarks](https://github.com/facebookresearch/sam-3d-body/blob/main/sam_3d_body/metadata/mhr70.py), plus the original pelvis midpoint and shoulder midpoint (`chest`). Left/right refer to the person's anatomical sides.
+Both `target_anchor` and `reference_anchor` offer **eight general choices**: `pelvis`, `chest`, `nose`, `left_wrist`, `right_wrist`, `left_hand`, `right_hand`, and `neck`. Pelvis averages the hips; chest averages the shoulders. Each hand anchor averages **all 21 hand landmarks: wrist and 20 finger points**. This centroid moves with finger articulation; it is not a fixed palm or contact point. Left/right refer to the person's anatomical sides.
+
+For a specific point, add **Detailed Anchor Override** and connect it to `target_anchor_override` or `reference_anchor_override`. A connected override takes precedence over that dropdown. Use two selector nodes for different target/reference landmarks, or share one selector to use the same landmark on both people. The reference anchor is ignored when `reference_person=-1`.
+
+The selector offers all 70 named [MHR70 landmarks](https://github.com/facebookresearch/sam-3d-body/blob/main/sam_3d_body/metadata/mhr70.py):
 
 - Body: shoulders, elbows, hips, knees, ankles and neck.
 - Face: nose, eyes and ears.
 - Hands: both wrists and each finger's tip plus three joints. MHR numbers these joints from the fingertip toward the hand; `third_joint` is the base.
 - Feet: big-toe tips, small-toe tips and heels.
 - Additional surface landmarks: olecranon (back of elbow), cubital fossa (inner elbow) and acromion (shoulder tip), on both sides.
+
+The [detailed-anchor example](workflows/detailed_anchor_override.json) reopens a pose cache and overrides `left_hand` with `left_index_tip`. Disconnect the override to return to the hand average. Its [API companion](workflows/detailed_anchor_override.api.json) shows the same connection.
+
+Saved canvas workflows that selected a detailed point migrate on opening: their selection moves into a connected override node. Existing detailed values in API prompts and saved projects remain supported. These 70 landmarks do not include lip/mouth points; this pack does not yet retain SAM3D's additional facial output.
 
 Changing an anchor uses the landmarks already stored in the pose cache; no new inference is needed. The yellow target marker and its trail follow the selected point in the video and 3D preview. Anchor choice changes translation; rotation channels still use the torso basis. Finger and occluded-point estimates require review, especially with hand refinement disabled. These are anatomical pose landmarks; no contact point or pressure is inferred.
 
@@ -248,6 +257,8 @@ The additional eight-node core workflow passed a full 539-frame run and a 32-fra
 The updated streaming `VIDEO` input passed a fresh 270-sample run in 42.90 seconds, a six-frame interval bounded by an upstream trim plus a node offset, and a change to `left_index_tip` that reused the existing pose cache. Earlier CLI caches still load through the node. The expanded Python suite passes 24 tests, including all 72 anchor mappings and variable-rate trim timing. Run `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/stream_queue_smoke.py` against the isolated test instance to reproduce the new queue checks.
 
 Mask-video validation uses a four-second, two-panel copy of the supplied clip with two half-resolution mask videos. Native GPU inference selected the correct panel in each 64-sample branch, preserved four deliberately blank mask frames per person, and reused independent pose caches. The nine-node canvas and masked editor passed browser checks; the unmasked ROI path also passed fresh inference. All 29 Python tests pass, covering mask packing, timestamp mismatches, missing-mask gaps and cache invalidation. This fixture validates mask integration, not an upstream tracker's identity accuracy. Reproduce it with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/mask_queue_smoke.py`; the test uploads its generated videos under ComfyUI's `input/s3f_mask_test/` directory.
+
+The anchor cleanup passes 30 Python tests plus JavaScript migration/export checks. The ComfyUI queue verifies all eight general anchors, both override inputs and legacy API selections against direct calculations. Browser checks cover the hand-average marker, short dropdowns, both migrated selections and save/reload. Reproduce the queue checks without inference using `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/anchor_queue_smoke.py --cache /absolute/path/to/poses.npz`.
 
 ## Next stages
 
