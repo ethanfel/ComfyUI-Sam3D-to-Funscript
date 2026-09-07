@@ -137,8 +137,8 @@ function selectionControls() {
     }
 }
 function setSelection(start,end) {
-    const duration=Math.floor(project.metadata.duration_ms);
-    project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,Math.round(t)))).sort((a,b)=>a-b);
+    const duration=roundEven(project.metadata.duration_ms);
+    project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,roundEven(t)))).sort((a,b)=>a-b);
     selectionControls();render();
 }
 function buildTracks() {

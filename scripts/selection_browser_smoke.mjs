@@ -6,6 +6,7 @@ import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {spawn} from "node:child_process";
 import {initializeTimeline,applyTrack} from "../assets/timeline.mjs";
+import {roundEven,evaluate as curveValue} from "../assets/curve.mjs";
 
 const input=path.resolve(process.argv[2]),output=path.resolve(process.argv[3]||"development/selection-copy/browser");
 assert.ok(input,"Pass an offline viewer path");fs.mkdirSync(output,{recursive:true});
@@ -65,20 +66,44 @@ try{
     assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/Main L0 is locked/);
     assert.equal(await evaluate(`document.querySelector('${lane(hand)} .copy-selection').disabled`),true);
     await click('#lockMain');
+    // The last pose marks the START of the last frame; its script holds through
+    // the clip duration. Selecting that held tail must not disable copying.
+    const end=roundEven(original.metadata.duration_ms);
     await select('#selectionEnd','18');
-    assert.equal(await evaluate("document.querySelector('#applySection').disabled"),true);
-    assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/within this source/);
+    assert.equal(await evaluate("document.querySelector('#applySection').disabled"),false);
+    assert.equal(await evaluate("Number(document.querySelector('#selectionEnd').value)*1000"),end);
+    await select('#zoom','0');
+    await evaluate(`document.querySelector('${lane(hand)} canvas').scrollIntoView({block:'center'})`);
+    const drag=await evaluate(`(()=>{const r=document.querySelector('${lane(hand)} canvas').getBoundingClientRect();return {start:r.left+42+9500/${original.metadata.duration_ms}*(r.width-54),end:r.right-9,y:r.top+r.height/2};})()`);
+    await call('Input.dispatchMouseEvent',{type:'mousePressed',x:drag.start,y:drag.y,button:'left',buttons:1,clickCount:1,modifiers:8});
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:drag.end,y:drag.y,button:'left',buttons:1,modifiers:8});
+    await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:drag.end,y:drag.y,button:'left',buttons:0,clickCount:1,modifiers:8});
+    assert.equal(await evaluate("Number(document.querySelector('#selectionEnd').value)*1000"),end);
+    assert.equal(await evaluate(`document.querySelector('${lane(hand)} .copy-selection').disabled`),false);
+    const tailExpected=structuredClone(original);applyTrack(tailExpected,track,'L0',{start:9500,end,blendMs:200});
+    await click(`${lane(hand)} .copy-selection`);saved=JSON.parse((await download())['project.json']);
+    assert.deepEqual(saved.scripts,tailExpected.scripts);await click('#undo');
+    await click('#selectMain');await click('#applySection');saved=JSON.parse((await download())['project.json']);
+    assert.deepEqual(saved.scripts,tailExpected.scripts);await click('#undo');
+    await select('#join','cut');await click('#applySection');saved=JSON.parse((await download())['project.json']);
+    assert.equal(saved.scripts.L0.actions.at(-1).at,end);
+    assert.equal(saved.scripts.L0.actions.at(-1).pos,roundEven(curveValue(track.script.actions,end)));
+    for(const axis of ['L1','L2','R0','R1','R2'])assert.deepEqual(saved.scripts[axis],original.scripts[axis]);
+    await click('#undo');await select('#join','blend');
+    await click('#selectTrack');assert.equal(await evaluate("Number(document.querySelector('#selectionEnd').value)*1000"),end);
+    await select('#selectionStart','9.5');
     await select('#selectionEnd','9.5');assert.match(await evaluate("document.querySelector('#selectionStatus').textContent"),/time range/);
-    await select('#selectionEnd','14.7');await click('#selectMain');
+    await select('#selectionEnd',String(end/1000));await click('#selectMain');
     await evaluate("document.querySelector('#video').style.visibility='hidden';document.querySelector('.curves').scrollIntoView({block:'start'})");
     fs.writeFileSync(output+'/selection-source.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
     const files=await download(),offline=output+'/roundtrip.html';fs.writeFileSync(offline,files['viewer.html']);
     await call('Page.navigate',{url:pathToFileURL(offline).href});
     await until(()=>evaluate("document.querySelectorAll('#tracks .track').length>=2"),'selection roundtrip');
     assert.equal(await evaluate("document.querySelector('#applySection').disabled"),false);
-    await click('#applySection');saved=JSON.parse((await download())['project.json']);assert.deepEqual(saved.scripts,expected.scripts);
+    await click('#applySection');saved=JSON.parse((await download())['project.json']);assert.deepEqual(saved.scripts,tailExpected.scripts);
     await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});await pause(100);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
-    report.checks.push('Selection retains its source when main is active; toolbar and row copies match expected blend on L0 only; lock, empty/out-of-coverage feedback, Undo, offline roundtrip and narrow layout');
+    report.checks.push('Selection retains its source when main is active; toolbar and row copies match expected blend on L0 only; lock, empty-range feedback, Undo, offline roundtrip and narrow layout');
+    report.checks.push('Shift-drag to the right edge, typed clip-end selection and Select track range include the final held frame; toolbar and row buttons copy to L0, cut retains the exact final source value, other axes stay unchanged and the end selection survives offline re-export');
     assert.deepEqual(report.errors,[]);fs.writeFileSync(output+'/report.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{ws?.close();chrome.kill('SIGTERM');}

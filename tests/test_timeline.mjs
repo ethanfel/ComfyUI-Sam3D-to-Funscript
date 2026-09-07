@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {evaluate} from "../assets/curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, selectionTrack, selectionProblem} from "../assets/timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, selectionTrack, selectionProblem, trackCoverage} from "../assets/timeline.mjs";
 import {syncProjectInputs, migrateProjectInputs} from "../web/projects.mjs";
 
 const main=[{at:0,pos:10},{at:127,pos:91},{at:522,pos:7},{at:1000,pos:62},{at:2000,pos:23}];
@@ -65,6 +65,35 @@ test("Time selection keeps its source while inspecting main and copies exactly o
     project.timeline.selection=[300,300];assert.match(selectionProblem(project,track,'L0'),/time range/);
     project.timeline.selection=[300,2001];assert.match(selectionProblem(project,track,'L0'),/within this source/);
     project.timeline.tracks=[];assert.equal(selectionTrack(project),null);
+});
+test("Selection includes the final frame's held duration with the same rounding as exported actions",()=>{
+    for(const [last,duration,end] of [[16625,16656.25,16656],[1968.75,2000.75,2001],[1968.5,2000.5,2000]]){
+        const project=fixture();project.times_ms=[0,1000,last];project.metadata.duration_ms=duration;
+        project.scripts.L0.actions=[{at:0,pos:10},{at:end,pos:20}];
+        initializeTimeline(project);const track=project.timeline.tracks[0];
+        track.script.actions=[{at:0,pos:80},{at:1000,pos:90},{at:end,pos:90}];
+        project.timeline.selection=[1500,end];
+        assert.deepEqual(trackCoverage(project,track),[0,end]);
+        assert.equal(selectionProblem(project,track,'L0'),'');
+        applyTrack(project,track,'L0',{start:1500,end,method:'cut'});
+        assert.equal(project.scripts.L0.actions.at(-1).at,end);
+        assert.equal(evaluate(project.scripts.L0.actions,end),90);
+        assert.equal(project.timeline.main.L0.regions.at(-1).end,end);
+        assert.deepEqual(trackCoverage(JSON.parse(JSON.stringify(project)),track),[0,end]);
+        project.timeline.selection=[1500,end+1];
+        assert.match(selectionProblem(project,track,'L0'),/within this source/);
+        assert.throws(()=>applyTrack(project,track,'L0',{start:1500,end:end+1}),/analysis/);
+    }
+});
+test("A trimmed source includes its final frame but cannot copy unrelated video time",()=>{
+    const project=fixture();project.times_ms=[500.25,1000.25,1500.25];project.metadata.duration_ms=1540.25;
+    initializeTimeline(project);project.metadata={...project.metadata,duration_ms:2000};
+    const track=project.timeline.tracks[0];
+    assert.deepEqual(trackCoverage(project,track),[500,1540]);
+    project.timeline.selection=[500,1540];assert.equal(selectionProblem(project,track,'L0'),'');
+    for(const selection of [[0,1540],[500,1541],[500,2000]]){
+        project.timeline.selection=selection;assert.match(selectionProblem(project,track,'L0'),/within this source/);
+    }
 });
 test("Latest and saved sources are distinguishable after reruns, reverts and legacy reloads",()=>{
     const project=fixture();initializeTimeline(project);

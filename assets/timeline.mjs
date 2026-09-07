@@ -145,8 +145,13 @@ export function restoreTimeline(project, state) {
 }
 
 export function trackCoverage(project, track) {
-    const source = windowProject(project, track.source, track.window);
-    return [Math.ceil(source.times_ms[0]), Math.floor(source.times_ms.at(-1))];
+    const source = sourceProject(project, track.source);
+    // A pose timestamp marks the start of its frame. The final value is held
+    // through duration_ms, including that frame's display duration. Fitted
+    // tracks retain their chosen window even when its edges fall between frames.
+    const start = track.window?.[0] ?? source.times_ms[0];
+    const end = track.window?.[1] ?? source.metadata.duration_ms ?? source.times_ms.at(-1);
+    return [roundEven(start), Math.min(roundEven(end), roundEven(project.metadata.duration_ms))];
 }
 
 function windowProject(project, sourceId, window) {

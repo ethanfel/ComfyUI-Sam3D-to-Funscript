@@ -75,3 +75,16 @@ test("Invalid selections fail before adding a track or changing main",()=>{
     for(const window of [[0,0],[-1,1000],[5000,20000],[6000,6001],[NaN,10000],[10000,6000]])assert.throws(()=>fitSelectionTrack(project,track,window));
     assert.equal(JSON.stringify(project),before);
 });
+
+test("Fitted tracks retain selection boundaries between frames and through the final held frame",()=>{
+    const project=fixture(),track=project.timeline.tracks[0],window=[6005,10040];
+    const fitted=fitSelectionTrack(project,track,window);
+    assert.deepEqual(trackCoverage(project,fitted),window);
+    assert.equal(trackProject(project,fitted).times_ms[0],6040);
+    assert.equal(trackProject(project,fitted).times_ms.at(-1),10000);
+    applyTrack(project,fitted,'L0',{start:6005,end:10040,method:'cut'});
+    assert.equal(project.scripts.L0.actions.at(-1).at,10040);
+    assert.equal(evaluate(project.scripts.L0.actions,10040),evaluate(fitted.script.actions,10040));
+    assert.throws(()=>applyTrack(project,fitted,'L0',{start:6004,end:10040}),/analysis/);
+    assert.throws(()=>fitSelectionTrack(project,fitted,[10001,10040]),/two analysed frames/);
+});
