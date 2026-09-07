@@ -1,7 +1,7 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
 import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
-import {editorSession} from "./editor-session.mjs";
+import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -68,6 +68,8 @@ function dirty(authored=true) { if(authored&&!locked()){const {track}=selected()
 function install(data, keepPlayback=false, output=null) {
     const oldAxis=$("axis").value, previousMs=currentMs, hadVideo=!!video.getAttribute("src");
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
+    keepPlayback=!!(keepPlayback&&sameVideoSource(project?.metadata?.source,data.metadata.source));
+    dragging=null;
     if(!keepPlayback){video.pause(); video.removeAttribute("src"); video.load();
     if(videoURL){URL.revokeObjectURL(videoURL);videoURL=null;}}
     initializeTimeline(data);restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;

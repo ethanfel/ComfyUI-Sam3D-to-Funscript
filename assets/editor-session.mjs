@@ -1,5 +1,10 @@
 // Server-backed drafts: one revision stream shared by the embedded and full editor.
 // A stale editor cannot overwrite a newer draft or a completed rerun.
+export function sameVideoSource(previous, incoming) {
+    if (typeof previous?.path !== 'string' || previous.path !== incoming?.path) return false;
+    return ['size', 'mtime_ns'].every(key => !(key in previous && key in incoming) || Number(previous[key]) === Number(incoming[key]));
+}
+
 export function editorSession({install, snapshot, status}) {
     const params = new URLSearchParams(location.search), session = params.get('session');
     if (!session || document.getElementById('s3f-project')) return null;
@@ -35,9 +40,10 @@ export function editorSession({install, snapshot, status}) {
         // Do not install over an edit made while the network read was in flight.
         if (pending || saving || failure) return;
         if (state && state.revision > revision) {
+            const sameMedia = sameVideoSource(snapshot()?.metadata?.source, state.project.metadata.source);
             revision = state.revision; output = state.output || id;
-            install(state.project, true, output);
-            status('Saved editor restored · locked and edited tracks preserved');
+            install(state.project, sameMedia, output);
+            status(sameMedia ? 'Saved editor restored · locked and edited tracks preserved' : 'Source video changed · new project loaded');
         }
     }
     channel && (channel.onmessage = () => {if (!pending && !saving && !failure) refresh().catch(error => status(error.message));});
