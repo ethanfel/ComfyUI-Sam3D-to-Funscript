@@ -30,10 +30,12 @@ class S3F_VideoPose:
             "start_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "Additional offset inside the connected VIDEO's trim."}),
             "duration_seconds": ("FLOAT", {"default": 0, "min": 0, "max": 86400, "tooltip": "0 uses the remaining input video, bounded by its trim and the sample limit."}),
             "max_frames": ("INT", {"default": 2000, "min": 2, "max": 100000}),
-            "rois_json": ("STRING", {"default": "[[0,0,1,1]]", "multiline": True, "tooltip": "Ordered static person crops: normalized [x,y,width,height]. Not automatic tracking."}),
+            "rois_json": ("STRING", {"default": "[[0,0,1,1]]", "multiline": True, "tooltip": "Ordered static person crops: normalized [x,y,width,height]. Ignored when mask_video is connected."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "fov": ("FLOAT", {"default": 0, "min": 0, "max": 179}),
             "use_cache": ("BOOLEAN", {"default": True}),
+        }, "optional": {
+            "mask_video": ("VIDEO", {"tooltip": "One person's white-on-black mask video from core Load Video. Must match the source timeline and canvas; smaller resolution is supported. Black frames mark missing poses. Overrides ROIs and outputs person slot 0."}),
         }}
 
     RETURN_TYPES = ("S3F_POSE_SEQUENCE", "STRING")
@@ -42,16 +44,23 @@ class S3F_VideoPose:
     CATEGORY = CATEGORY
 
     @classmethod
-    def IS_CHANGED(cls, video, model_file, use_cache=True, **kwargs):
-        if not use_cache:
+    def IS_CHANGED(cls, video, model_file, use_cache=True, mask_video=None, **kwargs):
+        # ComfyUI can fingerprint a node before its upstream VIDEO is available.
+        if not use_cache or video is None:
             return float("nan")
         path, start, duration = video_input_range(video)
-        return json.dumps([fingerprint(path), float(start), float(duration), fingerprint(folder_paths.get_full_path_or_raise("detection", model_file))], sort_keys=True)
+        signature = [fingerprint(path), float(start), float(duration), fingerprint(folder_paths.get_full_path_or_raise("detection", model_file))]
+        if mask_video is not None:
+            mask_path, mask_start, mask_duration = video_input_range(mask_video)
+            signature.append([fingerprint(mask_path), float(mask_start), float(mask_duration)])
+        return json.dumps(signature, sort_keys=True)
 
-    def run(self, video, start_seconds=0.0, duration_seconds=0.0, **kwargs):
+    def run(self, video, start_seconds=0.0, duration_seconds=0.0, mask_video=None, **kwargs):
         cache = Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "cache"
         path, start, duration = video_input_range(video, start_seconds, duration_seconds)
-        sequence = extract_video(path, cache_dir=cache, start_seconds=start, duration_seconds=duration, **kwargs)
+        mask_range = video_input_range(mask_video) if mask_video is not None else None
+        sequence = extract_video(path, cache_dir=cache, start_seconds=start, duration_seconds=duration,
+                                 mask_video_range=mask_range, **kwargs)
         return sequence, sequence.metadata["cache_path"]
 
 

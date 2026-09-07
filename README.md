@@ -92,7 +92,23 @@ In the original combined node, `sample_fps=16` selects actual frames on a 16 Hz 
 
 This runs one full-frame person estimate. With two separately selected crops, slot `0` can be the target and slot `1` the reference. Crop slots have a fixed order; overlapping crops can estimate the same person, and occluded people can be hallucinated by the model. Finite output is recorded as validity, **not as visibility or confidence**. The preview draws each crop and estimated skeleton so those failures are reviewable.
 
-Automatic SAM 3 mask tracking and interactive ROI drawing remain follow-up work for the combined node. The core-node alternative accepts native prediction output through the new `MHR_POSE_DATA` adapter and exposes the native predictor's optional tracking/bounding-box inputs.
+Mask videos can now supply the person selection as described below. Generating those masks and interactive ROI drawing remain follow-up work for the combined node. The core-node alternative accepts native prediction output through the `MHR_POSE_DATA` adapter and exposes the native predictor's optional tracking/bounding-box inputs.
+
+### Mask videos for separate people
+
+The streaming node accepts an optional **`mask_video` VIDEO input** from another core **Load Video** node. Supply one person's white-on-black mask video. Values of 128–255 select the person; 0–127 select background. The node passes the mask to native SAM3D for mask-conditioned inference; it does not just crop the source or black out its background.
+
+Connect the original clip to `video` and the person's mask clip to `mask_video`. In this mode the mask supplies the moving crop, `rois_json` is ignored, and the selected person is always **`target_person=0`**. The preview shows the mask's moving bounding rectangle and the selected anatomical anchor.
+
+Use [mask_videos_to_funscripts.json](workflows/mask_videos_to_funscripts.json) for two independent script branches sharing one source video. Select a source and one mask file for each person. Both branches use person slot 0 because each analyses its own mask. Duplicate a branch for more people. These are separate scripts; this workflow does not combine the branches into a body-relative two-person pose sequence.
+
+- Masks must cover the full source canvas. A lower resolution with the same aspect ratio is supported; cropped mask images are not aligned.
+- Preserve the original frame timestamps. Encoding rounding up to 1 ms is accepted. Mismatched timestamps or a mask ending before a required frame stop extraction rather than silently shifting the selected person.
+- Masks use the original source timeline. If trimming with core **Trim Video**, keep source and mask on that same timeline; a separately exported trim that restarts at zero must be aligned before use. The node's `start_seconds` and sampling controls apply to both streams.
+- A completely black mask frame is a missing pose. It never falls back to full-frame person detection. Existing gap handling holds the previous script position and resets motion processing when the person returns.
+- The mask must keep identifying the same person. A mask containing multiple people is treated as one prompt; the node does not split it or repair identity switches from an upstream tracker.
+
+The node keeps a small source-frame batch, one decoded mask frame and packed masks for that batch. It never materializes the complete mask video as `MASK`/`IMAGE` tensors. Model and per-batch mask processing still need RAM/VRAM. Each person's mask file and trim settings are included in the pose-cache key; replacing a mask invalidates that branch's cache without affecting other branches.
 
 ### Coordinates and anchors
 
@@ -230,6 +246,8 @@ The streaming graph is tested through the actual ComfyUI queue. Browser tests co
 The additional eight-node core workflow passed a full 539-frame run and a 32-frame trim from 4–5 seconds, preserving original timestamps. Its canvas connections/native settings, editor controls and downloads passed browser checks. All 20 Python tests and JavaScript curve/export checks pass. Reproduce the core queue check with `scripts/core_queue_smoke.py --base http://127.0.0.1:8198` on the isolated test instance.
 
 The updated streaming `VIDEO` input passed a fresh 270-sample run in 42.90 seconds, a six-frame interval bounded by an upstream trim plus a node offset, and a change to `left_index_tip` that reused the existing pose cache. Earlier CLI caches still load through the node. The expanded Python suite passes 24 tests, including all 72 anchor mappings and variable-rate trim timing. Run `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/stream_queue_smoke.py` against the isolated test instance to reproduce the new queue checks.
+
+Mask-video validation uses a four-second, two-panel copy of the supplied clip with two half-resolution mask videos. Native GPU inference selected the correct panel in each 64-sample branch, preserved four deliberately blank mask frames per person, and reused independent pose caches. The nine-node canvas and masked editor passed browser checks; the unmasked ROI path also passed fresh inference. All 29 Python tests pass, covering mask packing, timestamp mismatches, missing-mask gaps and cache invalidation. This fixture validates mask integration, not an upstream tracker's identity accuracy. Reproduce it with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/mask_queue_smoke.py`; the test uploads its generated videos under ComfyUI's `input/s3f_mask_test/` directory.
 
 ## Next stages
 

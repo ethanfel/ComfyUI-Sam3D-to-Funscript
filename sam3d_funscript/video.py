@@ -1,6 +1,7 @@
 """Bounded video decoding, exact presentation timestamps and native SAM3D inference."""
 
 from fractions import Fraction
+from contextlib import closing, nullcontext
 import hashlib
 import json
 import math
@@ -11,6 +12,7 @@ import av
 import numpy as np
 
 from .core import PoseSequence
+from .masks import MaskVideoReader, timestamp_seconds
 
 CACHE_VERSION = 1
 
@@ -107,19 +109,24 @@ def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0,
 
 def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seconds=0.0,
                   duration_seconds=0.0, max_frames=2000, rois_json="[[0,0,1,1]]",
-                  batch_size=8, fov=0.0, use_cache=True):
+                  batch_size=8, fov=0.0, use_cache=True, mask_video_range=None):
     # Imports stay here so the geometry/editor can run without ComfyUI or CUDA.
     import torch
     import folder_paths
     import comfy.model_management
     from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
 
-    rois = parse_rois(rois_json)
+    rois = [] if mask_video_range is not None else parse_rois(rois_json)
+    people_count = 1 if mask_video_range is not None else len(rois)
     model_path = folder_paths.get_full_path_or_raise("detection", model_file)
     key = {"cache_version": CACHE_VERSION, "video": fingerprint(video_path), "model": fingerprint(model_path),
            "sample_fps": float(sample_fps), "start_seconds": float(start_seconds), "duration_seconds": float(duration_seconds),
            "max_frames": int(max_frames), "rois": rois, "fov": float(fov), "batch_size": int(batch_size),
            "native_source": fingerprint(Path(__import__(SAM3DBody_Predict.__module__, fromlist=["__file__"]).__file__))}
+    if mask_video_range is not None:
+        mask_path, mask_start, mask_duration = mask_video_range
+        key["mask_video"] = {"version": 1, "source": fingerprint(mask_path),
+            "start_seconds": float(mask_start), "duration_seconds": float(mask_duration), "threshold": 128}
     digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:24]
     cache = Path(cache_dir).resolve() / f"{digest}.npz"
     if use_cache and cache.exists():
@@ -129,25 +136,39 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
             sequence.metadata["duration_ms"] = min(sequence.metadata["duration_ms"], float((start_seconds + duration_seconds) * 1000))
         return sequence
     started = time.perf_counter()
-    model = SAM3DBody_Loader.execute(model_file).result[0]
+    model = None
     rows, timestamps, segments = [], [], []
     images, batch_times = [], []
+    batch_masks, mask_boxes = [], []
     previous_thumbnail, segment = None, 0
     image_size = None
     def flush():
+        nonlocal model
         if not images:
             return
         comfy.model_management.throw_exception_if_processing_interrupted()
         height, width = images[0].shape[:2]
-        bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
-        batch = torch.from_numpy(np.stack(images).astype(np.float32) / 255.0)
-        prediction = SAM3DBody_Predict.execute(model, batch, bboxes=bboxes, run_hand_refinement=False,
-                                              fov=fov, batch_size=batch_size).result[0]
-        for people in prediction["frames"]:
-            points = np.full((len(rois), 70, 3), np.nan, dtype=np.float32)
-            pixels = np.full((len(rois), 70, 2), np.nan, dtype=np.float32)
-            valid = np.zeros(len(rois), dtype=bool)
-            if len(people) != len(rois):
+        active = [i for i in range(len(images)) if mask_video_range is None or batch_masks[i] is not None]
+        predictions = {}
+        if active:
+            if model is None:
+                model = SAM3DBody_Loader.execute(model_file).result[0]
+            bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
+            batch = torch.from_numpy(np.stack([images[i] for i in active]).astype(np.float32) / 255.0)
+            track_data = None
+            if mask_video_range is not None:
+                track_data = {"packed_masks": torch.from_numpy(np.stack([batch_masks[i] for i in active])[:, None])}
+            prediction = SAM3DBody_Predict.execute(model, batch, track_data=track_data, bboxes=bboxes,
+                run_hand_refinement=False, fov=fov, batch_size=batch_size).result[0]
+            if len(prediction["frames"]) != len(active):
+                raise ValueError("SAM3D returned a different number of frames than the input batch")
+            predictions = dict(zip(active, prediction["frames"]))
+        for i in range(len(images)):
+            points = np.full((people_count, 70, 3), np.nan, dtype=np.float32)
+            pixels = np.full((people_count, 70, 2), np.nan, dtype=np.float32)
+            valid = np.zeros(people_count, dtype=bool)
+            people = predictions.get(i, [])
+            if i in predictions and len(people) != people_count:
                 raise ValueError("SAM3D returned a different number of people than ROI slots")
             for slot, person in enumerate(people):
                 points[slot] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
@@ -158,19 +179,27 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         print(f"SAM3D Funscript: extracted {len(rows)} samples", flush=True)
         images.clear()
         batch_times.clear()
-    for rgb, timing in video_frames(video_path, sample_fps, start_seconds, duration_seconds, max_frames):
-        if image_size is not None and rgb.shape[:2] != image_size:
-            raise ValueError("Video changes resolution; split it into constant-resolution clips")
-        image_size = rgb.shape[:2]
-        thumbnail = rgb[::max(1, rgb.shape[0] // 32), ::max(1, rgb.shape[1] // 32)].astype(np.float32) / 255
-        if previous_thumbnail is not None and np.mean(np.abs(thumbnail - previous_thumbnail)) > 0.22:
-            segment += 1
-        previous_thumbnail = thumbnail
-        segments.append(segment)
-        images.append(rgb)
-        batch_times.append(timing)
-        if len(images) >= max(1, batch_size // len(rois)):
-            flush()
+        batch_masks.clear()
+    mask_reader = MaskVideoReader(*mask_video_range) if mask_video_range is not None else nullcontext(None)
+    with mask_reader as masks, closing(video_frames(video_path, sample_fps, start_seconds, duration_seconds, max_frames)) as frames:
+        for rgb, timing in frames:
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            if image_size is not None and rgb.shape[:2] != image_size:
+                raise ValueError("Video changes resolution; split it into constant-resolution clips")
+            image_size = rgb.shape[:2]
+            if masks is not None:
+                packed, box = masks.at(timestamp_seconds(timing), image_size)
+                batch_masks.append(packed)
+                mask_boxes.append([box])
+            thumbnail = rgb[::max(1, rgb.shape[0] // 32), ::max(1, rgb.shape[1] // 32)].astype(np.float32) / 255
+            if previous_thumbnail is not None and np.mean(np.abs(thumbnail - previous_thumbnail)) > 0.22:
+                segment += 1
+            previous_thumbnail = thumbnail
+            segments.append(segment)
+            images.append(rgb)
+            batch_times.append(timing)
+            if len(images) >= max(1, batch_size // people_count):
+                flush()
     flush()
     if len(rows) < 2:
         raise ValueError("Selected video range contains fewer than two sampled frames")
@@ -179,6 +208,8 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
     duration = times[-1] + timestamps[-1]["frame_duration_ms"]
     if duration_seconds:
         duration = min(duration, float((start_seconds + duration_seconds) * 1000))
+    if mask_video_range is not None and mask_duration:
+        duration = min(duration, float((mask_start + mask_duration) * 1000))
     metadata = {"source": key["video"], "model": key["model"], "image_size": list(image_size),
                 "duration_ms": duration, "analysed_start_ms": times[0], "analysed_end_ms": times[-1],
                 "timestamps": timestamps, "rois": rois, "cache_hit": False, "cache_path": str(cache),
@@ -187,6 +218,11 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                 "warnings": ["Static ROI slots are not identity tracking. Inspect overlap, occlusion and subject changes.",
                              "Validity means finite model output, not visibility or calibrated confidence.",
                              "Cut detection is a thumbnail-change heuristic; review missed cuts and false positives."]}
+    if mask_video_range is not None:
+        metadata.update(mask_video=key["mask_video"], mask_boxes=mask_boxes,
+                        missing_mask_samples=sum(boxes[0] is None for boxes in mask_boxes))
+        metadata["warnings"][0] = "Person 0 follows the supplied mask video. Mask identity switches are not detected; review overlap and occlusion."
+        metadata["warnings"].append("Black mask frames are missing samples; output holds across gaps. One mask video must identify one person.")
     if len(rows) >= max_frames:
         metadata["warnings"].append("Sample limit reached; the analysed interval may stop before the video ends.")
     sequence = PoseSequence(times, np.stack([r[0] for r in rows]), np.stack([r[1] for r in rows]),

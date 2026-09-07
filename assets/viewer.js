@@ -47,8 +47,8 @@ function drawOverlay(index) {
     const scale=Math.min(w/iw,h/ih),ox=(w-iw*scale)/2,oy=(h-ih*scale)/2;
     (project.pixels?.[index]||[]).forEach((person,slot)=>{
         for(const [a,b] of EDGES) if(finitePoint(person[a])&&finitePoint(person[b])) line(ctx,[person[a][0]*scale+ox,person[a][1]*scale+oy],[person[b][0]*scale+ox,person[b][1]*scale+oy],COLORS[slot%COLORS.length]);
-        const roi=project.metadata.rois?.[slot];
-        if(roi){ctx.strokeStyle=COLORS[slot%COLORS.length];ctx.strokeRect(ox+roi[0]*iw*scale,oy+roi[1]*ih*scale,roi[2]*iw*scale,roi[3]*ih*scale);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(`ROI ${slot}`,ox+roi[0]*iw*scale+6,oy+roi[1]*ih*scale+15);}
+        const roi=project.metadata.mask_boxes?.[index]?.[slot]||project.metadata.rois?.[slot];
+        if(roi){ctx.strokeStyle=COLORS[slot%COLORS.length];ctx.strokeRect(ox+roi[0]*iw*scale,oy+roi[1]*ih*scale,roi[2]*iw*scale,roi[3]*ih*scale);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(`${project.metadata.mask_video?"Mask person":"ROI"} ${slot}`,ox+roi[0]*iw*scale+6,oy+roi[1]*ih*scale+15);}
     });
     const slot=project.config.target_person,joints=project.anchor_indices?.target||ANCHORS[project.config.target_anchor];
     const pointAt=i=>{const points=joints.map(j=>project.pixels?.[i]?.[slot]?.[j]);if(!points.every(finitePoint))return null;return [points.reduce((s,p)=>s+p[0],0)/points.length*scale+ox,points.reduce((s,p)=>s+p[1],0)/points.length*scale+oy];};

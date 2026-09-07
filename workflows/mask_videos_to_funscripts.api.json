@@ -1,0 +1,118 @@
+{
+  "1": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "videos/nsfw/rcowgirl_6.mp4"
+    }
+  },
+  "2": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "person_0_mask.mp4"
+    }
+  },
+  "3": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "person_1_mask.mp4"
+    }
+  },
+  "4": {
+    "class_type": "S3F_VideoPose",
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ],
+      "model_file": "sam_3d_body_dinov3_bf16.safetensors",
+      "sample_fps": 16.0,
+      "start_seconds": 0.0,
+      "duration_seconds": 0.0,
+      "max_frames": 2000,
+      "rois_json": "[[0,0,1,1]]",
+      "batch_size": 8,
+      "fov": 0.0,
+      "use_cache": true,
+      "mask_video": [
+        "2",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "4",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "pelvis",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{}"
+    }
+  },
+  "8": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "project": [
+        "6",
+        0
+      ],
+      "filename": "person_A"
+    }
+  },
+  "5": {
+    "class_type": "S3F_VideoPose",
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ],
+      "model_file": "sam_3d_body_dinov3_bf16.safetensors",
+      "sample_fps": 16.0,
+      "start_seconds": 0.0,
+      "duration_seconds": 0.0,
+      "max_frames": 2000,
+      "rois_json": "[[0,0,1,1]]",
+      "batch_size": 8,
+      "fov": 0.0,
+      "use_cache": true,
+      "mask_video": [
+        "3",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "5",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "pelvis",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{}"
+    }
+  },
+  "9": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "project": [
+        "7",
+        0
+      ],
+      "filename": "person_B"
+    }
+  }
+}

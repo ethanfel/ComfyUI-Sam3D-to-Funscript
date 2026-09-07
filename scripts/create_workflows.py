@@ -137,6 +137,50 @@ def main():
     comparison["groups"][3]["bounding"] = [1000, 60, 1320, 850]
     (ROOT / "workflows/video_with_reference.json").write_text(json.dumps(comparison, indent=2))
     core_workflow()
+    masked_workflow()
+
+
+def masked_workflow():
+    """Two independent person scripts sharing one lazy source VIDEO."""
+    api = {
+        "1": {"class_type": "LoadVideo", "inputs": {"file": "videos/nsfw/rcowgirl_6.mp4"}},
+        "2": {"class_type": "LoadVideo", "inputs": {"file": "person_0_mask.mp4"}},
+        "3": {"class_type": "LoadVideo", "inputs": {"file": "person_1_mask.mp4"}},
+    }
+    nodes, links = [], []
+    for node_id, y, title, outgoing in [(1, 140, "Source video · shared", [1, 2]),
+            (2, 800, "Person A mask · white on black", [3]), (3, 1460, "Person B mask · white on black", [4])]:
+        nodes.append(make_node(node_id, api[str(node_id)], [80, y], [340, 550], [],
+            [{"name": "VIDEO", "type": "VIDEO", "links": outgoing}], [api[str(node_id)]["inputs"]["file"]], title))
+    for branch, y, name in [(0, 480, "person_A"), (1, 1300, "person_B")]:
+        extract_id, motion_id, export_id = 4 + branch, 6 + branch, 8 + branch
+        api[str(extract_id)] = {"class_type": "S3F_VideoPose", "inputs": {
+            **API["1"]["inputs"], "video": ["1", 0], "mask_video": [str(2 + branch), 0]}}
+        api[str(motion_id)] = {"class_type": "S3F_BuildMotion", "inputs": {
+            **API["2"]["inputs"], "poses": [str(extract_id), 0]}}
+        api[str(export_id)] = {"class_type": "S3F_PreviewExport", "inputs": {"project": [str(motion_id), 0], "filename": name}}
+        nodes.append(make_node(extract_id, api[str(extract_id)], [520, y], [380, 480],
+            [{"name": "video", "type": "VIDEO", "link": 1 + branch}, {"name": "mask_video", "type": "VIDEO", "link": 3 + branch}],
+            [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "links": [5 + branch]}, {"name": "cache_path", "type": "STRING", "links": None}],
+            list(API["1"]["inputs"].values())[1:], f"{name} · stream masked poses"))
+        nodes.append(make_node(motion_id, api[str(motion_id)], [980, y], [380, 440],
+            [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "link": 5 + branch}],
+            [{"name": "S3F_MOTION_PROJECT", "type": "S3F_MOTION_PROJECT", "links": [7 + branch]}],
+            list(API["2"]["inputs"].values())[1:], f"{name} · anchors & axes"))
+        nodes.append(make_node(export_id, api[str(export_id)], [1450, y], [820, 720],
+            [{"name": "project", "type": "S3F_MOTION_PROJECT", "link": 7 + branch}],
+            [{"name": "project_path", "type": "STRING", "links": None}], [name], f"{name} · preview & export"))
+        links.extend([[1 + branch, 1, 0, extract_id, 0, "VIDEO"], [3 + branch, 2 + branch, 0, extract_id, 1, "VIDEO"],
+            [5 + branch, extract_id, 0, motion_id, 0, "S3F_POSE_SEQUENCE"],
+            [7 + branch, motion_id, 0, export_id, 0, "S3F_MOTION_PROJECT"]])
+    groups = [{"title": title, "bounding": box, "color": color, "font_size": 22, "flags": {}}
+        for title, box, color in [("Core video inputs · matching timelines", [50, 60, 400, 2010], "#365770"),
+            ("Person A · mask supplies identity · target_person = 0", [490, 400, 1810, 810], "#446958"),
+            ("Person B · separate mask and script · target_person = 0", [490, 1220, 1810, 840], "#655079")]]
+    workflow = {"last_node_id": 9, "last_link_id": 8, "nodes": nodes, "links": links, "groups": groups,
+        "config": {}, "extra": {"ds": {"scale": .4, "offset": [30, 20]}}, "version": .4}
+    (ROOT / "workflows/mask_videos_to_funscripts.json").write_text(json.dumps(workflow, indent=2))
+    (ROOT / "workflows/mask_videos_to_funscripts.api.json").write_text(json.dumps(api, indent=2))
 
 
 if __name__ == "__main__":

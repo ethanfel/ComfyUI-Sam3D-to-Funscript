@@ -24,6 +24,7 @@ try{
     ws.addEventListener("message",event=>{const m=JSON.parse(event.data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(m.error):p.resolve(m.result);}else if(m.method==="Runtime.exceptionThrown")report.viewer_errors.push(m.params.exceptionDetails);});
     const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++next;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
     const evaluate=async expression=>{const result=await call("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(result.exceptionDetails)throw new Error(JSON.stringify(result.exceptionDetails));return result.result.value;};
+    const data=await(await fetch(`${base}/sam3d_funscript/projects/${id}`)).json();
     await call("Runtime.enable");await call("Page.enable");
     await call("Browser.setDownloadBehavior",{behavior:"allow",downloadPath:output});
     await call("Emulation.setDeviceMetricsOverride",{width:1450,height:1060,deviceScaleFactor:1,mobile:false});
@@ -31,9 +32,10 @@ try{
     await until(()=>evaluate("document.querySelector('#axis')?.options.length===6"),"project load");
     await until(()=>evaluate("document.querySelector('#video').readyState>=2"),"video decode");
     report.video=await evaluate("({width:document.querySelector('#video').videoWidth,height:document.querySelector('#video').videoHeight,duration:document.querySelector('#video').duration})");
-    assert.equal(report.video.width,768);assert.equal(report.video.height,1024);
-    await evaluate("document.querySelector('#video').currentTime=2.5");
-    await until(()=>evaluate("Math.abs(parseFloat(document.querySelector('#time').textContent)-2.5)<.05"),"video seek synchronization");
+    assert.equal(report.video.width,data.metadata.image_size[1]);assert.equal(report.video.height,data.metadata.image_size[0]);
+    const seekTime=Math.min(2.5,report.video.duration/2);
+    await evaluate(`document.querySelector('#video').currentTime=${seekTime}`);
+    await until(()=>evaluate(`Math.abs(parseFloat(document.querySelector('#time').textContent)-${seekTime})<.05`),"video seek synchronization");
     report.checks.push("Video decode and seek synchronize the timeline");
     const initial=await evaluate("document.querySelector('#metrics').textContent");
     await evaluate("document.querySelector('#range').value=1;document.querySelector('#rebuild').click()");
@@ -42,7 +44,9 @@ try{
     assert.equal(await evaluate("document.querySelector('#metrics').textContent"),initial);
     report.checks.push("Calibration regeneration and undo work");
     const doc=await call("DOM.getDocument"),referenceInput=await call("DOM.querySelector",{nodeId:doc.root.nodeId,selector:"#referenceFile"});
-    await call("DOM.setFileInputFiles",{nodeId:referenceInput.nodeId,files:[path.resolve(`development/output/sam3d_funscript/${id}/rcowgirl_6.funscript`)]});
+    const projectFolder=path.resolve(`development/output/sam3d_funscript/${id}`);
+    const scriptFile=fs.readdirSync(projectFolder).find(name=>name.endsWith(".funscript")&&!/\.(pitch|roll|sway|twist|surge)\.funscript$/.test(name));
+    await call("DOM.setFileInputFiles",{nodeId:referenceInput.nodeId,files:[path.join(projectFolder,scriptFile)]});
     await until(()=>evaluate("document.querySelector('#referenceMetrics').textContent.includes('RMSE 0.0')"),"reference agreement");
     await evaluate("document.querySelector('#referenceOffset').value=100;document.querySelector('#referenceOffset').dispatchEvent(new Event('change'))");
     assert.ok(!await evaluate("document.querySelector('#referenceMetrics').textContent.includes('RMSE 0.0')"));
@@ -50,7 +54,6 @@ try{
     assert.ok(await evaluate("document.querySelector('#referenceMetrics').textContent.includes('RMSE 0.0')"));
     report.checks.push("Reference upload, agreement metrics, offset and undo work");
     // Real pointer input checks the drag path, including pointer capture.
-    const data=await(await fetch(`${base}/sam3d_funscript/projects/${id}`)).json();
     if(data.anchor_indices){
         await evaluate(`(()=>{const ctx=document.querySelector('#overlay').getContext('2d');
             const draw=ctx.fillText;ctx.fillText=function(text,...args){window.s3fAnchorLabel=text;return draw.call(this,text,...args);};
@@ -128,6 +131,15 @@ try{
         delete prompt["4"].inputs["video-preview"];delete expected["4"].inputs["video-preview"];
         assert.deepEqual(prompt,expected);
         report.checks.push("Legacy path workflow migrates to core VIDEO without changing the generated prompt");
+    }
+    if(report.frontend.prompt["4"]?.class_type==="S3F_VideoPose"){
+        assert.deepEqual(report.frontend.prompt["4"].inputs.video,["1",0]);
+        assert.deepEqual(report.frontend.prompt["5"].inputs.video,["1",0]);
+        assert.deepEqual(report.frontend.prompt["4"].inputs.mask_video,["2",0]);
+        assert.deepEqual(report.frontend.prompt["5"].inputs.mask_video,["3",0]);
+        assert.equal(report.frontend.prompt["6"].inputs.target_person,0);
+        assert.equal(report.frontend.prompt["7"].inputs.target_person,0);
+        report.checks.push("Two person branches share the source VIDEO and keep separate mask connections");
     }
     report.checks.push(`Canvas workflow loads all ${workflow.nodes.length} nodes, preserves connections/settings and restores the preview iframe`);
     fs.writeFileSync(output+"/report.json",JSON.stringify(report,null,2));
