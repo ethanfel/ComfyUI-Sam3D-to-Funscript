@@ -31,7 +31,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html")
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs"):
+        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "timeline.mjs"):
             raise web.HTTPNotFound()
         return web.FileResponse(assets / name)
 

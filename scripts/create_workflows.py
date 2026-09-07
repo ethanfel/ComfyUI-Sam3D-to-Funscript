@@ -161,6 +161,40 @@ def main():
     (ROOT / "workflows/video_with_reference.json").write_text(json.dumps(comparison, indent=2))
     core_workflow()
     masked_workflow()
+    multitrack_workflow()
+
+
+def multitrack_workflow():
+    """One pose cache feeds independent anchors and one growing preview node."""
+    api = {"1": {"class_type": "S3F_LoadPoseCache", "inputs": {"cache_path": "/absolute/path/to/poses.npz"}}}
+    nodes = [make_node(1, api["1"], [80, 650], [350, 120], [],
+        [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "links": [1, 2, 3]}],
+        [api["1"]["inputs"]["cache_path"]], "Shared pose cache · no new inference")]
+    links = []
+    for slot, anchor in enumerate(("mouth", "left_hand", "right_hand")):
+        node_id = slot + 2
+        inputs = {**API["2"]["inputs"], "poses": ["1", 0], "target_anchor": anchor,
+                  "settings_json": json.dumps({"axis_settings": {"L0": {"component": "auto", "auto_fit": True}}})}
+        api[str(node_id)] = {"class_type": "S3F_BuildMotion", "inputs": inputs}
+        nodes.append(make_node(node_id, api[str(node_id)], [550, 140 + slot * 530], [400, 440],
+            [{"name": "poses", "type": "S3F_POSE_SEQUENCE", "link": slot + 1}],
+            [{"name": "project", "type": "S3F_MOTION_PROJECT", "links": [slot + 4]}],
+            list(inputs.values())[1:], f"project_{slot} · {anchor.replace('_', ' ')}"))
+        links.extend([[slot + 1, 1, 0, node_id, 0, "S3F_POSE_SEQUENCE"],
+                      [slot + 4, node_id, 0, 5, slot, "S3F_MOTION_PROJECT"]])
+    api["5"] = {"class_type": "S3F_PreviewExport", "inputs": {
+        **{f"project_{slot}": [str(slot + 2), 0] for slot in range(3)}, "filename": "multitrack"}}
+    nodes.append(make_node(5, api["5"], [1060, 140], [1150, 1080],
+        [{"name": f"project_{slot}", "type": "S3F_MOTION_PROJECT", "link": slot + 4 if slot < 3 else None} for slot in range(4)],
+        [{"name": "project_path", "type": "STRING", "links": None}], ["multitrack"], "Main timeline + anchor tracks · open full editor"))
+    groups = [{"title": title, "bounding": box, "color": color, "font_size": 22, "flags": {}}
+        for title, box, color in [("Shared cached poses", [50, 570, 410, 250], "#365770"),
+            ("Independent anchors & calibration", [520, 60, 460, 1630], "#446958"),
+            ("Assemble main · select sections · blend joins", [1030, 60, 1210, 1230], "#655079")]]
+    workflow = {"last_node_id": 5, "last_link_id": 6, "nodes": nodes, "links": links, "groups": groups,
+        "config": {}, "extra": {"ds": {"scale": .5, "offset": [30, 20]}}, "version": .4}
+    (ROOT / "workflows/multitrack_anchors.json").write_text(json.dumps(workflow, indent=2))
+    (ROOT / "workflows/multitrack_anchors.api.json").write_text(json.dumps(api, indent=2))
 
 
 def masked_workflow():

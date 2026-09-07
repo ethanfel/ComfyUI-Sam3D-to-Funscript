@@ -2,7 +2,7 @@
 
 A working first version of a local **video → SAM 3D Body → multi-axis motion → editable preview → funscript** pipeline.
 
-The node uses ComfyUI's native SAM 3D Body implementation and your existing model. Pose inference is cached separately from motion authoring. The browser editor includes the source video, projected skeleton, an orbitable 3D skeleton, six editable curves and selectable Handy 2 / SR6 wireframe previews.
+The node uses ComfyUI's native SAM 3D Body implementation and your existing model. Pose inference is cached separately from motion authoring. The browser editor includes the source video, projected skeleton, an orbitable 3D skeleton, a main timeline with additional anchor tracks, six output axes and selectable Handy 2 / SR6 wireframe previews.
 
 **Status:** development version, tested on the provided `rcowgirl_6.mp4` and the local `13_env_py313` environment. This is an authoring tool. Device models are schematic; the SR6 renderer solves illustrative linkage geometry, without device calibration, collision modelling or hardware control. Static person ROIs require visual review; they do not provide automatic identity tracking.
 
@@ -74,7 +74,7 @@ After reloading ComfyUI's custom nodes, both entry points appear under `motion/S
 | Poses → Multi-axis Motion | Build body/camera-relative curves and map them to normalized axes. |
 | Detailed Anchor Override | Select any of the 70 native landmarks and override the target or reference anchor through an optional connection. |
 | Load Funscript Project | Reopen `project.json`, including manual browser edits. |
-| Preview & Export Funscripts | Save a new run directory and expose its synchronized editor. |
+| Preview & Export Funscripts | Combine numbered anchor projects into source tracks, save a new run directory and expose the synchronized main timeline. |
 | Compare Reference Funscript | Attach a paired authored script, measure curve agreement and display it in the editor. |
 
 Video selection now belongs to core **Load Video**, which reads ComfyUI's input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Cache, project and reference-script paths may still be absolute or relative to the input directory. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
@@ -202,6 +202,27 @@ Simplification limits vertical interpolation error to `tolerance` position units
 
 ## Edit and save
 
+### Main timeline and anchor tracks
+
+Load [workflows/multitrack_anchors.json](workflows/multitrack_anchors.json) for a shared pose cache feeding **mouth**, **left hand** and **right hand** motion projects into one editor. Set the cache path, or connect the same `poses` output from your streaming/core workflow to the three **Poses → Multi-axis Motion** nodes. Each branch has independent anchor, reference and axis calibration. Changing these branches does not rerun pose inference.
+
+**Preview & Export Funscripts** starts with `project_0`. Connecting it adds `project_1`, and each connected last socket adds another. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket automatically; existing API prompts using `project` still work. The [multitrack API example](workflows/multitrack_anchors.api.json) shows numbered inputs.
+
+1. Select the **Main axis** to assemble, such as **L0 · stroke**. The first numbered project supplies its initial main curve; other enabled axes are retained too.
+2. Every connected project adds a source row. Click **Edit** or its curve to select it; the yellow marker and 3D view show that row's anchor. Its **Project** and **Axis** selectors can be reassigned freely. Reassignment resets that row to the chosen project's calibration and curve; Undo restores its previous edits. **Add track** creates another independently editable row, including alternate calibrations of the same project. Track names are editable.
+3. Use the shared component, range, center, **Invert**, and **Auto fit** controls on the selected row. Tune each source before copying sections. The device always plays the **main** curves, so comparing or editing a source does not change the export.
+4. **Shift-drag** on any curve to select a time range. Alternatively, seek and use **Mark in / Mark out** (keyboard **I / O**), type the In/Out times in seconds, or choose **Select track range**. All rows use the same ruler and playhead.
+5. Select a source row and click **Use selection in main**. **Blend** crossfades from the existing main into the source and back inside the selected interval; the duration is per boundary, capped at half the selection. **Cut · manual join** inserts the source directly with one-millisecond boundary steps. Select main and drag/add/delete points to shape a join manually. Both methods preserve the original video timestamps and leave the rest of main in place; new boundary samples are rounded to integer positions. Blend sampling targets 0.25 position units of interpolation error before rounding, with a one-millisecond minimum step.
+6. **Use whole track as main** replaces the selected output axis with that row's full authored curve. **Undo** restores section inserts, replacements, calibration, point edits and track changes. Other output axes remain independent.
+
+Copied sections are snapshots: later source edits, reassignment or removal leave those sections intact until you apply another selection. Source names mark the assembled sections on main; selecting main makes the pose overlay follow their recorded anchors. Blend regions show the incoming source's anchor. Main remains editable and invertible after composition. Its raw regeneration/Auto fit controls are disabled because one anchor's raw motion cannot regenerate a curve assembled from several sources; calibrate a source row and apply it again instead.
+
+Connected projects must reference the **same original video**. Different sampling rates, analysed trims and per-person masks can share that timeline; section copying is bounded by the selected source's first and last pose timestamps. Whole-track replacement holds its endpoint values outside the authored action range. There is no clip retiming or automatic detection of when to switch anchors. Shared pose arrays are stored once in the project, while each source keeps its own motion/calibration. Additional curves still consume memory; offscreen source rows skip drawing during playback.
+
+`project.json` and the offline viewer preserve source projects, track assignments, calibrations, authored curves, selection and section provenance. Only the six **main** axes produce `.funscript` files. To resume an assembled project through ComfyUI, connect **Load Funscript Project** to one preview input by itself. To start another composition, connect the original anchor projects together. Requeuing upstream branches creates a new export; download browser edits before replacing the open project.
+
+### Playback and curve editing
+
 The source video is the playback clock. Seeking updates the overlay, 3D skeleton, selected device and curves. The selected anchor is marked in yellow, with a one-second projection trail. This identifies the named landmark; it does not add click-to-select tracking. The pose display uses the nearest analysed frame; the device evaluates the actual funscript actions at the video time. A 16 Hz pose sample is therefore less temporally precise than the original 32 fps video.
 
 Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1/L2/R0/R1/R2. Readouts show only the selected device's supported channels; missing channels hold neutral at 50. Device selection controls the preview, while curve editing and exports retain every authored axis. Drag or use arrow keys to orbit the device, scroll or press +/− to zoom, and toggle the sleeve outline. SR6 uses a schematic six-linkage mechanism with an inner twist receiver. Dashed coral rods mark poses outside that model's linkage reach; this is not a calibrated hardware simulator. Geometry details and the interactive asset demo are in [assets/device-previews](assets/device-previews/README.md).
@@ -209,6 +230,7 @@ Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1
 - Click the timeline to seek; double-click to add an action.
 - Drag a point to edit its time and position; right-click to remove it.
 - Choose a 4-second or 1-second view for detailed edits.
+- Select main or a source row before changing its calibration; reference-script comparisons apply to main.
 - **Invert** immediately mirrors the selected curve as `100 − position`, including manually edited points. It also mirrors Center as `100 − center`, keeping the range, timestamps and existing clipping unchanged. No regeneration is needed; Undo restores the previous curve.
 - Adjust range, center or component, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
 - Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference.
@@ -260,6 +282,17 @@ node tests/test_migrate.mjs
 ```
 
 Tests cover variable-rate timestamps, rigid-camera invariance in a body reference frame, gap holds, filter isolation across cuts, fixed-gain behavior, interpolation error, cache/project round trips, action validation and browser/Python export parity.
+
+The multitrack suite covers geometry deduplication, different sampling, mismatched-video rejection, source isolation, section joins, overlapping section provenance, undo snapshots, and numbered socket growth with no fixed cap. Reproduce it with:
+
+```bash
+python -m unittest discover -s tests
+node --test tests/test_curve.mjs tests/test_migrate.mjs tests/test_invert.mjs tests/test_timeline.mjs
+S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/timeline_queue_smoke.py /absolute/path/to/72-point-poses.npz
+node scripts/timeline_browser_smoke.mjs http://127.0.0.1:8198 PROJECT_ID development/timeline-browser development/timeline-workflow.json
+```
+
+The queue script writes the project ID and a local canvas fixture under `development/`. The browser fixture uses the supplied five-second side-view clip and verifies calibration, selection, blends/cuts, manual main edits, assignment, promotion, track removal, offline round trips and actual ComfyUI socket save/reload/queue behavior. Source video is hidden in saved QA screenshots.
 
 The real-video runner is reproducible:
 

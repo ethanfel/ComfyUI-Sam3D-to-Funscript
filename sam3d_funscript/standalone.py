@@ -15,11 +15,13 @@ def standalone_html(project=None):
     def inline_module(match):
         names, filename = match.groups()
         source = (ASSETS / filename).read_text()
+        # Timeline uses curve helpers, already bound by the preceding import.
+        source = re.sub(r'^import \{[^}]+\} from "\./curve\.mjs";\n', "", source, flags=re.MULTILINE)
         source = re.sub(r"^export ", "", source, flags=re.MULTILINE)
         # Each module keeps its own scope (both export a different AXES constant).
         return f"const {{{names}}} = (() => {{\n{source}\nreturn {{{names}}};\n}})();"
 
-    script = re.sub(r'import \{([^}]+)\} from "\./(curve\.mjs|device-previews/device-wireframes\.mjs)";',
+    script = re.sub(r'import \{([^}]+)\} from "\./(curve\.mjs|timeline\.mjs|device-previews/device-wireframes\.mjs)";',
                     inline_module, script)
     script = script.replace("</script", "<\\/script")
     data = json.dumps(project, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")

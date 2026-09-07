@@ -1,4 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
+import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, applyTrack} from "./timeline.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -12,25 +13,73 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
-function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics})); if(history.length>40)history.shift(); $("undo").disabled=false; }
+function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project)})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 function dirty() { project.manual_edits = true; ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function install(data) {
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
     video.pause(); video.removeAttribute("src"); video.load();
     if(videoURL){URL.revokeObjectURL(videoURL);videoURL=null;}
-    project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    initializeTimeline(data); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
     $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
     $("name").textContent = data.metadata.source.path.split("/").at(-1);
     $("warnings").replaceChildren(...(data.warnings||[]).map(text=>{const li=document.createElement("li");li.textContent=text;return li;}));
     $("provenance").textContent = JSON.stringify({source:data.metadata.source,model:data.metadata.model,samples:data.times_ms.length,basis:data.metadata.basis,config:data.config},null,2);
-    currentMs=data.times_ms[0]; controls(); render(); status("Project loaded · choose the matching source video");
+    currentMs=data.times_ms[0]; buildTracks(); selectionControls(); controls(); render(); status("Project loaded · choose the matching source video");
 }
+function selected() { return editProject(project,$("axis").value); }
+function commitSelected(data,axis,track) {
+    if(track){track.settings=data.config.axis_settings[axis];track.script=data.scripts[axis];track.metrics=data.metrics?.[axis];}
+}
+function assembled() {return project.timeline.active==="main"&&project.timeline.main[$("axis").value].assembled;}
 function controls() {
-    const axis=$("axis").value, s=project.config.axis_settings[axis];
+    const {data,axis,track}=selected(), s=data.config.axis_settings[axis];
     $("component").value=s.component; $("range").value=s.range; $("center").value=s.center; $("invert").checked=s.invert;
     $("unit").textContent=axis.startsWith("R")?"degrees":"metres";
-    const ref=project.references?.[axis];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
+    for(const id of ["component","range","center","rebuild","autoFit"])$(id).disabled=assembled();
+    $("editing").textContent=track?`Editing ${track.name} · ${axis}. Source edits are independent; apply a selection to update main.`:
+        assembled()?"Editing main · assembled sections. Drag points to adjust joins, or calibrate a source track and apply it again.":`Editing main · ${axis}`;
+    for(const id of ["applySection","promoteTrack","selectTrack"])$(id).disabled=!track;
+    const ref=project.references?.[$("axis").value];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
+    document.querySelectorAll(".track").forEach(row=>row.classList.toggle("selected",row.dataset.track===project.timeline.active));
+    $("selectMain").textContent=`Main · ${$("axis").value} · export`;
+    const main=project.timeline.main[$("axis").value];
+    $("mainDescription").textContent=main.assembled?`${main.regions.length} source sections · device preview and exports follow main`:"Device preview and exported scripts follow this track";
+}
+function selectLane(id) {
+    if(!project)return;
+    project.timeline.active=id;controls();render();
+}
+function selectionControls() {
+    [$("selectionStart").value,$("selectionEnd").value]=project.timeline.selection.map(t=>(t/1000).toFixed(3));
+}
+function setSelection(start,end) {
+    const duration=Math.floor(project.metadata.duration_ms);
+    project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,Math.round(t)))).sort((a,b)=>a-b);
+    selectionControls();render();
+}
+function buildTracks() {
+    $("tracks").replaceChildren();
+    for(const track of project.timeline.tracks){
+        const row=document.createElement("div");row.className="track";row.dataset.track=track.id;
+        const head=document.createElement("div");head.className="track-head";
+        const select=document.createElement("button");select.className="track-select";select.textContent="Edit";select.onclick=()=>selectLane(track.id);
+        const name=document.createElement("input");name.type="text";name.className="track-name";name.value=track.name;name.setAttribute("aria-label","Track name");
+        name.onchange=()=>{record();track.name=name.value.trim()||"Source track";dirty();controls();render();};
+        const source=document.createElement("select");source.className="track-source";source.setAttribute("aria-label","Anchor project");
+        source.replaceChildren(...project.timeline.sources.map(s=>new Option(s.label,s.id)));source.value=track.source;
+        const axis=document.createElement("select");axis.className="track-axis";axis.setAttribute("aria-label","Source axis");
+        const axes=()=>{axis.replaceChildren(...Object.keys(sourceProject(project,source.value).scripts).map(a=>new Option(a,a)));axis.value=track.axis;};axes();
+        source.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);axes();project.timeline.active=track.id;dirty();controls();render();};
+        axis.onchange=()=>{record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;dirty();controls();render();};
+        const remove=document.createElement("button");remove.className="remove-track";remove.textContent="Remove";
+        remove.onclick=()=>{record();project.timeline.tracks=project.timeline.tracks.filter(t=>t!==track);if(project.timeline.active===track.id)project.timeline.active="main";buildTracks();dirty();controls();render();};
+        const sourceLabel=document.createElement("label");sourceLabel.append("Project ",source);
+        const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
+        head.append(select,name,sourceLabel,axisLabel,remove);
+        const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${track.name} motion timeline`);
+        row.append(head,canvas);$("tracks").append(row);bindCurve(canvas,track.id);
+    }
 }
 function resize(canvas) {
     const rect=canvas.getBoundingClientRect(), dpr=devicePixelRatio||1;
@@ -39,14 +88,14 @@ function resize(canvas) {
     const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);
     return [ctx,rect.width,rect.height];
 }
-function sampleIndex() {
-    let low=0,high=project.times_ms.length-1;
-    while(high-low>1){const mid=(low+high)>>1;if(project.times_ms[mid]<=currentMs)low=mid;else high=mid;}
-    return Math.abs(project.times_ms[low]-currentMs)<Math.abs(project.times_ms[high]-currentMs)?low:high;
+function sampleIndex(data=project) {
+    let low=0,high=data.times_ms.length-1;
+    while(high-low>1){const mid=(low+high)>>1;if(data.times_ms[mid]<=currentMs)low=mid;else high=mid;}
+    return Math.abs(data.times_ms[low]-currentMs)<Math.abs(data.times_ms[high]-currentMs)?low:high;
 }
 const finitePoint = point => point && point.every(Number.isFinite);
 function line(ctx,a,b,color,width=2) {ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke();}
-function drawOverlay(index) {
+function drawOverlay(index, project) {
     const [ctx,w,h]=resize($("overlay"));
     const [ih,iw]=project.metadata.image_size;
     const scale=Math.min(w/iw,h/ih),ox=(w-iw*scale)/2,oy=(h-ih*scale)/2;
@@ -78,7 +127,7 @@ function project3(point,w,h,scale=1) {
     [y,z]=[y*Math.cos(b)-z*Math.sin(b),y*Math.sin(b)+z*Math.cos(b)];
     return [w/2+x*scale,h/2-y*scale];
 }
-function drawSkeleton(index) {
+function drawSkeleton(index, project, axis) {
     const [ctx,w,h]=resize($("skeleton"));
     const people=project.points?.[index]||[], target=people[project.config.target_person];
     if(!target||!finitePoint(target[9])||!finitePoint(target[10]))return;
@@ -88,7 +137,7 @@ function drawSkeleton(index) {
     const selected=(project.anchor_indices?.target||ANCHORS[project.config.target_anchor]).map(j=>target[j]);
     if(selected.every(finitePoint)){
         const p=selected[0].map((_,i)=>selected.reduce((n,v)=>n+v[i],0)/selected.length);ctx.fillStyle="#eabf71";ctx.beginPath();ctx.arc(...map(p),6,0,Math.PI*2);ctx.fill();
-        const axis=$("axis").value,report=motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end);
+        const report=motionForAxis(project,axis).spans.find(s=>index>=s.start&&index<s.end);
         if(report){
             const d=report.direction,relative=project.config.frame==="reference_body";
             let vector=[-d[2],d[0]*(relative?1:-1),d[1]];
@@ -111,47 +160,69 @@ function drawRobot() {
     $("deviceReach").hidden=frame.reachable!==false;
     $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
-function drawCurve() {
-    const [ctx,w,h]=resize($("curve")), axis=$("axis").value;
-    const duration=project.metadata.duration_ms, zoom=Number($("zoom").value);
-    if(!dragging){const span=zoom?Math.min(zoom,duration):duration;const left=Math.max(0,Math.min(duration-span,currentMs-span/2));bounds=[left,left+span];}
+function drawCurve(canvas, data, axis, isMain, active) {
+    const [ctx,w,h]=resize(canvas), composed=isMain&&project.timeline.main[axis].assembled;
+    const color=isMain?"#75e2ba":"#78baf7";
     const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
     ctx.font="11px system-ui";ctx.fillStyle="#8197ab";
     for(const p of [0,25,50,75,100]){line(ctx,[42,y(p)],[w-12,y(p)],"#2a3c4c",1);ctx.fillText(p,9,y(p)+4);}
     for(let i=0;i<=5;i++){const t=bounds[0]+(bounds[1]-bounds[0])*i/5;ctx.fillText((t/1000).toFixed(1)+"s",x(t)-12,h-6);}
-    for(let i=0;i<project.times_ms.length;i++)if(!project.valid[i]||(i&&project.segments[i]!==project.segments[i-1])){
-        ctx.fillStyle="#8c593b66";ctx.fillRect(x(project.times_ms[i]),15,Math.max(2,x(project.times_ms[i+1]||project.times_ms[i]+10)-x(project.times_ms[i])),h-40);
+    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
+    for(let i=0;!composed&&i<data.times_ms.length;i++)if(!data.valid[i]||(i&&data.segments[i]!==data.segments[i-1])){
+        ctx.fillStyle="#8c593b66";ctx.fillRect(x(data.times_ms[i]),15,Math.max(2,x(data.times_ms[i+1]||data.times_ms[i]+10)-x(data.times_ms[i])),h-40);
     }
-    const s=project.config.axis_settings[axis],source=motionForAxis(project,axis);
+    const s=data.config.axis_settings[axis],source=composed?{raw:[],processed:[],spans:[]}:motionForAxis(data,axis);
     for(const [key,color]of [["raw","#607689"],["processed","#bb9457"]]){
         ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();let pen=false;
-        source[key].forEach((value,i)=>{if(!project.valid[i]||!Number.isFinite(value)){pen=false;return;}const px=x(project.times_ms[i]),py=y(Math.max(0,Math.min(100,s.center+value/s.range*100*(s.invert?-1:1))));if(i&&project.segments[i]!==project.segments[i-1])pen=false;if(pen)ctx.lineTo(px,py);else ctx.moveTo(px,py);pen=true;});ctx.stroke();
+        source[key].forEach((value,i)=>{if(!data.valid[i]||!Number.isFinite(value)){pen=false;return;}const px=x(data.times_ms[i]),py=y(Math.max(0,Math.min(100,s.center+value/s.range*100*(s.invert?-1:1))));if(i&&data.segments[i]!==data.segments[i-1])pen=false;if(pen)ctx.lineTo(px,py);else ctx.moveTo(px,py);pen=true;});ctx.stroke();
     }
-    const actions=project.scripts[axis].actions;
-    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();ctx.strokeStyle="#75e2ba";ctx.lineWidth=2;ctx.beginPath();actions.forEach((a,i)=>i?ctx.lineTo(x(a.at),y(a.pos)):ctx.moveTo(x(a.at),y(a.pos)));ctx.stroke();
-    ctx.fillStyle="#75e2ba";for(const a of actions){if(a.at<bounds[0]||a.at>bounds[1])continue;ctx.beginPath();ctx.arc(x(a.at),y(a.pos),3,0,Math.PI*2);ctx.fill();}line(ctx,[x(currentMs),10],[x(currentMs),h-25],"#f0f5fa",1);ctx.restore();
-    const ref=project.references?.[axis];
+    const actions=data.scripts[axis].actions;
+    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();actions.forEach((a,i)=>i?ctx.lineTo(x(a.at),y(a.pos)):ctx.moveTo(x(a.at),y(a.pos)));ctx.stroke();
+    ctx.fillStyle=color;for(const a of actions){if(a.at<bounds[0]||a.at>bounds[1])continue;ctx.beginPath();ctx.arc(x(a.at),y(a.pos),3,0,Math.PI*2);ctx.fill();}line(ctx,[x(currentMs),10],[x(currentMs),h-25],"#f0f5fa",1);ctx.restore();
+    const ref=isMain?project.references?.[axis]:null;
     if(ref){
         const shift=ref.offset_ms||0,lo=Math.max(bounds[0],ref.actions[0].at+shift),hi=Math.min(bounds[1],ref.actions.at(-1).at+shift);
         if(hi>=lo){ctx.strokeStyle="#dcadfa";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x(lo),y(evaluate(ref.actions,lo-shift)));for(const a of ref.actions)if(a.at+shift>lo&&a.at+shift<hi)ctx.lineTo(x(a.at+shift),y(a.pos));ctx.lineTo(x(hi),y(evaluate(ref.actions,hi-shift)));ctx.stroke();}
-        if(!comparisonCache||comparisonCache.axis!==axis||comparisonCache.revision!==comparisonRevision){comparisonCache={axis,revision:comparisonRevision,value:referenceAgreement(actions,ref,project.times_ms[0],project.times_ms.at(-1))};}
+        if(!comparisonCache||comparisonCache.axis!==axis||comparisonCache.revision!==comparisonRevision){comparisonCache={axis,revision:comparisonRevision,value:referenceAgreement(actions,ref,composed?0:data.times_ms[0],composed?project.metadata.duration_ms:data.times_ms.at(-1))};}
         const m=comparisonCache.value;
         $("referenceMetrics").textContent=m?`Reference agreement · MAE ${m.mae.toFixed(1)} / 100 · RMSE ${m.rmse.toFixed(1)} · correlation ${m.correlation===null?"undefined":m.correlation.toFixed(3)} · full overlap`:'Reference does not overlap this analysis';
-    }else $("referenceMetrics").textContent="No reference loaded for this axis";
-    const mapped=source.processed.filter((v,i)=>project.valid[i]&&Number.isFinite(v)).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
+    }else if(isMain) $("referenceMetrics").textContent="No reference loaded for this axis";
+    const [selectionStart,selectionEnd]=project.timeline.selection;
+    ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
+    if(selectionEnd>selectionStart){ctx.fillStyle="#78baf722";ctx.fillRect(x(selectionStart),10,x(selectionEnd)-x(selectionStart),h-35);for(const t of [selectionStart,selectionEnd])line(ctx,[x(t),10],[x(t),h-25],"#78baf7",1);}
+    if(isMain){for(const region of project.timeline.main[axis].regions){
+        ctx.fillStyle="#eabf7177";ctx.fillRect(x(region.start),10,x(region.end)-x(region.start),4);
+        const left=Math.max(44,x(region.start)+4),right=Math.min(w-12,x(region.end));
+        if(right-left>35){ctx.save();ctx.beginPath();ctx.rect(left,15,right-left,14);ctx.clip();ctx.fillStyle="#eabf71";ctx.fillText(region.name,left,24);ctx.restore();}
+    }}
+    ctx.restore();
+    ctx.restore();
+    if(!active)return;
+    const mapped=source.processed.filter((v,i)=>data.valid[i]&&Number.isFinite(v)).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
     const clipped=mapped.length?mapped.filter(v=>v<0||v>100).length/mapped.length*100:0;
-    $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${clipped.toFixed(1)}% source clipping`;
-    $("directionInfo").hidden=s.component!=="auto";
-    const direction=source.spans.find(span=>sampleIndex()>=span.start&&sampleIndex()<span.end);
+    $("metrics").textContent=`${actions.length} actions · ${evaluate(actions,currentMs).toFixed(1)} / 100 · ${composed?"assembled main":`${clipped.toFixed(1)}% source clipping`}`;
+    $("directionInfo").hidden=composed||s.component!=="auto";
+    const direction=source.spans.find(span=>sampleIndex(data)>=span.start&&sampleIndex(data)<span.end);
     if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${["Up","Forward","Left"].map((name,i)=>`${name} ${direction.direction[i]>=0?"+":""}${direction.direction[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
 }
 function render() {
     if(!project)return;
     $("time").textContent=(currentMs/1000).toFixed(3)+" s";
-    const i=sampleIndex(),available=project.valid[i]&&currentMs>=project.times_ms[0]&&currentMs<=project.metadata.duration_ms&&Math.abs(currentMs-project.times_ms[i])<=project.config.max_gap_ms;
-    if(available){drawOverlay(i);drawSkeleton(i);}
+    const selectedContext=selected(), outputAxis=$("axis").value;
+    const pose=selectedContext.track?selectedContext:project.timeline.main[outputAxis].assembled?mainPoseProject(project,outputAxis,currentMs):selectedContext;
+    const data=pose.data,i=sampleIndex(data),available=data.valid[i]&&currentMs>=data.times_ms[0]&&currentMs<=data.metadata.duration_ms&&Math.abs(currentMs-data.times_ms[i])<=data.config.max_gap_ms;
+    if(available){drawOverlay(i,data);drawSkeleton(i,data,pose.axis);}
     else for(const name of ["overlay","skeleton"]){const[ctx,w,h]=resize($(name));ctx.fillStyle="#eabf71";ctx.font="13px system-ui";ctx.fillText("No analysed pose at this time",12,h/2);}
-    drawRobot();drawCurve();
+    const duration=project.metadata.duration_ms,zoom=Number($("zoom").value);
+    if(dragging===null){const span=Math.max(1,zoom?Math.min(zoom,duration):duration),left=Math.max(0,Math.min(duration-span,currentMs-span/2));bounds=[left,left+span];}
+    drawRobot();
+    const mainContext=editProject(project,outputAxis,"main");
+    drawCurve($("curve"),mainContext.data,outputAxis,true,project.timeline.active==="main");
+    const listRect=$("tracks").getBoundingClientRect();
+    for(const track of project.timeline.tracks){
+        const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
+        if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active);
+    }
 }
 function frameCallback(_,metadata){currentMs=metadata.mediaTime*1000;render();video.requestVideoFrameCallback(frameCallback);}
 if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frameCallback);
@@ -161,43 +232,94 @@ video.addEventListener("error",()=>status("Choose the source video locally if th
 $("axis").addEventListener("change",()=>{controls();render();});$("zoom").addEventListener("change",render);
 $("invert").addEventListener("change",()=>{
     if(!project)return;
-    const axis=$("axis").value;
-    if($("invert").checked===project.config.axis_settings[axis].invert)return;
-    const mirrored=invertAxis(project,axis),pendingCenter=$("center").valueAsNumber;
-    record();project.config.axis_settings[axis]=mirrored.settings;project.scripts[axis]=mirrored.script;
-    // Retain pending range/component edits; their center must reverse too.
+    const {data,axis,track}=selected();
+    if($("invert").checked===data.config.axis_settings[axis].invert)return;
+    const mirrored=invertAxis(data,axis),pendingCenter=$("center").valueAsNumber;
+    record();data.config.axis_settings[axis]=mirrored.settings;data.scripts[axis]=mirrored.script;commitSelected(data,axis,track);
+    if(!track)for(const region of project.timeline.main[axis].regions){region.settings={...region.settings,center:100-region.settings.center,invert:!region.settings.invert};}
     if(Number.isFinite(pendingCenter)&&pendingCenter>=0&&pendingCenter<=100)$("center").value=100-pendingCenter;
     dirty();render();
 });
-function regenerate(axis) {
-    project.scripts[axis]=rebuildAxis(project,axis);
-    const source=motionForAxis(project,axis),s=project.config.axis_settings[axis];
+function regenerate(data,axis,track) {
+    data.scripts[axis]=rebuildAxis(data,axis);
+    const source=motionForAxis(data,axis),s=data.config.axis_settings[axis];
     const mapped=source.processed.filter(Number.isFinite).map(v=>s.center+v/s.range*100*(s.invert?-1:1));
     const raw=source.raw.filter(Number.isFinite);
-    project.metrics??={};project.metrics[axis]={actions:project.scripts[axis].actions.length,
+    data.metrics??={};data.metrics[axis]={actions:data.scripts[axis].actions.length,
         clipped_fraction:mapped.filter(v=>v<0||v>100).length/mapped.length,
         raw_span:raw.reduce((m,v)=>Math.max(m,v),-Infinity)-raw.reduce((m,v)=>Math.min(m,v),Infinity),units:axis.startsWith("R")?"deg":"m"};
-    if(s.component==="auto")project.metrics[axis].auto_direction=source.spans;
+    if(s.component==="auto")data.metrics[axis].auto_direction=source.spans;
+    commitSelected(data,axis,track);
 }
 $("rebuild").addEventListener("click",()=>{
-    if(!project)return;const range=Number($("range").value),center=Number($("center").value);
+    if(!project||assembled())return;const range=Number($("range").value),center=Number($("center").value);
     if(!Number.isFinite(range)||range<=0||!Number.isFinite(center)||center<0||center>100){status("Range must be positive; center must be between 0 and 100");return;}
-    record();const axis=$("axis").value;project.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:$("component").value==="auto"?"auto":Number($("component").value),auto_fit:false};
-    regenerate(axis);dirty();render();
+    record();const {data,axis,track}=selected();data.config.axis_settings[axis]={range,center,invert:$("invert").checked,component:$("component").value==="auto"?"auto":Number($("component").value),auto_fit:false};
+    regenerate(data,axis,track);dirty();render();
 });
 $("autoFit").addEventListener("click",()=>{
-    if(!project)return;
-    try{const axis=$("axis").value,settings=autoFitAxis(project,axis);record();project.config.axis_settings[axis]=settings;regenerate(axis);dirty();controls();render();}
+    if(!project||assembled())return;
+    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
     catch(error){status(error.message);}
 });
-$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;$("undo").disabled=!history.length;controls();dirty();render();});
-function pointer(event){const rect=$("curve").getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
-function nearest(event){const a=pointer(event),rect=$("curve").getBoundingClientRect();return project.scripts[$("axis").value].actions.findIndex(p=>Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9);}
-$("curve").addEventListener("pointerdown",event=>{if(!project||event.button!==0)return;const index=nearest(event);if(index>=0){record();dragging=index;$("curve").setPointerCapture(event.pointerId);}else{currentMs=pointer(event).at;video.currentTime=currentMs/1000;render();}});
-$("curve").addEventListener("pointermove",event=>{if(dragging===null)return;const actions=project.scripts[$("axis").value].actions,p=pointer(event),i=dragging;const min=i?actions[i-1].at+1:0,max=i+1<actions.length?actions[i+1].at-1:roundEven(project.metadata.duration_ms);actions[i]={at:Math.max(min,Math.min(max,p.at)),pos:p.pos};dirty();render();});
-const release=()=>{dragging=null;render();};$("curve").addEventListener("pointerup",release);$("curve").addEventListener("pointercancel",release);
-$("curve").addEventListener("dblclick",event=>{if(!project)return;const actions=project.scripts[$("axis").value].actions,p=pointer(event);if(actions.some(a=>a.at===p.at))return;record();actions.push(p);actions.sort((a,b)=>a.at-b.at);dirty();render();});
-$("curve").addEventListener("contextmenu",event=>{event.preventDefault();if(!project)return;const i=nearest(event),actions=project.scripts[$("axis").value].actions;if(i>=0&&actions.length>1){record();actions.splice(i,1);dirty();render();}});
+$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();dirty();render();});
+function pointer(event,canvas){const rect=canvas.getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
+function nearest(event,canvas,actions){const a=pointer(event,canvas),rect=canvas.getBoundingClientRect();return actions.findIndex(p=>Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9);}
+function seek(time){currentMs=time;if(video.readyState)video.currentTime=time/1000;render();}
+function bindCurve(canvas,id){
+    const actions=()=>id==="main"?project.scripts[$("axis").value].actions:project.timeline.tracks.find(t=>t.id===id).script.actions;
+    canvas.addEventListener("pointerdown",event=>{
+        if(!project||event.button!==0)return;selectLane(id);canvas.focus({preventScroll:true});
+        const p=pointer(event,canvas);
+        if(event.shiftKey){dragging={canvas,start:p.at,selection:true};setSelection(p.at,p.at);canvas.setPointerCapture(event.pointerId);return;}
+        const index=nearest(event,canvas,actions());
+        if(index>=0){record();dragging={canvas,index};canvas.setPointerCapture(event.pointerId);}else seek(p.at);
+    });
+    canvas.addEventListener("pointermove",event=>{
+        if(dragging?.canvas!==canvas)return;
+        const p=pointer(event,canvas);
+        if(dragging.selection){setSelection(dragging.start,p.at);return;}
+        const list=actions(),i=dragging.index,min=i?list[i-1].at+1:0,max=i+1<list.length?list[i+1].at-1:roundEven(project.metadata.duration_ms);
+        list[i]={at:Math.max(min,Math.min(max,p.at)),pos:p.pos};dirty();render();
+    });
+    const release=()=>{if(dragging?.canvas===canvas){dragging=null;render();}};
+    for(const name of ["pointerup","pointercancel","lostpointercapture"])canvas.addEventListener(name,release);
+    canvas.addEventListener("dblclick",event=>{if(!project||event.shiftKey)return;selectLane(id);const list=actions(),p=pointer(event,canvas);if(list.some(a=>a.at===p.at))return;record();list.push(p);list.sort((a,b)=>a.at-b.at);dirty();render();});
+    canvas.addEventListener("contextmenu",event=>{event.preventDefault();if(!project)return;selectLane(id);const list=actions(),i=nearest(event,canvas,list);if(i>=0&&list.length>1){record();list.splice(i,1);dirty();render();}});
+}
+bindCurve($("curve"),"main");
+$("selectMain").onclick=()=>selectLane("main");
+$("tracks").addEventListener("scroll",render,{passive:true});
+window.addEventListener("scroll",render,{passive:true});
+$("addTrack").onclick=()=>{if(!project)return;const current=selected().track,source=current?.source||project.timeline.sources[0].id;record();const track=newTrack(project,source,current?.axis||$("axis").value);project.timeline.active=track.id;buildTracks();dirty();controls();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});};
+$("markIn").onclick=()=>{if(project)setSelection(currentMs,Math.max(currentMs,project.timeline.selection[1]));};
+$("markOut").onclick=()=>{if(project)setSelection(Math.min(currentMs,project.timeline.selection[0]),currentMs);};
+for(const id of ["selectionStart","selectionEnd"])$(id).onchange=()=>{
+    if(!project)return;
+    let start=$("selectionStart").valueAsNumber*1000,end=$("selectionEnd").valueAsNumber*1000;
+    if(![start,end].every(Number.isFinite))return;
+    if(start>end){if(id==="selectionStart")end=start;else start=end;}
+    setSelection(start,end);
+};
+$("selectTrack").onclick=()=>{const track=project&&selected().track;if(track)setSelection(...trackCoverage(project,track));};
+$("join").onchange=()=>$("blendMs").disabled=$("join").value!=="blend";
+function applySelection(whole){
+    if(!project)return;const track=selected().track;if(!track)return;
+    try{
+        const [start,end]=project.timeline.selection,blendMs=$("blendMs").valueAsNumber;
+        // Validate on a small copy before recording history or changing the main.
+        const preview={...project,scripts:{...project.scripts},metrics:{...project.metrics},timeline:{...project.timeline,main:structuredClone(project.timeline.main)}};
+        applyTrack(preview,track,$("axis").value,{start,end,method:$("join").value,blendMs,whole});
+        record();project.scripts=preview.scripts;project.metrics=preview.metrics;project.timeline.main=preview.timeline.main;
+        dirty();controls();render();status(whole?"Main replaced with this track · Undo restores the previous main":"Selection copied into main · edit its points to refine the joins");
+    }catch(error){status(error.message);}
+}
+$("applySection").onclick=()=>applySelection(false);$("promoteTrack").onclick=()=>applySelection(true);
+document.addEventListener("keydown",event=>{
+    if(!project||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,select,textarea,button"))return;
+    if(event.key.toLowerCase()==="i"){$("markIn").click();event.preventDefault();}
+    if(event.key.toLowerCase()==="o"){$("markOut").click();event.preventDefault();}
+});
 let lastOrbit;
 $("skeleton").addEventListener("pointerdown",e=>{lastOrbit=[e.clientX,e.clientY];$("skeleton").setPointerCapture(e.pointerId);});
 $("skeleton").addEventListener("pointermove",e=>{if(!lastOrbit)return;orbit.yaw+=(e.clientX-lastOrbit[0])*.01;orbit.pitch+=(e.clientY-lastOrbit[1])*.01;lastOrbit=[e.clientX,e.clientY];render();});

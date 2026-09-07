@@ -10,6 +10,7 @@ from .sam3d_funscript.video import extract_video, fingerprint, video_input_range
 from .sam3d_funscript.calibration import load_reference, compare_project
 from .sam3d_funscript.native import adapt_native_poses
 from .sam3d_funscript.anchors import GENERAL_ANCHORS, MHR70_NAMES
+from .sam3d_funscript.timeline import ProjectInputs, combine_projects
 
 CATEGORY = "motion/SAM3D Funscript"
 
@@ -189,7 +190,7 @@ class S3F_LoadProject:
 class S3F_PreviewExport:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"project": ("S3F_MOTION_PROJECT",), "filename": ("STRING", {"default": "motion"})}}
+        return {"required": {"filename": ("STRING", {"default": "motion"})}, "optional": ProjectInputs()}
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("project_path",)
@@ -197,9 +198,11 @@ class S3F_PreviewExport:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
 
-    def run(self, project, filename):
+    def run(self, project=None, filename="motion", **projects):
+        if project is not None:
+            projects["project"] = project
         root = Path(folder_paths.get_output_directory()) / "sam3d_funscript"
-        path = export_project(project, root, filename)
+        path = export_project(combine_projects(projects), root, filename)
         return {"ui": {"s3f_project": [path.parent.name], "text": [str(path)]}, "result": (str(path),)}
 
 

@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { migrateVideoInputs, migrateAnchorOverrides } from "./migrate.mjs";
+import { migrateProjectInputs, syncProjectInputs } from "./projects.mjs";
 
 let generalAnchors, detailedAnchors;
 
@@ -9,6 +10,7 @@ app.registerExtension({
     beforeConfigureGraph(graphData) {
         migrateVideoInputs(graphData);
         migrateAnchorOverrides(graphData, generalAnchors, detailedAnchors);
+        migrateProjectInputs(graphData);
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "S3F_BuildMotion") generalAnchors = nodeData.input.required.target_anchor[0];
@@ -17,6 +19,7 @@ app.registerExtension({
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             created?.apply(this, arguments);
+            syncProjectInputs(this);
             const frame = document.createElement("iframe");
             frame.style.cssText = "width:100%;height:100%;border:0;border-radius:8px;background:#111820";
             frame.title = "SAM3D motion preview";
@@ -36,6 +39,11 @@ app.registerExtension({
         const executed = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (output) {executed?.apply(this,arguments);update(this,output?.s3f_project?.[0]);};
         const configured = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {configured?.apply(this,arguments);update(this,this.properties.s3f_project);};
+        nodeType.prototype.onConfigure = function () {configured?.apply(this,arguments);syncProjectInputs(this);update(this,this.properties.s3f_project);};
+        const connections = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (type) {
+            connections?.apply(this, arguments);
+            if (type === 1) syncProjectInputs(this);
+        };
     },
 });

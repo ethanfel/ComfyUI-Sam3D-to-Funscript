@@ -1,0 +1,77 @@
+{
+  "1": {
+    "class_type": "S3F_LoadPoseCache",
+    "inputs": {
+      "cache_path": "/absolute/path/to/poses.npz"
+    }
+  },
+  "2": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "1",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "mouth",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
+    }
+  },
+  "3": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "1",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "left_hand",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
+    }
+  },
+  "4": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "1",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "right_hand",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
+    }
+  },
+  "5": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "project_0": [
+        "2",
+        0
+      ],
+      "project_1": [
+        "3",
+        0
+      ],
+      "project_2": [
+        "4",
+        0
+      ],
+      "filename": "multitrack"
+    }
+  }
+}
