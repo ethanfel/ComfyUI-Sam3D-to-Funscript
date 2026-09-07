@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {evaluate} from "../assets/curve.mjs";
-import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack} from "../assets/timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack} from "../assets/timeline.mjs";
 import {syncProjectInputs, migrateProjectInputs} from "../web/projects.mjs";
 
 const main=[{at:0,pos:10},{at:127,pos:91},{at:522,pos:7},{at:1000,pos:62},{at:2000,pos:23}];
@@ -41,6 +41,22 @@ function fixture(){
         config:{target_anchor:"mouth",target_person:0,axis_settings:{L0:{range:.2,center:50,invert:false,component:0}}},
         scripts:{L0:{version:"1.0",inverted:false,range:100,actions:structuredClone(main)}}};
 }
+test("Latest and saved sources are distinguishable after reruns, reverts and legacy reloads",()=>{
+    const project=fixture();initializeTimeline(project);
+    const saved=structuredClone(project.timeline.sources[0]);saved.id='project_0@abcdef1234567890';saved.input='project_0';saved.label+=' · updated';
+    saved.data.config.target_anchor='left_wrist';project.timeline.sources.push(saved);
+    let options=sourceChoices(project);
+    assert.deepEqual(options.map(s=>s.current),[true,false],'Explicit latest survives reverting to an earlier version');
+    assert.match(options[0].label,/mouth.*latest/);assert.match(options[1].label,/left wrist.*saved abcdef12/);
+    delete project.timeline.latest;initializeTimeline(project);options=sourceChoices(project);
+    assert.deepEqual(options.map(s=>s.current),[false,true],'Old saves infer the most recently appended input');
+    const track=project.timeline.tracks[0];assignTrack(project,track,saved.id,'L0');
+    assert.equal(track.name,'project_0 · left wrist · person 0');
+    track.name='My finished section';track.custom_name=true;assignTrack(project,track,'project_0','L0');
+    assert.equal(track.name,'My finished section');
+    const reloaded=JSON.parse(JSON.stringify(project));initializeTimeline(reloaded);
+    assert.deepEqual(sourceChoices(reloaded),options);
+});
 test("Source snapshots, calibration isolation, composed regions, reassignment, undo and JSON roundtrip",()=>{
     const project=fixture();initializeTimeline(project);
     const base=JSON.stringify(project.timeline.sources),track=project.timeline.tracks[0];

@@ -1,5 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
-import {initializeTimeline, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
@@ -134,9 +134,15 @@ function buildTracks() {
         const head=document.createElement("div");head.className="track-head";
         const select=document.createElement("button");select.className="track-select";select.textContent="Edit";select.onclick=()=>selectLane(track.id);
         const name=document.createElement("input");name.type="text";name.className="track-name";name.value=track.name;name.setAttribute("aria-label","Track name");
-        name.onchange=()=>{if(track.locked)return;record();track.edited=true;track.name=name.value.trim()||"Source track";dirty(false);controls();render();};
+        name.onchange=()=>{if(track.locked)return;record();track.custom_name=true;track.name=name.value.trim()||"Source track";dirty(false);controls();render();};
         const source=document.createElement("select");source.className="track-source";source.setAttribute("aria-label","Anchor project");
-        source.replaceChildren(...project.timeline.sources.map(s=>new Option(s.label,s.id)));source.value=track.source;
+        const choices=sourceChoices(project);
+        for(const current of [true,false]){
+            const entries=choices.filter(s=>s.current===current);if(!entries.length)continue;
+            const group=document.createElement("optgroup");group.label=current?"Latest inputs":"Saved versions used in this timeline";
+            group.append(...entries.map(s=>new Option(s.label,s.id)));source.append(group);
+        }
+        source.value=track.source;
         const axis=document.createElement("select");axis.className="track-axis";axis.setAttribute("aria-label","Source axis");
         const axes=()=>{axis.replaceChildren(...Object.keys(sourceProject(project,source.value).scripts).map(a=>new Option(a,a)));axis.value=track.axis;};axes();
         source.onchange=()=>{if(track.locked)return;record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};

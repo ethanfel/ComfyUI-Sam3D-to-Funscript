@@ -19,6 +19,7 @@ export function initializeTimeline(project) {
     const timeline = project.timeline;
     if (timeline.version !== 1 || !Array.isArray(timeline.sources) || !timeline.sources.length || !Array.isArray(timeline.tracks)) throw new Error("Unsupported track project");
     if (new Set(timeline.sources.map(s => s.id)).size !== timeline.sources.length || new Set(timeline.tracks.map(t => t.id)).size !== timeline.tracks.length) throw new Error("Duplicate project or track IDs");
+    timeline.latest ??= Object.fromEntries(timeline.sources.map(s=>[s.input??s.id.split("@")[0],s.id]));
     for (const source of timeline.sources) {
         if (!sourceProject(project, source.id).times_ms?.length) throw new Error("Missing track pose data");
     }
@@ -31,6 +32,15 @@ export function initializeTimeline(project) {
     timeline.selection ??= [0, 0];
     project.metrics ??= {};
     return timeline;
+}
+
+export function sourceChoices(project) {
+    const latest=new Set(Object.values(project.timeline.latest));
+    return project.timeline.sources.map(source=>{
+        const input=source.input??source.id.split("@")[0],config=source.data.config;
+        const label=`${input} · ${config.target_anchor.replaceAll("_"," ")} · person ${config.target_person}`;
+        return {id:source.id,current:latest.has(source.id),label:latest.has(source.id)?`${label} · latest`:`${label} · saved ${source.id.split("@")[1]?.slice(0,8)??"original"}`};
+    });
 }
 
 function cached(project, key, create) {
@@ -69,6 +79,10 @@ export function assignTrack(project, track, source, axis) {
     if (track.locked) throw new Error("Unlock this track before changing its source or axis");
     const data = sourceProject(project, source);
     if (!data.scripts[axis]) axis = Object.keys(data.scripts)[0];
+    if(!track.custom_name&&/^project_\d+ · .+ · person \d+(?: · updated)?$/.test(track.name)){
+        const input=project.timeline.sources.find(s=>s.id===source).input??source.split("@")[0];
+        track.name=`${input} · ${data.config.target_anchor.replaceAll("_"," ")} · person ${data.config.target_person}`;
+    }
     track.source = source; track.axis = axis;
     track.settings = copy(data.config.axis_settings[axis]); track.script = copy(data.scripts[axis]);
     delete track.metrics;

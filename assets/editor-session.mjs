@@ -28,7 +28,7 @@ export function editorSession({install, snapshot, status}) {
             if (!response.ok) throw new Error(await response.text());
             revision = (await response.json()).revision;
             channel?.postMessage({revision});
-            status('Edits and locks saved locally · reruns preserve locked and edited tracks');
+            status('Edits saved locally · lock finished curves to keep them when inputs change');
         })();
         try {await saving;} catch (error) {pending = true; failure = error; status(`Save failed: ${error.message} Download your project to keep this draft.`); throw error;}
         finally {saving = null;}
@@ -43,7 +43,7 @@ export function editorSession({install, snapshot, status}) {
             const sameMedia = sameVideoSource(snapshot()?.metadata?.source, state.project.metadata.source);
             revision = state.revision; output = state.output || id;
             install(state.project, sameMedia, output);
-            status(sameMedia ? 'Saved editor restored · locked and edited tracks preserved' : 'Source video changed · new project loaded');
+            status(sameMedia ? 'Latest run loaded · locked curves and composed sections preserved' : 'Source video changed · new project loaded');
         }
     }
     channel && (channel.onmessage = () => {if (!pending && !saving && !failure) refresh().catch(error => status(error.message));});

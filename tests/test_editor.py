@@ -57,7 +57,7 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(disconnected['timeline']['tracks'][0], track)
         self.assertEqual(disconnected['scripts']['L0'], previous['scripts']['L0'])
 
-    def test_untouched_refreshes_but_edited_and_deleted_lanes_stay_authored(self):
+    def test_changed_inputs_refresh_unlocked_edited_lanes_but_do_not_recreate_deleted_rows(self):
         incoming = copy.deepcopy(self.mouth)
         incoming['scripts']['L0']['actions'][0]['pos'] = 3
         merged = merge_projects(self.initial, incoming)
@@ -66,10 +66,67 @@ class EditorTests(unittest.TestCase):
         self.initial['timeline']['tracks'][0]['edited'] = True
         self.initial['timeline']['main']['L0']['edited'] = True
         merged = merge_projects(self.initial, incoming)
-        self.assertEqual(merged['timeline']['tracks'], self.initial['timeline']['tracks'])
-        self.assertEqual(merged['scripts']['L0'], self.initial['scripts']['L0'])
+        self.assertEqual(merged['timeline']['tracks'][0]['script'], incoming['scripts']['L0'])
+        self.assertEqual(merged['scripts']['L0'], incoming['scripts']['L0'])
+        self.assertFalse(merged['timeline']['tracks'][0].get('edited'))
+        self.assertEqual(len(merged['timeline']['sources']), 1)
         self.initial['timeline']['tracks'] = []
         self.assertEqual(merge_projects(self.initial, incoming)['timeline']['tracks'], [])
+
+    def test_unchanged_input_and_appended_anchor_preserve_unlocked_edits(self):
+        previous = self.initial
+        track = previous['timeline']['tracks'][0]
+        track['edited'] = True
+        track['script']['actions'][0]['pos'] = 13
+        previous['timeline']['main']['L0']['edited'] = True
+        previous['scripts']['L0']['actions'][0]['pos'] = 17
+        merged = merge_projects(previous, combine_projects({'project_0': self.mouth, 'project_1': self.hand}))
+        self.assertEqual(merged['timeline']['tracks'][0], track)
+        self.assertEqual(merged['scripts']['L0'], previous['scripts']['L0'])
+        self.assertEqual(len(merged['timeline']['tracks']), 2)
+        self.assertEqual(merged['timeline']['latest'], {'project_0': 'project_0', 'project_1': 'project_1'})
+
+    def test_cache_hit_and_browser_zero_roundtrip_do_not_replace_edits(self):
+        self.initial['timeline']['sources'][0]['data']['raw'][0][0] = -0.0
+        self.initial['timeline']['sources'][0]['data']['metadata'].update(cache_hit=False, cache_path='/old.npz', inference_seconds=15)
+        self.initial['timeline']['tracks'][0]['script']['actions'][0]['pos'] = 14
+        self.initial['timeline']['tracks'][0]['edited'] = True
+        incoming = copy.deepcopy(self.mouth)
+        incoming['raw'][0][0] = 0
+        incoming['metadata'].update(cache_hit=True, cache_path='/new.npz', inference_seconds=0, performance={'time': 9})
+        merged = merge_projects(self.initial, incoming)
+        self.assertEqual(merged['timeline']['tracks'], self.initial['timeline']['tracks'])
+        self.assertEqual(len(merged['timeline']['sources']), 1)
+
+    def test_latest_identity_survives_reverting_input_and_restart_with_saved_versions(self):
+        previous = self.initial
+        previous['timeline']['tracks'][0]['locked'] = True
+        changed = copy.deepcopy(self.mouth)
+        changed['scripts']['L0']['actions'][0]['pos'] = 4
+        merged = merge_projects(previous, changed)
+        second = merged['timeline']['latest']['project_0']
+        self.assertNotEqual(second, 'project_0')
+        # Preserve the newer source on a second locked lane, then revert the input.
+        track = copy.deepcopy(merged['timeline']['tracks'][0])
+        track.update(id='track_1', source=second)
+        merged['timeline']['tracks'].append(track)
+        reverted = merge_projects(merged, self.mouth)
+        restarted = initialize(json.loads(json.dumps(reverted)))
+        self.assertEqual(restarted['timeline']['latest']['project_0'], 'project_0')
+        self.assertEqual(len(restarted['timeline']['sources']), 2)
+        self.assertEqual(merge_projects(restarted, self.mouth), restarted)
+
+    def test_updated_anchor_names_preserve_custom_titles_and_composed_sections(self):
+        for custom in (False, True):
+            previous = copy.deepcopy(self.initial)
+            track = previous['timeline']['tracks'][0]
+            track.update(edited=True, custom_name=custom)
+            main = previous['timeline']['main']['L0']
+            main.update(assembled=True, regions=[dict(source='project_0', start=0, end=2000, axis='L0')])
+            merged = merge_projects(previous, self.hand)
+            self.assertEqual(merged['timeline']['main']['L0'], main)
+            self.assertEqual(merged['scripts']['L0'], previous['scripts']['L0'])
+            self.assertEqual(merged['timeline']['tracks'][0]['name'], track['name'] if custom else 'project_0 · right hand · person 0')
 
     def test_other_video_cannot_replace_any_locked_lane(self):
         incoming = copy.deepcopy(self.mouth)

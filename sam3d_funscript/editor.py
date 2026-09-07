@@ -21,11 +21,13 @@ def same_video(a, b):
 
 def initialize(project):
     if project.get('timeline'):
+        timeline = project['timeline']
+        timeline.setdefault('latest', {s.get('input', s['id'].split('@')[0]): s['id'] for s in timeline['sources']})
         return project
     data = {k: copy.deepcopy(project[k]) for k in SOURCE_FIELDS if k in project}
     label = f"project_0 · {data['config']['target_anchor'].replace('_', ' ')} · person {data['config']['target_person']}"
     axis = 'L0' if 'L0' in data['scripts'] else next(iter(data['scripts']))
-    project['timeline'] = dict(version=1, sources=[dict(id='project_0', label=label, geometry='base', data=data)],
+    project['timeline'] = dict(version=1, sources=[dict(id='project_0', label=label, geometry='base', data=data)], latest={'project_0': 'project_0'},
         geometries={}, tracks=[dict(id='track_0', name=label, source='project_0', axis=axis,
         settings=copy.deepcopy(data['config']['axis_settings'][axis]), script=copy.deepcopy(data['scripts'][axis]))],
         main={a: dict(assembled=False, source='project_0', regions=[]) for a in data['scripts']}, active='main', selection=[0, 0])
@@ -42,6 +44,8 @@ def validate(project):
     sources = {s['id'] for s in timeline['sources']}
     if len(sources) != len(timeline['sources']) or len({t['id'] for t in timeline['tracks']}) != len(timeline['tracks']):
         raise ValueError('Duplicate editor source or track IDs')
+    if any(source not in sources for source in timeline['latest'].values()):
+        raise ValueError('Missing latest input source')
     for axis, script in project['scripts'].items():
         if axis not in AXES or timeline['main'][axis]['source'] not in sources:
             raise ValueError('Invalid main axis or source')
@@ -58,8 +62,8 @@ def validate(project):
 
 def digest(value):
     def browser_numbers(item):
-        if type(item) is int:
-            return float(item)
+        if type(item) in (int, float):
+            return 0.0 if item == 0 else float(item)  # JS serializes -0 as 0.
         if isinstance(item, list):
             return [browser_numbers(v) for v in item]
         if isinstance(item, dict):
@@ -72,8 +76,14 @@ def geometry(project, source):
     return {k: project.get(k) for k in GEOMETRY} if source['geometry'] == 'base' else project['timeline']['geometries'][source['geometry']]
 
 
+def source_digest(data):
+    # A cache hit or another export path is not a changed motion input.
+    metadata = {k: v for k, v in data['metadata'].items() if k not in ('cache_hit', 'cache_path', 'inference_seconds', 'performance')}
+    return digest({**data, 'metadata': metadata})
+
+
 def merge_projects(previous, incoming):
-    """Refresh untouched lanes; keep locked/authored lanes and their exact pose sources."""
+    """Follow changed inputs on unlocked lanes; retain locks and composed sections."""
     old, new = initialize(copy.deepcopy(previous)), initialize(copy.deepcopy(incoming))
     locked = any(t.get('locked') for t in old['timeline']['tracks']) or any(m.get('locked') for m in old['timeline']['main'].values())
     if not same_video(old, new):
@@ -87,11 +97,11 @@ def merge_projects(previous, incoming):
     old_inputs = {s.get('input', s['id']) for s in timeline['sources']}
     for source in new['timeline']['sources']:
         original = source.get('input', source['id'])
-        data_hash = digest(source['data'])
+        data_hash = source_digest(source['data'])
         geo = geometry(new, source)
         geo_hash = digest(geo)
         match = next((s for s in sources.values() if s.get('input', s['id']) == original
-            and digest(s['data']) == data_hash and digest(geometry(out, s)) == geo_hash), None)
+            and source_digest(s['data']) == data_hash and digest(geometry(out, s)) == geo_hash), None)
         if match:
             mapping[source['id']] = match['id']
             continue
@@ -108,16 +118,22 @@ def merge_projects(previous, incoming):
             snapshot['label'] = source['label'] + ' · updated'
         timeline['sources'].append(snapshot); sources[key] = snapshot
         mapping[source['id']] = key
-    latest = {s.get('input', s['id']): mapping[s['id']] for s in new['timeline']['sources']}
+    latest = {name: mapping[source] for name, source in new['timeline']['latest'].items()}
+    timeline['latest'] = latest
     for track in timeline['tracks']:
-        if track.get('locked') or track.get('edited') or track.get('window'):
+        if track.get('locked') or track.get('window'):
             continue
         source = sources[track['source']]
         new_id = latest.get(source.get('input', source['id']))
         if new_id and track['axis'] in sources[new_id]['data']['scripts']:
             data = sources[new_id]['data']; axis = track['axis']
+            if not track.get('custom_name') and re.fullmatch(r'project_\d+ · .+ · person \d+(?: · updated)?', track['name']):
+                track['name'] = f"{source.get('input', source['id'])} · {data['config']['target_anchor'].replace('_', ' ')} · person {data['config']['target_person']}"
+            if new_id == track['source']:
+                continue
             track.update(source=new_id, settings=copy.deepcopy(data['config']['axis_settings'][axis]), script=copy.deepcopy(data['scripts'][axis]))
             track.pop('metrics', None)
+            track.pop('edited', None)
     for track in new['timeline']['tracks']:
         source = next(s for s in new['timeline']['sources'] if s['id'] == track['source'])
         if source.get('input', source['id']) in old_inputs:
@@ -127,7 +143,7 @@ def merge_projects(previous, incoming):
         timeline['tracks'].append({**track, 'id': f'track_{n}', 'source': mapping[track['source']]})
     for axis, main in new['timeline']['main'].items():
         prior = timeline['main'].get(axis, {})
-        if prior.get('locked') or prior.get('edited') or prior.get('assembled'):
+        if prior.get('locked') or prior.get('assembled') or prior.get('source') == mapping[main['source']]:
             continue
         main = copy.deepcopy(main); main['source'] = mapping[main['source']]
         for region in main['regions']: region['source'] = mapping[region['source']]

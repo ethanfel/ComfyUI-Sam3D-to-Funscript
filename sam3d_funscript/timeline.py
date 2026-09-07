@@ -59,7 +59,7 @@ def combine_projects(inputs):
 
     output = {**base, "config": copy.deepcopy(base["config"]), "scripts": copy.deepcopy(base["scripts"]),
               "metrics": copy.deepcopy(base.get("metrics", {}))}
-    timeline = {"version": 1, "sources": [], "geometries": {}, "tracks": [], "main": {},
+    timeline = {"version": 1, "sources": [], "latest": {}, "geometries": {}, "tracks": [], "main": {},
                 "active": "main", "selection": [0, 0]}
     hashes = {}
     for name, value in projects:
@@ -73,6 +73,7 @@ def combine_projects(inputs):
         data = {key: value[key] for key in SOURCE_FIELDS if key in value}
         label = f"{name} · {value['config']['target_anchor'].replace('_', ' ')} · person {value['config']['target_person']}"
         timeline["sources"].append({"id": name, "label": label, "geometry": hashes[digest], "data": data})
+        timeline["latest"][name] = name
         axis = "L0" if "L0" in value["scripts"] else next(iter(value["scripts"]))
         timeline["tracks"].append({"id": f"track_{len(timeline['tracks'])}", "name": label,
             "source": name, "axis": axis, "settings": copy.deepcopy(value["config"]["axis_settings"][axis]),
