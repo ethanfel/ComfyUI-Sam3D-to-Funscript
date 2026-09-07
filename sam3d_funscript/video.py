@@ -13,8 +13,9 @@ import numpy as np
 
 from .core import PoseSequence
 from .masks import MaskVideoReader, timestamp_seconds
+from .mouth import mouth_corners, mouth_regressor
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def fingerprint(path):
@@ -136,14 +137,14 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
             sequence.metadata["duration_ms"] = min(sequence.metadata["duration_ms"], float((start_seconds + duration_seconds) * 1000))
         return sequence
     started = time.perf_counter()
-    model = None
+    model, regressor = None, None
     rows, timestamps, segments = [], [], []
     images, batch_times = [], []
     batch_masks, mask_boxes = [], []
     previous_thumbnail, segment = None, 0
     image_size = None
     def flush():
-        nonlocal model
+        nonlocal model, regressor
         if not images:
             return
         comfy.model_management.throw_exception_if_processing_interrupted()
@@ -153,6 +154,7 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         if active:
             if model is None:
                 model = SAM3DBody_Loader.execute(model_file).result[0]
+                regressor = mouth_regressor(model)
             bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
             batch = torch.from_numpy(np.stack([images[i] for i in active]).astype(np.float32) / 255.0)
             track_data = None
@@ -164,16 +166,17 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                 raise ValueError("SAM3D returned a different number of frames than the input batch")
             predictions = dict(zip(active, prediction["frames"]))
         for i in range(len(images)):
-            points = np.full((people_count, 70, 3), np.nan, dtype=np.float32)
-            pixels = np.full((people_count, 70, 2), np.nan, dtype=np.float32)
+            points = np.full((people_count, 72, 3), np.nan, dtype=np.float32)
+            pixels = np.full((people_count, 72, 2), np.nan, dtype=np.float32)
             valid = np.zeros(people_count, dtype=bool)
             people = predictions.get(i, [])
             if i in predictions and len(people) != people_count:
                 raise ValueError("SAM3D returned a different number of people than ROI slots")
             for slot, person in enumerate(people):
-                points[slot] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
-                pixels[slot] = person["pred_keypoints_2d"]
-                valid[slot] = np.isfinite(points[slot]).all() and np.isfinite(pixels[slot]).all()
+                points[slot, :70] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
+                pixels[slot, :70] = person["pred_keypoints_2d"]
+                valid[slot] = np.isfinite(points[slot, :70]).all() and np.isfinite(pixels[slot, :70]).all()
+                points[slot, 70:], pixels[slot, 70:] = mouth_corners(person, (height, width), regressor)
             rows.append((points, pixels, valid))
         timestamps.extend(batch_times)
         print(f"SAM3D Funscript: extracted {len(rows)} samples", flush=True)
@@ -215,6 +218,7 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                 "timestamps": timestamps, "rois": rois, "cache_hit": False, "cache_path": str(cache),
                 "inference_seconds": time.perf_counter() - started, "sample_count": len(rows),
                 "settings": key, "units": "metres", "basis": "camera: X right, Y down, Z forward",
+                "extra_landmarks": {"70": "right_outer_mouth_corner", "71": "left_outer_mouth_corner"},
                 "warnings": ["Static ROI slots are not identity tracking. Inspect overlap, occlusion and subject changes.",
                              "Validity means finite model output, not visibility or calibrated confidence.",
                              "Cut detection is a thumbnail-change heuristic; review missed cuts and false positives."]}

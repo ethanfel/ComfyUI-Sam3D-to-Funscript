@@ -18,7 +18,7 @@ def main():
     info = get("/object_info")
     assert info["S3F_VideoPose"]["input"]["required"]["video"][0] == "VIDEO"
     choices = info["S3F_BuildMotion"]["input"]["required"]["target_anchor"][0]
-    assert len(choices) == 8 and "left_hand" in choices and "neck" in choices
+    assert len(choices) == 9 and "mouth" in choices and "neck" in choices
     detailed = info["S3F_AnchorOverride"]["input"]["required"]["anchor"][0]
     assert len(detailed) == 70 and "left_index_tip" in detailed
     api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())

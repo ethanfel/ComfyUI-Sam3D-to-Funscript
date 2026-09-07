@@ -1,4 +1,5 @@
 from fractions import Fraction
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -76,7 +77,11 @@ class MaskTests(unittest.TestCase):
         modules["comfy.model_management"].throw_exception_if_processing_interrupted = lambda: None
         native = modules["comfy_extras.nodes_sam3d_body"]
         native.SAM3DBody_Loader, native.SAM3DBody_Predict, native.__file__ = Loader, Predictor, __file__
-        return patch.dict(sys.modules, modules), state
+        @contextmanager
+        def mocked():
+            with patch.dict(sys.modules, modules), patch("sam3d_funscript.video.mouth_regressor", return_value=None):
+                yield
+        return mocked(), state
 
     def extract(self, **kwargs):
         return extract_video(self.source, "model", self.root / "cache", sample_fps=0,

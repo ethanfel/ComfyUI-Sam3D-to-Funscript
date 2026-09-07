@@ -56,7 +56,7 @@ SAM3D poses + the same trimmed VIDEO → Core SAM3D → Funscript Poses
                                     → Preview & Export Funscripts
 ```
 
-The new **Core SAM3D → Funscript Poses** adapter has two connections and no model-loading controls. Connect `MHR_POSE_DATA` from native prediction and the same `VIDEO` supplied to **Get Video Components**. The adapter reads source frame timestamps, preserves the original timeline through trims, and writes a pose cache compatible with **Load SAM3D Pose Cache**. A frame-count mismatch stops conversion rather than silently shifting the script.
+The **Core SAM3D → Funscript Poses** adapter requires two connections: `MHR_POSE_DATA` from native prediction and the same `VIDEO` supplied to **Get Video Components**. Its optional `sam3d_body_model` input accepts the same loaded model to recover mouth corners from body-only predictions; the example includes this connection. It performs no additional model inference. The adapter reads source frame timestamps, preserves the original timeline through trims, and writes a pose cache compatible with **Load SAM3D Pose Cache**. A frame-count mismatch stops conversion rather than silently shifting the script.
 
 The example uses every frame, batch size 8, and hand refinement disabled to match the combined node's inference settings. Native SAM3D exposes hand refinement, field of view, batch size, tracking data and bounding-box inputs for further changes. Full-frame single-person prediction is used when no tracking/boxes are connected.
 
@@ -121,7 +121,7 @@ camera_point = pred_keypoints_3d + pred_cam_t
 
 Units are estimated metres; camera X is right, Y down, Z forward. A torso basis is reconstructed from the two hips and shoulders, avoiding the separate native rig-rotation basis convention.
 
-Both `target_anchor` and `reference_anchor` offer **eight general choices**: `pelvis`, `chest`, `nose`, `left_wrist`, `right_wrist`, `left_hand`, `right_hand`, and `neck`. Pelvis averages the hips; chest averages the shoulders. Each hand anchor averages **all 21 hand landmarks: wrist and 20 finger points**. This centroid moves with finger articulation; it is not a fixed palm or contact point. Left/right refer to the person's anatomical sides.
+Both `target_anchor` and `reference_anchor` offer **nine general choices**: `pelvis`, `chest`, `nose`, `left_wrist`, `right_wrist`, `left_hand`, `right_hand`, `neck`, and `mouth`. Pelvis averages the hips; chest averages the shoulders; mouth averages the two outer mouth corners. Each hand anchor averages **all 21 hand landmarks: wrist and 20 finger points**. This centroid moves with finger articulation; it is not a fixed palm or contact point. Left/right refer to the person's anatomical sides.
 
 For a specific point, add **Detailed Anchor Override** and connect it to `target_anchor_override` or `reference_anchor_override`. A connected override takes precedence over that dropdown. Use two selector nodes for different target/reference landmarks, or share one selector to use the same landmark on both people. The reference anchor is ignored when `reference_person=-1`.
 
@@ -135,9 +135,13 @@ The selector offers all 70 named [MHR70 landmarks](https://github.com/facebookre
 
 The [detailed-anchor example](workflows/detailed_anchor_override.json) reopens a pose cache and overrides `left_hand` with `left_index_tip`. Disconnect the override to return to the hand average. Its [API companion](workflows/detailed_anchor_override.api.json) shows the same connection.
 
-Saved canvas workflows that selected a detailed point migrate on opening: their selection moves into a connected override node. Existing detailed values in API prompts and saved projects remain supported. These 70 landmarks do not include lip/mouth points; this pack does not yet retain SAM3D's additional facial output.
+Saved canvas workflows that selected a detailed point migrate on opening: their selection moves into a connected override node. Existing detailed values in API prompts and saved projects remain supported.
 
-Changing an anchor uses the landmarks already stored in the pose cache; no new inference is needed. The yellow target marker and its trail follow the selected point in the video and 3D preview. Anchor choice changes translation; rotation channels still use the torso basis. Finger and occluded-point estimates require review, especially with hand refinement disabled. These are anatomical pose landmarks; no contact point or pressure is inferred.
+The 70 native body/hand landmarks do not include lips. The pack appends the right and left outer mouth corners as cache points 70 and 71, using [Goliath landmarks 188 and 189](https://github.com/facebookresearch/sapiens/blob/main/pose/configs/_base_/datasets/goliath.py). It keeps native facial landmarks when available, or recovers the same two points from the existing mesh and joints with the loaded model's landmark mapping. Only these two extra points and their projections are retained; this adds about 40 bytes per frame/person without another inference pass. The streaming node handles recovery automatically. For body-only core predictions, connect the same upstream model to the adapter's optional `sam3d_body_model` input.
+
+**Mouth follows the reconstructed mouth position.** The base body model uses a neutral facial expression, so this does not measure mouth opening, contact, or whether the mouth is visible. Its position still needs visual review during head turns and occlusion. New streaming runs automatically use the updated cache version. Existing 70-point caches remain usable for body/hand anchors, but selecting mouth requires re-extraction; a core cache without mouth points requires rerunning the adapter with the model connected.
+
+Changing an anchor uses the landmarks already stored in the pose cache; no new inference is needed once the cache includes the requested landmarks. The yellow target marker and its trail follow the selected point in the video and 3D preview. Anchor choice changes translation; rotation channels still use the torso basis. Finger and occluded-point estimates require review, especially with hand refinement disabled. These are anatomical pose landmarks; no contact point or pressure is inferred.
 
 - `reference_person=-1`, `frame=camera`: follows target motion in camera coordinates.
 - A second reference person with `frame=camera`: subtracts the reference anchor in camera coordinates.
@@ -263,6 +267,8 @@ Mask-video validation uses a four-second, two-panel copy of the supplied clip wi
 The anchor cleanup passes 30 Python tests plus JavaScript migration/export checks. The ComfyUI queue verifies all eight general anchors, both override inputs and legacy API selections against direct calculations. Browser checks cover the hand-average marker, short dropdowns, both migrated selections and save/reload. Reproduce the queue checks without inference using `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/anchor_queue_smoke.py --cache /absolute/path/to/poses.npz`.
 
 Device integration passes 31 Python tests, the asset geometry checks (1,870 SR6 poses), the existing editor/ComfyUI browser checks and `scripts/device_browser_smoke.mjs`. Chrome verifies live playback and seeking for both devices, supported-channel readouts, Handy channel isolation and missing-L0 neutrality, the supplied demo, and offline video playback and re-export with networking disabled. A real ComfyUI export also preserves the scripts and writes `viewer.html`. These tests establish software integration and schematic geometry, not hardware fidelity.
+
+Mouth support passes the current 36 Python tests and JavaScript curve/migration checks. On the GPU, recovered mouth corners matched native MHR's full landmark calculation exactly for the checked pose; this verifies the extraction math, not tracking accuracy against real lips. Four face crops were visually reviewed. Queue checks cover a 270-sample streaming clip, an eight-frame core body-only prediction, identical scripts after cache reload, body anchors without the optional model, and preserved missing-mask frames. Browser checks verify the mouth marker, seeking, editing, download and canvas reload. Reproduce the queue checks with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/mouth_queue_smoke.py`; add `--mask-fixture` after generating the mask fixtures above. The anchor queue check now covers all nine general choices.
 
 ## Next stages
 

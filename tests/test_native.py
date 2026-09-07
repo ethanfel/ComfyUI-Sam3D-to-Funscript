@@ -80,7 +80,7 @@ class NativeAdapterTests(unittest.TestCase):
         data["frames"][2] = []
         sequence = adapt_native_poses(data, FileVideo(self.path), self.cache)
         np.testing.assert_allclose(sequence.times_ms, [0, 40, 100, 180, 240, 400])
-        np.testing.assert_allclose(sequence.points[0, 0], original + [1, 2, 3])
+        np.testing.assert_allclose(sequence.points[0, 0, :70], original + [1, 2, 3])
         np.testing.assert_array_equal(data["frames"][0][0]["pred_keypoints_3d"], original)
         self.assertFalse(sequence.valid[2, 0])
         self.assertTrue(np.isnan(sequence.points[2, 0]).all())

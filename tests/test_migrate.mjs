@@ -41,7 +41,7 @@ assert.deepEqual(converted.links.slice(1), [
 assert.deepEqual(converted.nodes[2].inputs[0].widget, {name: "file"});
 console.log("Workflow migration preserves settings, connections and existing nodes; repeated loads are unchanged.");
 
-const general = ["pelvis", "chest", "nose", "left_wrist", "right_wrist", "left_hand", "right_hand", "neck"];
+const general = ["pelvis", "chest", "nose", "left_wrist", "right_wrist", "left_hand", "right_hand", "neck", "mouth"];
 const detailed = ["left_index_tip", "right_pinky_tip", "nose", "neck"];
 const anchors = {
     last_node_id: 2, last_link_id: 4,

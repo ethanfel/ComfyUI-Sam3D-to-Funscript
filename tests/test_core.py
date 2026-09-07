@@ -15,9 +15,9 @@ from sam3d_funscript.anchors import ANCHORS, GENERAL_ANCHORS, MHR70_NAMES
 from sam3d_funscript.standalone import standalone_html
 
 
-def fixture():
+def fixture(keypoints=70):
     times = np.arange(0, 2001, 40, dtype=float)
-    p = np.zeros((len(times), 2, 70, 3), dtype=float)
+    p = np.zeros((len(times), 2, keypoints, 3), dtype=float)
     for slot in range(2):
         p[:, slot, :, 2] = 3
         p[:, slot, 9] += [-.2, 0, 0]
@@ -34,16 +34,16 @@ class CoreTests(unittest.TestCase):
     def test_all_landmarks_drive_translation_and_publish_matching_preview_indices(self):
         self.assertEqual(len(MHR70_NAMES), 70)
         self.assertEqual(len(set(MHR70_NAMES)), 70)
-        self.assertEqual(len(ANCHORS), 74)
-        self.assertEqual(len(GENERAL_ANCHORS), 8)
+        self.assertEqual(len(ANCHORS), 75)
+        self.assertEqual(len(GENERAL_ANCHORS), 9)
         self.assertEqual(ANCHORS["left_hand"], tuple(range(42, 63)))
         self.assertEqual(ANCHORS["right_hand"], tuple(range(21, 42)))
         self.assertEqual(ANCHORS["left_index_tip"], (46,))
         self.assertEqual(ANCHORS["right_pinky_third_joint"], (40,))
         self.assertEqual(ANCHORS["neck"], (69,))
-        sequence = fixture()
+        sequence = fixture(72)
         # Every landmark has distinct motion, preventing a wrong index from passing.
-        for joint in range(70):
+        for joint in range(72):
             sequence.points[:, 0, joint, 0] += sequence.times_ms / 1000 * (joint + 1) / 100
         for name, indices in ANCHORS.items():
             with self.subTest(anchor=name):

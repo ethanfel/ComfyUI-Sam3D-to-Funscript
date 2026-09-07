@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 from .anchors import ANCHORS
 from .standalone import standalone_html
+from .mouth import MOUTH_NOTE
 
 AXES = ("L0", "L1", "L2", "R0", "R1", "R2")
 SUFFIXES = dict(zip(AXES, ("", ".surge", ".sway", ".twist", ".roll", ".pitch")))
@@ -21,8 +22,8 @@ SCHEMA = "sam3d-funscript/1"
 @dataclass
 class PoseSequence:
     times_ms: np.ndarray
-    points: np.ndarray  # N,P,70,3, camera XYZ metres (right, down, forward)
-    pixels: np.ndarray  # N,P,70,2, original video pixels
+    points: np.ndarray  # N,P,70 or 72,3; optional right/left mouth corners after MHR70
+    pixels: np.ndarray  # Matching original-video pixel coordinates
     valid: np.ndarray  # N,P; presence supplied by adapter, NOT model confidence
     segments: np.ndarray  # N; filters never cross a segment boundary
     metadata: dict
@@ -33,8 +34,8 @@ class PoseSequence:
             raise ValueError("At least two strictly increasing, finite timestamps are required")
         if self.times_ms[0] < 0:
             raise ValueError("Video timestamps must be nonnegative")
-        if self.points.ndim != 4 or self.points.shape[0] != n or self.points.shape[2:] != (70, 3):
-            raise ValueError("Expected N × people × 70 × 3 MHR keypoints")
+        if self.points.ndim != 4 or self.points.shape[0] != n or self.points.shape[2] not in (70, 72) or self.points.shape[3] != 3:
+            raise ValueError("Expected N × people × 70 or 72 × 3 keypoints (MHR70 plus optional mouth corners)")
         if self.pixels.shape != self.points.shape[:-1] + (2,) or self.valid.shape != self.points.shape[:2]:
             raise ValueError("Pose, projection and visibility shapes disagree")
         if self.segments.shape != (n,) or np.any(np.diff(self.segments) < 0):
@@ -76,7 +77,12 @@ def body_basis(points):
 def anchor(points, name):
     if name not in ANCHORS:
         raise ValueError(f"Unknown anchor {name}; choose {', '.join(ANCHORS)}")
-    return points[:, ANCHORS[name]].mean(axis=1)
+    if max(ANCHORS[name]) >= points.shape[1]:
+        raise ValueError("This pose cache has no mouth corners. Re-run SAM3D extraction with the updated node, or connect the native model to the core pose adapter.")
+    result = points[:, ANCHORS[name]].mean(axis=1)
+    if name == "mouth" and not np.isfinite(result).all(axis=1).any():
+        raise ValueError("No mouth corners are available for this person. For body-only core poses, connect the same SAM3D model to the pose adapter and queue again.")
+    return result
 
 
 def spans(valid, segments, times, max_gap_ms):
@@ -245,6 +251,8 @@ def build_project(sequence, overrides=None):
         warnings.append("Gaps/cuts hold the previous position, then step at the next valid span. Review these boundaries before playback.")
     if reference < 0:
         warnings.append("Camera-relative motion includes camera movement and monocular depth/scale drift.")
+    if config["target_anchor"] == "mouth" or (reference >= 0 and config["reference_anchor"] == "mouth"):
+        warnings.append(MOUTH_NOTE)
     return {"schema": SCHEMA, "metadata": sequence.metadata, "config": config, "scripts": scripts,
             "anchor_indices": {"target": list(ANCHORS[config["target_anchor"]]),
                                "reference": list(ANCHORS[config["reference_anchor"]]) if reference >= 0 else None},

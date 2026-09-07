@@ -145,7 +145,7 @@ try{
         assert.deepEqual(report.frontend.prompt["2"].inputs.target_anchor_override,["4",0]);
         assert.equal(report.frontend.prompt["4"].inputs.anchor,"left_index_tip");
         const options=await evaluate("window.s3fTestApp.graph.getNodeById(2).widgets.find(w=>w.name==='target_anchor').options.values");
-        assert.equal(options.length,8);assert.ok(options.includes("left_hand"));assert.ok(!options.includes("left_index_tip"));
+        assert.equal(options.length,9);assert.ok(options.includes("mouth"));assert.ok(!options.includes("left_index_tip"));
         const legacy=structuredClone(workflow);
         legacy.nodes=legacy.nodes.filter(n=>n.id!==4);
         legacy.links=legacy.links.filter(l=>l[5]!=="S3F_ANCHOR");
@@ -162,7 +162,7 @@ try{
         const saved=await evaluate("window.s3fTestApp.graph.serialize()");
         await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(saved)})`);
         assert.deepEqual((await evaluate("window.s3fTestApp.graphToPrompt()")).output,migrated);
-        report.checks.push("Eight general anchors, detailed override connection, both legacy selections and save/reload are preserved");
+        report.checks.push("General anchors including mouth, detailed override connection, both legacy selections and save/reload are preserved");
         await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
     }
     report.checks.push(`Canvas workflow loads all ${workflow.nodes.length} nodes, preserves connections/settings and restores the preview iframe`);

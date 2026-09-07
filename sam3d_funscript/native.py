@@ -9,6 +9,7 @@ import numpy as np
 
 from .core import PoseSequence
 from .video import fingerprint
+from .mouth import mouth_corners, mouth_regressor
 
 
 def core_video_timing(video, frame_count, image_size):
@@ -75,7 +76,7 @@ def core_video_timing(video, frame_count, image_size):
     }
 
 
-def adapt_native_poses(mhr_pose_data, video, cache_dir):
+def adapt_native_poses(mhr_pose_data, video, cache_dir, sam3d_body_model=None):
     frames = mhr_pose_data["frames"]
     image_size = list(mhr_pose_data["image_size"])
     if len(frames) < 2:
@@ -85,17 +86,20 @@ def adapt_native_poses(mhr_pose_data, video, cache_dir):
     people = int(counts.max())
     if not people:
         raise ValueError("SAM3D detected no people in the selected frames")
-    points = np.full((len(frames), people, 70, 3), np.nan, np.float32)
-    pixels = np.full((len(frames), people, 70, 2), np.nan, np.float32)
+    points = np.full((len(frames), people, 72, 3), np.nan, np.float32)
+    pixels = np.full((len(frames), people, 72, 2), np.nan, np.float32)
+    regressor = mouth_regressor(sam3d_body_model)
     valid = np.zeros((len(frames), people), bool)
     for index, frame in enumerate(frames):
         for slot, person in enumerate(frame):
-            points[index, slot] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
-            pixels[index, slot] = person["pred_keypoints_2d"]
-            valid[index, slot] = np.isfinite(points[index, slot]).all() and np.isfinite(pixels[index, slot]).all()
+            points[index, slot, :70] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
+            pixels[index, slot, :70] = person["pred_keypoints_2d"]
+            valid[index, slot] = np.isfinite(points[index, slot, :70]).all() and np.isfinite(pixels[index, slot, :70]).all()
+            points[index, slot, 70:], pixels[index, slot, 70:] = mouth_corners(person, image_size, regressor)
     # Changing the number of detections resets authoring spans; it does not infer identity.
     segments = np.r_[0, np.cumsum(counts[1:] != counts[:-1])]
-    metadata.update({"adapter": "core-mhr/1", "image_size": image_size,
+    metadata.update({"adapter": "core-mhr/2", "image_size": image_size,
+        "extra_landmarks": {"70": "right_outer_mouth_corner", "71": "left_outer_mouth_corner"},
         "sample_count": len(frames), "units": "metres", "basis": "camera: X right, Y down, Z forward",
         "model": {"provider": "ComfyUI core MHR_POSE_DATA", "selection": "See upstream SAM3D model loader in the workflow."},
         "warnings": ["Person slots follow native pose output order; they do not guarantee identity across detections.",

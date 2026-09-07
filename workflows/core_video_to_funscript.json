@@ -1,6 +1,6 @@
 {
   "last_node_id": 8,
-  "last_link_id": 8,
+  "last_link_id": 9,
   "nodes": [
     {
       "id": 1,
@@ -158,7 +158,8 @@
           "name": "sam3d_body_model",
           "type": "SAM3D_BODY_MODEL",
           "links": [
-            4
+            4,
+            9
           ],
           "slot_index": 0
         }
@@ -251,6 +252,11 @@
           "name": "video",
           "type": "VIDEO",
           "link": 6
+        },
+        {
+          "name": "sam3d_body_model",
+          "type": "SAM3D_BODY_MODEL",
+          "link": 9
         }
       ],
       "outputs": [
@@ -433,6 +439,14 @@
       8,
       0,
       "S3F_MOTION_PROJECT"
+    ],
+    [
+      9,
+      4,
+      0,
+      6,
+      2,
+      "SAM3D_BODY_MODEL"
     ]
   ],
   "groups": [

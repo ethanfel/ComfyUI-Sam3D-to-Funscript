@@ -33,9 +33,9 @@ def main():
     info = get("/object_info")
     assert info["S3F_BuildMotion"]["input"]["required"]["target_anchor"][0] == list(GENERAL_ANCHORS)
     assert info["S3F_AnchorOverride"]["input"]["required"]["anchor"][0] == list(MHR70_NAMES)
-    sequence = fixture()
+    sequence = fixture(72)
     for person in range(2):
-        for joint in range(70):
+        for joint in range(72):
             sequence.points[:, person, joint, 0] += (person + 1) * (joint + 1) * sequence.times_ms / 100000
     cache = ROOT / "development/anchor-fixture.npz"
     sequence.save(cache)

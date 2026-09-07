@@ -136,6 +136,9 @@ def calibrate_sequence(sequence, reference, smoothing_options=(0.0, 40.0, 80.0, 
     for person in range(people):
         _, body_good = body_basis(sequence.points[:, person])
         for name in ANCHORS:
+            indices = ANCHORS[name]
+            if max(indices) >= sequence.points.shape[2] or not np.isfinite(sequence.points[:, person, indices]).all(axis=(1, 2)).any():
+                continue
             positions = anchor(sequence.points[:, person], name)
             valid = sequence.valid[:, person] & body_good & np.isfinite(positions).all(axis=1)
             raw = np.full((len(sequence.times_ms), 3), np.nan)

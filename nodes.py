@@ -88,6 +88,8 @@ class S3F_CorePoseAdapter:
         return {"required": {
             "mhr_pose_data": ("MHR_POSE_DATA",),
             "video": ("VIDEO", {"tooltip": "The same file-backed VIDEO connected to Get Video Components, including any Trim Video node. Preserves original frame timestamps."}),
+        }, "optional": {
+            "sam3d_body_model": ("SAM3D_BODY_MODEL", {"tooltip": "The same model used for native prediction. Recovers mouth corners from body-only output without running inference again. Optional when native facial landmarks are already present."}),
         }}
 
     RETURN_TYPES = ("S3F_POSE_SEQUENCE", "STRING")
@@ -95,9 +97,9 @@ class S3F_CorePoseAdapter:
     FUNCTION = "run"
     CATEGORY = CATEGORY
 
-    def run(self, mhr_pose_data, video):
+    def run(self, mhr_pose_data, video, sam3d_body_model=None):
         cache = Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "cache"
-        sequence = adapt_native_poses(mhr_pose_data, video, cache)
+        sequence = adapt_native_poses(mhr_pose_data, video, cache, sam3d_body_model)
         return sequence, sequence.metadata["cache_path"]
 
 
@@ -125,7 +127,7 @@ class S3F_BuildMotion:
         return {"required": {
             "poses": ("S3F_POSE_SEQUENCE",),
             "target_person": ("INT", {"default": 0, "min": 0, "max": 7}),
-            "target_anchor": (list(GENERAL_ANCHORS), {"tooltip": "General anchors. left_hand/right_hand average all 21 hand landmarks (wrist + 20 finger points). Left/right are anatomical sides. A connected target_anchor_override takes precedence. Rotation still follows the torso."}),
+            "target_anchor": (list(GENERAL_ANCHORS), {"tooltip": "Hands average wrist + 20 finger points. Mouth averages reconstructed outer mouth corners; requires a new pose cache or the model connected to the core adapter. Base SAM3D does not measure mouth opening. Left/right are anatomical. Connected override takes precedence; rotation follows the torso."}),
             "reference_person": ("INT", {"default": -1, "min": -1, "max": 7, "tooltip": "-1 uses camera coordinates."}),
             "reference_anchor": (list(GENERAL_ANCHORS), {"tooltip": "General anchor on the reference person. Hands average all 21 hand points. A connected reference_anchor_override takes precedence. Ignored when reference_person is -1."}),
             "frame": (["camera", "reference_body"],),
