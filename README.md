@@ -7,6 +7,7 @@
 - **Track motion** using body, hand or mouth anchors. Add mask videos to select individual people.
 - **Build your timeline** with multiple tracks, zoom, section blending and locks that protect edits across reruns.
 - **Preview devices** with Handy 2 for stroke or SR6 for all six axes.
+- **Compare device output:** use [stroke profiles](docs/device-output.md) to derive a separate L0 script for a physical range and speed limit.
 - **Export and keep editing** with `.funscript` files, your project and a standalone offline editor.
 
 ## Install

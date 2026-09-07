@@ -120,6 +120,7 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn('href="viewer.css"', html)
         self.assertIn("function drawDeviceWireframe", html)
         self.assertIn("function rebuildAxis", html)
+        self.assertIn("function buildDeviceOutput", html)
 
     def test_simplification_obeys_error_budget(self):
         t = np.arange(0, 2000, 17)

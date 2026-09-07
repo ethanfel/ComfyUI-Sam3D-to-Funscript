@@ -263,6 +263,8 @@ The source video is the playback clock. Seeking updates the overlay, 3D skeleton
 
 Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1/L2/R0/R1/R2. Readouts show only the selected device's supported channels; missing channels hold neutral at 50. Device selection controls the preview, while curve editing and exports retain every authored axis. Drag or use arrow keys to orbit the device, scroll or press +/− to zoom, and toggle the sleeve outline. SR6 uses a schematic six-linkage mechanism with an inner twist receiver. Dashed coral rods mark poses outside that model's linkage reach; this is not a calibrated hardware simulator. Geometry details and the interactive asset demo are in [assets/device-previews](../assets/device-previews/README.md).
 
+**Device output · stroke profiles**, below main, adds a separate L0 comparison and download using a physical stroke zone and an explicit speed limit. Factory templates distinguish Handy, Handy 2 Standard and Handy 2 Pro normal mode; custom single-axis settings are also available. Switch **Device preview → Motion** to **Adjusted L0** to play the orange comparison; other channels then hold neutral. Main/source scripts and locks remain intact. Configure the same physical range once in your player/device. This checks segment speed only; see [device output profiles](device-output.md) for evidence status, exports, limits and the distinction from pose smoothing.
+
 - Click the timeline to seek; double-click to add an action.
 - Drag a point to edit its time and position; right-click to remove it.
 - Use the zoom slider, +/− buttons or time presets to choose the visible interval, from the full clip down to 250 ms.

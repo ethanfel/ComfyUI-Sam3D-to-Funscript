@@ -3,6 +3,7 @@ import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack,
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
+import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
 const COLORS = ["#75e2ba", "#dcadfa", "#78baf7", "#ffc07d"];
@@ -10,10 +11,57 @@ const EDGES = [[5,6],[5,7],[7,62],[6,8],[8,41],[5,9],[6,10],[9,10],[9,11],[11,13
 const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:[41]};
 let project, history = [], currentMs = 0, dragging = null, bounds = [0, 1], videoURL;
 let comparisonRevision=0, comparisonCache=null;
+let deviceOutputCache=null;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
 function previewState() {return {...project.preview,device:$("device").value,timeline_view:{...view}};}
+$("outputProfile").replaceChildren(new Option("Off · authored only","none"),...DEVICE_PROFILES.map(p=>new Option(p.label,p.id)));
+function deviceOutputControls() {
+    const settings=project.device_output??deviceSettings();
+    $("outputProfile").value=settings.profile;
+    $("zoneMin").value=settings.zone_min_mm??"";$("zoneMax").value=settings.zone_max_mm??"";
+    $("outputSpeed").value=settings.speed_mm_s??"";$("outputSetup").value=settings.setup??"";
+    $("outputOverlay").checked=settings.show_curve!==false;
+    $("deviceMotion").value=settings.preview==="adjusted"?"adjusted":"authored";
+    const profile=DEVICE_PROFILES.find(p=>p.id===settings.profile);
+    for(const id of ["zoneMin","zoneMax","outputSpeed","outputSetup","outputOverlay"])$(id).disabled=!profile;
+    $("publishedSpeed").disabled=!profile?.speed.value;
+    $("publishedSpeed").textContent=profile?.speed.value?`Use published ${profile.speed.value} mm/s`:"No published speed";
+    $("outputEvidence").replaceChildren();
+    if(profile){
+        $("outputEvidence").append(`Travel: ${profile.travel.value??"unknown"}${profile.travel.value?" mm (published)":""}. User-entered limits and zones are unverified. `);
+        if(profile.speed.source){const link=document.createElement("a");link.href=profile.speed.source;link.textContent="Profile source";link.target="_blank";link.rel="noopener noreferrer";$("outputEvidence").append(link,` · checked ${profile.speed.checked}.`);}
+    }
+}
+function deviceOutputResult() {
+    const settings=JSON.stringify(project.device_output);
+    if(deviceOutputCache?.revision===comparisonRevision&&deviceOutputCache.settings===settings&&deviceOutputCache.script===project.scripts.L0)return deviceOutputCache.result;
+    let result=null,error="";
+    try{result=buildDeviceOutput(project);}catch(reason){error=reason.message;}
+    deviceOutputCache={revision:comparisonRevision,settings,script:project.scripts.L0,result};
+    $("downloadDevice").disabled=!result?.script;
+    $("deviceMotion").querySelector('[value="adjusted"]').disabled=!result?.script;
+    if(!result?.script)$("deviceMotion").value="authored";
+    const peak=result?.before.peak_speed_mm_s.toFixed(1);
+    $("outputStatus").textContent=error||(!result?"Choose a profile to compare stroke demands in physical units.":
+        !result.script?`Main L0 peak demand: ${peak} mm/s. Enter a speed limit or explicitly use the published speed to generate a comparison.`:
+        `L0 peak demand: ${peak} → ${result.after.peak_speed_mm_s.toFixed(1)} mm/s · limit ${result.limit.value} mm/s (${result.limit.status}) · over-limit segments ${result.before.over_limit_segments} → ${result.after.over_limit_segments} · ${result.changed_points} changed points · largest change ${result.max_change_mm.toFixed(2)} mm. Timestamps and holds retained; positions may change.`);
+    return result;
+}
+function changeDeviceOutput(update) {
+    if(!project)return;record();project.device_output=update({...deviceSettings(),...project.device_output});
+    deviceOutputControls();dirty(false);render();
+}
+$("outputProfile").onchange=()=>changeDeviceOutput(()=>deviceSettings($("outputProfile").value));
+for(const [id,key] of [["zoneMin","zone_min_mm"],["zoneMax","zone_max_mm"],["outputSpeed","speed_mm_s"]])$(id).onchange=()=>{
+    const value=$(id).valueAsNumber;
+    changeDeviceOutput(s=>({...s,[key]:Number.isFinite(value)?value:null,...(key==="speed_mm_s"?{speed_evidence:"assumed"}:{})}));
+};
+$("publishedSpeed").onclick=()=>changeDeviceOutput(s=>({...s,speed_mm_s:DEVICE_PROFILES.find(p=>p.id===s.profile)?.speed.value??null,speed_evidence:"published"}));
+$("outputSetup").onchange=()=>changeDeviceOutput(s=>({...s,setup:$("outputSetup").value}));
+$("outputOverlay").onchange=()=>changeDeviceOutput(s=>({...s,show_curve:$("outputOverlay").checked}));
+$("deviceMotion").onchange=()=>changeDeviceOutput(s=>({...s,preview:$("deviceMotion").value}));
 function saveView() {try{localStorage.setItem(viewKey+':'+project.metadata.source.path,JSON.stringify(view));}catch{/* Storage is optional in offline/private browsers. */}}
 function restoreView(data, keep) {
     let saved=data.preview?.timeline_view;
@@ -62,7 +110,7 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
-function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project)})); if(history.length>40)history.shift(); $("undo").disabled=false; }
+function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 const session = editorSession({install, snapshot:()=>({...project,preview:previewState()}), status});
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function install(data, keepPlayback=false, output=null) {
@@ -80,7 +128,7 @@ function install(data, keepPlayback=false, output=null) {
     $("provenance").textContent = JSON.stringify({source:data.metadata.source,model:data.metadata.model,samples:data.times_ms.length,basis:data.metadata.basis,config:data.config},null,2);
     if(keepPlayback&&data.scripts[oldAxis])$("axis").value=oldAxis;
     if(output&&(!keepPlayback||!hadVideo))video.src=`../video/${encodeURIComponent(output)}`;
-    currentMs=keepPlayback?previousMs:data.times_ms[0]; buildTracks(); selectionControls(); controls(); render(); status("Project loaded · choose the matching source video");
+    currentMs=keepPlayback?previousMs:data.times_ms[0]; buildTracks(); selectionControls(); controls(); deviceOutputControls(); render(); status("Project loaded · choose the matching source video");
 }
 function selected() { return editProject(project,$("axis").value); }
 function commitSelected(data,axis,track) {
@@ -248,10 +296,13 @@ function drawSkeleton(index, project, axis) {
 }
 function drawRobot() {
     const [ctx,w,h]=resize($("robot"));
-    const values=Object.fromEntries(AXES.map(a=>[a,evaluate(project.scripts[a]?.actions,currentMs)]));
+    const output=deviceOutputResult(),adjusted=$("deviceMotion").value==="adjusted"&&output?.script;
+    const scripts=adjusted?{L0:output.script}:project.scripts;
+    const values=Object.fromEntries(AXES.map(a=>[a,evaluate(scripts[a]?.actions,currentMs)]));
     const device=$("device").value;
     const frame=drawDeviceWireframe(ctx,w,h,device,values,{...deviceOrbit,sleeve:$("deviceSleeve").checked});
-    $("readouts").replaceChildren(...DEVICE_INFO[device].axes.map(a=>{const el=document.createElement("span");el.dataset.axis=a;el.textContent=`${a} ${values[a].toFixed(1)}${project.scripts[a]?"":" (off)"}`;return el;}));
+    $("readouts").replaceChildren(...DEVICE_INFO[device].axes.map(a=>{const el=document.createElement("span");el.dataset.axis=a;el.textContent=`${a} ${values[a].toFixed(1)}${scripts[a]?"":" (off)"}`;return el;}));
+    $("deviceMotionStatus").textContent=adjusted?`Adjusted L0 · ${(output.mapping.zone_min_mm+values.L0/100*(output.mapping.zone_max_mm-output.mapping.zone_min_mm)).toFixed(1)} mm in selected zone · other axes neutral. Commanded motion; physical response unknown.`:"Authored main · schematic playback";
     $("deviceReach").hidden=frame.reachable!==false;
     $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
@@ -259,7 +310,9 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
     const [ctx,w,h]=resize(canvas),composed=isMain&&project.timeline.main[axis].assembled;
     const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
     const actions=data.scripts[axis].actions,s=data.config.axis_settings[axis],color=isMain?"#75e2ba":"#78baf7";
-    const key=JSON.stringify([w,h,devicePixelRatio,bounds,axis,comparisonRevision,composed,s,window]);
+    const output=isMain&&axis==="L0"&&project.device_output?.show_curve!==false?deviceOutputResult()?.script:null;
+    if(isMain)$("mainOutputBadge").hidden=!output;
+    const key=JSON.stringify([w,h,devicePixelRatio,bounds,axis,comparisonRevision,composed,s,window,!!output]);
     let layer=curveLayers.get(canvas);
     if(!layer||layer.key!==key||layer.data!==data||layer.actions!==actions){
         const surface=layer?.surface||document.createElement("canvas");surface.width=canvas.width;surface.height=canvas.height;
@@ -296,6 +349,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
             stroke(source[field].length,timeAt,i=>data.valid[i]?axisValue(source,s,i,field):null,strokeColor,1,breakAt);
         }
         stroke(actions.length,i=>actions[i].at,i=>actions[i].pos,color,2);
+        if(output)stroke(output.actions.length,i=>output.actions[i].at,i=>output.actions[i].pos,"#ffc07d",2);
         const [a,b]=visibleRange(actions.length,i=>actions[i].at,...bounds);
         // Individual handles are meaningful only when points can be distinguished.
         if(b-a<=(w-54)/4){paint.fillStyle=color;for(let i=a;i<b;i++){const action=actions[i];paint.beginPath();paint.arc(x(action.at),y(action.pos),3,0,Math.PI*2);paint.fill();}}
@@ -431,7 +485,7 @@ $("fitSelection").addEventListener("click",()=>{
         status("Selection fitted as a new track · review its motion, then use selection in main");
     }catch(error){status(error.message);}
 });
-$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();dirty(false);render();});
+$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;project.device_output=old.device_output;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();deviceOutputControls();dirty(false);render();});
 function pointer(event,canvas){const rect=canvas.getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
 function nearest(event,canvas,actions){
     const a=pointer(event,canvas),rect=canvas.getBoundingClientRect(),[first,stop]=visibleRange(actions.length,i=>actions[i].at,...bounds);
@@ -535,6 +589,17 @@ $("projectFile").addEventListener("change",async e=>{try{install(JSON.parse(awai
 $("videoFile").addEventListener("change",e=>{if(videoURL)URL.revokeObjectURL(videoURL);videoURL=URL.createObjectURL(e.target.files[0]);video.src=videoURL;status("Local source loaded");});
 $("referenceFile").addEventListener("change",async e=>{if(!project){status("Open a project first");return;}try{const file=e.target.files[0],data=JSON.parse(await file.text()),actions=validateReference(data);record();project.references={...project.references,[$("axis").value]:{actions,offset_ms:0,source:{path:file.name},header_inverted:!!data.inverted,interpretation:"Positions compared as written; legacy headers not applied"}};dirty();controls();render();}catch(error){status(error.message);}});
 $("referenceOffset").addEventListener("change",()=>{const ref=project?.references?.[$("axis").value],offset=Number($("referenceOffset").value);if(!ref||!Number.isFinite(offset))return;record();ref.offset_ms=offset;dirty();render();});
+function downloadArchive(files,name) {
+    const url=URL.createObjectURL(makeZip(files)),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
+}
+$("downloadDevice").onclick=()=>{
+    if(!project)return;
+    try{
+        const stem=project.metadata.source.path.split("/").at(-1).replace(/\.[^.]+$/,"");
+        downloadArchive(deviceOutputFiles(project,stem),`${stem}-${project.device_output.profile}-L0.zip`);
+        status("Adjusted L0 downloaded with its profile report and stroke-zone instructions");
+    }catch(error){status(error.message);}
+};
 $("save").addEventListener("click",async()=>{
     if(!project)return;
     $("save").disabled=true;
@@ -552,8 +617,13 @@ $("save").addEventListener("click",async()=>{
         const stem=snapshot.metadata.source.path.split("/").at(-1).replace(/\.[^.]+$/,"");
         const files={"project.json":projectJSON,"viewer.html":"<!doctype html>\n"+html.replace(/^<!doctype html>\s*/i,"")};
         for(const [axis,script]of Object.entries(snapshot.scripts))files[stem+SUFFIX[axis]+".funscript"]=JSON.stringify(script);
-        const url=URL.createObjectURL(makeZip(files)),a=document.createElement("a");a.href=url;a.download=stem+"-motion.zip";a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
-        status("Download created · extract and open viewer.html for offline playback, or reimport project.json in ComfyUI");
+        let outputNote="";
+        if(snapshot.device_output?.profile&&snapshot.device_output.profile!=="none"){
+            try{for(const [name,contents]of Object.entries(deviceOutputFiles(snapshot,stem)))files["device-output/"+name]=contents;outputNote=" · adjusted L0 included in device-output/";}
+            catch(error){outputNote=` · authored scripts only; adjusted output omitted: ${error.message}`;}
+        }
+        downloadArchive(files,stem+"-motion.zip");
+        status("Download created · extract and open viewer.html for offline playback"+outputNote);
     }catch(error){status(error.message);}finally{$("save").disabled=false;}
 });
 new ResizeObserver(render).observe(document.body);
