@@ -225,3 +225,9 @@ The [selected-point tracking pilot](research/calibration/POINT_TRACKING.md) now 
 4. Ground-truth or manually annotated evaluation across viewpoints, occlusion and longer clips.
 
 The evidence and ecosystem comparison are in [the research blueprint](research/SAM3D_FUNSCRIPT_BLUEPRINT.md). The current implementation is intentionally distinguished from that longer roadmap.
+
+## License
+
+This project is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`). See [LICENSE](LICENSE).
+
+Third-party dependencies and model weights retain their respective licenses.
