@@ -29,6 +29,8 @@ export function initializeTimeline(project) {
         validateReference(track.script);
     }
     if (timeline.active !== "main" && !timeline.tracks.some(t => t.id === timeline.active)) timeline.active = "main";
+    timeline.selection_track ??= timeline.active === "main" ? null : timeline.active;
+    if (!timeline.tracks.some(t=>t.id===timeline.selection_track)) timeline.selection_track=null;
     timeline.selection ??= [0, 0];
     project.metrics ??= {};
     return timeline;
@@ -119,8 +121,22 @@ export function mainPoseProject(project, axis, time) {
 }
 
 export function timelineState(project) {
-    const {tracks, main, active, selection} = project.timeline;
-    return {tracks, main, active, selection};
+    const {tracks, main, active, selection, selection_track} = project.timeline;
+    return {tracks, main, active, selection, selection_track};
+}
+
+export function selectionTrack(project) {
+    return project.timeline.tracks.find(t=>t.id===project.timeline.selection_track)??null;
+}
+
+export function selectionProblem(project, track, axis, whole=false) {
+    if(!track)return "Choose a source row with Edit or Shift-drag its curve.";
+    if(project.timeline.main[axis]?.locked)return `Main ${axis} is locked. Unlock it to copy a section.`;
+    if(whole)return "";
+    const [start,end]=project.timeline.selection,coverage=trackCoverage(project,track);
+    if(![start,end].every(Number.isFinite)||end<=start)return "Shift-drag a time range or set In and Out.";
+    if(start<coverage[0]||end>coverage[1])return `Select within this source: ${(coverage[0]/1000).toFixed(3)}–${(coverage[1]/1000).toFixed(3)} s.`;
+    return "";
 }
 
 export function restoreTimeline(project, state) {

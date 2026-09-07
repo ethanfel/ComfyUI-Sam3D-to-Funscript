@@ -1,5 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack} from "./timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, applyTrack, selectionTrack, selectionProblem} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
@@ -90,6 +90,7 @@ function locked(id=project.timeline.active) {return !!(id==="main"?project.timel
 function assembled() {return project.timeline.active==="main"&&project.timeline.main[$("axis").value].assembled;}
 function controls() {
     const {data,axis,track}=selected(), s=data.config.axis_settings[axis];
+    if(track)project.timeline.selection_track=track.id;
     $("component").value=s.component; $("range").value=s.range; $("center").value=s.center; $("invert").checked=s.invert;
     $("unit").textContent=axis.startsWith("R")?"degrees":"metres";
     $("calibration").value=s.calibration??"clip";
@@ -98,16 +99,16 @@ function controls() {
     $("invert").disabled=locked();
     $("editing").textContent=track?`Editing ${track.name} · ${axis}. Source edits are independent; apply a selection to update main.`:
         assembled()?"Editing main · assembled sections. Drag points to adjust joins, or calibrate a source track and apply it again.":`Editing main · ${axis}`;
-    for(const id of ["applySection","promoteTrack","selectTrack","fitSelection"])$(id).disabled=!track;
+    $("fitSelection").disabled=!track;
     if(track?.window)$("editing").textContent=`Editing ${track.name} · ${axis} · local origin within ${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s. Apply a selection to update main.`;
     if(locked())$("editing").textContent="Locked · curve, calibration and source are protected across reruns. Unlock this track to edit it.";
-    for(const id of ["applySection","promoteTrack"])$(id).disabled=!track||locked("main");
     $("lockMain").textContent=locked("main")?"Unlock":"Lock";$("lockMain").setAttribute("aria-pressed",String(locked("main")));
     const ref=project.references?.[$("axis").value];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
     document.querySelectorAll(".track").forEach(row=>row.classList.toggle("selected",row.dataset.track===project.timeline.active));
     $("selectMain").textContent=`Main · ${$("axis").value} · export`;
     const main=project.timeline.main[$("axis").value];
     $("mainDescription").textContent=main.assembled?`${main.regions.length} source sections · device preview and exports follow main`:"Device preview and exported scripts follow this track";
+    selectionControls();
 }
 function calibrationControls() {
     const {data,axis}=selected();
@@ -121,6 +122,19 @@ function selectLane(id) {
 }
 function selectionControls() {
     [$("selectionStart").value,$("selectionEnd").value]=project.timeline.selection.map(t=>(t/1000).toFixed(3));
+    const track=selectionTrack(project),axis=$("axis").value,problem=selectionProblem(project,track,axis);
+    $("applySection").disabled=!!problem;$("applySection").title=problem||`Copy only ${track.axis} from ${track.name} into main ${axis}`;
+    $("promoteTrack").disabled=!!selectionProblem(project,track,axis,true);
+    $("promoteTrack").title=selectionProblem(project,track,axis,true)||`Replace only main ${axis} with this source's ${track.axis}`;
+    $("selectTrack").disabled=!track;
+    $("selectionStatus").textContent=problem||(track?`Copy source: ${track.name} · ${track.axis} → Main ${axis} · one axis only`:"");
+    const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
+    for(const row of $("tracks").children){
+        row.classList.toggle("copy-source",row.dataset.track===track?.id);
+        const source=tracks.get(row.dataset.track),button=row.querySelector(".copy-selection");
+        const reason=selectionProblem(project,source,axis);button.disabled=!!reason;button.title=reason||`Copy this row's ${source.axis} into main ${axis}`;
+        const label=`Copy selection → ${axis}`;if(button.textContent!==label)button.textContent=label;
+    }
 }
 function setSelection(start,end) {
     const duration=Math.floor(project.metadata.duration_ms);
@@ -152,8 +166,10 @@ function buildTracks() {
         const sourceLabel=document.createElement("label");sourceLabel.append("Project ",source);
         const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
         const lock=document.createElement("button");lock.className="track-lock";lock.title="Protect this curve and calibration across edits and reruns. Unlock explicitly to edit.";lock.textContent=track.locked?"Unlock":"Lock";lock.setAttribute("aria-pressed",String(!!track.locked));lock.onclick=()=>toggleLock(track);
+        const copy=document.createElement("button");copy.className="copy-selection";copy.onclick=()=>{selectLane(track.id);applySelection(false);};
+        const badge=document.createElement("span");badge.className="copy-source-badge";badge.textContent="Copy source";
         for(const input of [name,source,axis,remove])input.disabled=!!track.locked;
-        head.append(select,lock,name,sourceLabel,axisLabel,remove);
+        head.append(select,lock,name,sourceLabel,axisLabel,copy,badge,remove);
         if(track.window){const scope=document.createElement("span");scope.className="track-scope";scope.textContent=`${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s · local fit`;head.append(scope);}
         const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${track.name} motion timeline`);
         row.append(head,canvas);$("tracks").append(row);bindCurve(canvas,track.id);
@@ -309,7 +325,12 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
     ctx.drawImage(layer.surface,0,0,layer.surface.width,layer.surface.height,0,0,w,h);
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
     const [start,end]=project.timeline.selection;
-    if(end>start){ctx.fillStyle="#78baf722";ctx.fillRect(x(start),10,x(end)-x(start),h-35);for(const t of [start,end])line(ctx,[x(t),10],[x(t),h-25],"#78baf7",1);}
+    if(end>start){
+        const source=selectionTrack(project),chosen=!!source&&canvas.dataset.track===source.id;
+        if(chosen){ctx.fillStyle="#78baf733";ctx.fillRect(x(start),10,x(end)-x(start),h-35);}else ctx.setLineDash([4,4]);
+        for(const t of [start,end])line(ctx,[x(t),10],[x(t),h-25],chosen?"#78baf7":isMain&&source?"#eabf71":"#607689",1);
+        ctx.setLineDash([]);
+    }
     line(ctx,[x(currentMs),10],[x(currentMs),h-25],"#f0f5fa",1);ctx.restore();
     if(isMain)$("referenceMetrics").textContent=layer.referenceLabel;
     if(!active)return;
@@ -462,18 +483,21 @@ for(const id of ["selectionStart","selectionEnd"])$(id).onchange=()=>{
     if(start>end){if(id==="selectionStart")end=start;else start=end;}
     setSelection(start,end);
 };
-$("selectTrack").onclick=()=>{const track=project&&selected().track;if(track)setSelection(...trackCoverage(project,track));};
+$("selectTrack").onclick=()=>{const track=project&&selectionTrack(project);if(track)setSelection(...trackCoverage(project,track));};
 $("join").onchange=()=>$("blendMs").disabled=$("join").value!=="blend";
 function applySelection(whole){
-    if(!project)return;const track=selected().track;if(!track)return;
+    if(!project)return;const track=selectionTrack(project),problem=selectionProblem(project,track,$("axis").value,whole);
+    if(problem){$("selectionStatus").textContent=problem;return;}
     try{
         const [start,end]=project.timeline.selection,blendMs=$("blendMs").valueAsNumber;
         // Validate on a small copy before recording history or changing the main.
         const preview={...project,scripts:{...project.scripts},metrics:{...project.metrics},timeline:{...project.timeline,main:structuredClone(project.timeline.main)}};
         applyTrack(preview,track,$("axis").value,{start,end,method:$("join").value,blendMs,whole});
         record();project.scripts=preview.scripts;project.metrics=preview.metrics;project.timeline.main=preview.timeline.main;
-        project.timeline.main[$("axis").value].edited=true;dirty(false);controls();render();status(whole?"Main replaced with this track · Undo restores the previous main":"Selection copied into main · edit its points to refine the joins");
-    }catch(error){status(error.message);}
+        project.timeline.main[$("axis").value].edited=true;dirty(false);controls();render();
+        const message=`${whole?"Whole track":"Selection"} copied: ${track.name} · ${track.axis} → Main ${$("axis").value}. Other axes unchanged. Undo restores the previous main.`;
+        status(message);$("selectionStatus").textContent=message;
+    }catch(error){status(error.message);$("selectionStatus").textContent=error.message;}
 }
 $("applySection").onclick=()=>applySelection(false);$("promoteTrack").onclick=()=>applySelection(true);
 document.addEventListener("keydown",event=>{

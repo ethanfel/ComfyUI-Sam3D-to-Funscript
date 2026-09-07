@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {evaluate} from "../assets/curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack} from "../assets/timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, selectionTrack, selectionProblem} from "../assets/timeline.mjs";
 import {syncProjectInputs, migrateProjectInputs} from "../web/projects.mjs";
 
 const main=[{at:0,pos:10},{at:127,pos:91},{at:522,pos:7},{at:1000,pos:62},{at:2000,pos:23}];
@@ -41,6 +41,31 @@ function fixture(){
         config:{target_anchor:"mouth",target_person:0,axis_settings:{L0:{range:.2,center:50,invert:false,component:0}}},
         scripts:{L0:{version:"1.0",inverted:false,range:100,actions:structuredClone(main)}}};
 }
+test("Time selection keeps its source while inspecting main and copies exactly one axis",()=>{
+    const project=fixture();
+    for(const axis of ['L1','L2','R0','R1','R2']){
+        project.scripts[axis]=structuredClone(project.scripts.L0);
+        project.config.axis_settings[axis]={...project.config.axis_settings.L0};
+    }
+    initializeTimeline(project);assert.match(selectionProblem(project,selectionTrack(project),'L0'),/Choose a source/);
+    const track=project.timeline.tracks[0];track.script.actions=structuredClone(source);
+    project.timeline.selection_track=track.id;project.timeline.selection=[300,900];
+    project.timeline.active='main';
+    assert.equal(selectionTrack(project),track);
+    assert.equal(selectionProblem(project,track,'L0'),'');
+    const saved=structuredClone(timelineState(project)),scripts=structuredClone(project.scripts);
+    applyTrack(project,selectionTrack(project),'L0',{start:300,end:900,blendMs:100});
+    assert.notDeepEqual(project.scripts.L0,scripts.L0);
+    for(const axis of ['L1','L2','R0','R1','R2'])assert.deepEqual(project.scripts[axis],scripts[axis]);
+    const loaded=JSON.parse(JSON.stringify(project));initializeTimeline(loaded);
+    assert.equal(selectionTrack(loaded).id,track.id);assert.equal(loaded.timeline.active,'main');
+    project.timeline.selection_track=null;restoreTimeline(project,saved);assert.equal(selectionTrack(project).id,track.id);
+    project.timeline.main.L0.locked=true;assert.match(selectionProblem(project,track,'L0'),/Main L0 is locked/);
+    project.timeline.main.L0.locked=false;track.locked=true;assert.equal(selectionProblem(project,track,'L0'),'','Copying a locked source is read-only');
+    project.timeline.selection=[300,300];assert.match(selectionProblem(project,track,'L0'),/time range/);
+    project.timeline.selection=[300,2001];assert.match(selectionProblem(project,track,'L0'),/within this source/);
+    project.timeline.tracks=[];assert.equal(selectionTrack(project),null);
+});
 test("Latest and saved sources are distinguishable after reruns, reverts and legacy reloads",()=>{
     const project=fixture();initializeTimeline(project);
     const saved=structuredClone(project.timeline.sources[0]);saved.id='project_0@abcdef1234567890';saved.input='project_0';saved.label+=' · updated';
