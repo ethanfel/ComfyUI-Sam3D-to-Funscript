@@ -52,8 +52,19 @@ try{
     assert.equal(fitted.component,"auto");assert.equal(fitted.range,expected.config.axis_settings.L0.range);assert.equal(fitted.center,expected.config.axis_settings.L0.center);
     assert.match(fitted.direction,/directional share/);assert.equal(await evaluate("window.s3fAutoArrow"),"Auto L0 direction");
     const bitmap=await evaluate("document.querySelector('#skeleton').toDataURL()");
-    await click("#invert");await click("#rebuild");assert.notEqual(await evaluate("document.querySelector('#skeleton').toDataURL()"),bitmap);
+    await click("#invert");assert.notEqual(await evaluate("document.querySelector('#skeleton').toDataURL()"),bitmap);
+    const invertedControls=await controls();
+    assert.equal(invertedControls.center,100-fitted.center);assert.equal(invertedControls.range,fitted.range);
+    assert.equal(invertedControls.metrics.split(" · ").at(-1),fitted.metrics.split(" · ").at(-1),"Invert cannot add clipping");
+    const invertedFiles=await download(),inverted=JSON.parse(invertedFiles["project.json"]);
+    assert.deepEqual(inverted.scripts.L0.actions,expected.scripts.L0.actions.map(a=>({...a,pos:100-a.pos})),"Invert must mirror the authored curve immediately");
+    assert.equal(inverted.config.axis_settings.L0.auto_fit,true);
+    for(const axis of Object.keys(expected.scripts).filter(a=>a!=="L0"))assert.deepEqual(inverted.scripts[axis],expected.scripts[axis]);
+    await click("#rebuild");
+    assert.equal((await controls()).metrics.split(" · ").at(-1),fitted.metrics.split(" · ").at(-1));
+    await click("#undo");assert.deepEqual(await controls(),invertedControls);
     await click("#undo");assert.deepEqual(await controls(),fitted);
+    report.checks.push("Invert immediately mirrors every action and center without adding clipping; regeneration and Undo preserve the fitted curve");
     await select("#component","2");await click("#rebuild");assert.equal(await evaluate("document.querySelector('#directionInfo').hidden"),true);
     await click("#undo");assert.deepEqual(await controls(),fitted);
     await select("#axis","R0");await click("#autoFit");assert.equal(await evaluate("document.querySelector('#unit').textContent"),"degrees");
@@ -77,6 +88,14 @@ try{
     const oldFile=output+"/original.json";fs.writeFileSync(oldFile,JSON.stringify(original));await file("#projectFile",oldFile);
     await until(()=>evaluate(`document.querySelector('#component').value===${JSON.stringify(String(original.config.axis_settings.L0.component))}`),"old project import offline");
     await click("#autoFit");assert.equal((await controls()).range,expected.config.axis_settings.L0.range);
+    const edited=structuredClone(expected);edited.scripts.L0.actions[3].pos=17;
+    fs.writeFileSync(output+"/manual-edits.json",JSON.stringify(edited));await file("#projectFile",output+"/manual-edits.json");
+    await until(()=>evaluate("document.querySelector('#undo').disabled"),"manual project import");
+    await click("#invert");
+    const mirroredEdits=JSON.parse((await download())["project.json"]);
+    assert.deepEqual(mirroredEdits.scripts.L0.actions,edited.scripts.L0.actions.map(a=>({...a,pos:100-a.pos})));
+    await click("#undo");assert.deepEqual(JSON.parse((await download())["project.json"]).scripts,edited.scripts);
+    report.checks.push("Offline inversion and Undo preserve manually edited actions exactly");
     report.checks.push("Older projects can be fitted offline; downloaded Auto viewers reopen and re-export identical scripts without networking");
     assert.deepEqual(report.errors,[]);fs.writeFileSync(output+"/report.json",JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{ws?.close();chrome.kill("SIGTERM");}

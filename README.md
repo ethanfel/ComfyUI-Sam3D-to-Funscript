@@ -209,11 +209,14 @@ Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1
 - Click the timeline to seek; double-click to add an action.
 - Drag a point to edit its time and position; right-click to remove it.
 - Choose a 4-second or 1-second view for detailed edits.
-- Adjust range, center, component or inversion, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
+- **Invert** immediately mirrors the selected curve as `100 − position`, including manually edited points. It also mirrors Center as `100 − center`, keeping the range, timestamps and existing clipping unchanged. No regeneration is needed; Undo restores the previous curve.
+- Adjust range, center or component, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
 - Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference.
 - **Download project + scripts** saves a ZIP containing all active axes, `project.json`, and a self-contained `viewer.html` with the selected device and current edits.
 
 Browser edits remain in memory until downloaded. They do not silently overwrite the node's original exports. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Node exports also include this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI.
+
+If an older Invert operation already flattened a curve, use Undo to recover the earlier curve, or **Auto fit selected axis** to rebuild it from the cached motion. Mirroring alone cannot recover samples already clipped in the saved actions.
 
 Each node export writes a new directory under `output/sam3d_funscript/`, so earlier runs remain intact and disabled axes do not leave stale files alongside new ones. Pose caches live in the `cache/` subdirectory. The combined node's cache identity includes source/model paths, sizes and modification times, inference settings and the native predictor source's file metadata. It is not a content hash of large video/model files; use `use_cache=false` if files have been replaced while retaining their metadata. The core adapter hashes the received pose/timing arrays and source metadata; upstream inference caching remains under ComfyUI's control.
 
@@ -285,6 +288,8 @@ Device integration passes 31 Python tests, the asset geometry checks (1,870 SR6 
 Mouth support passes 36 Python tests and JavaScript curve/migration checks. On the GPU, recovered mouth corners matched native MHR's full landmark calculation exactly for the checked pose; this verifies the extraction math, not tracking accuracy against real lips. Four face crops were visually reviewed. Queue checks cover a 270-sample streaming clip, an eight-frame core body-only prediction, identical scripts after cache reload, body anchors without the optional model, and preserved missing-mask frames. Browser checks verify the mouth marker, seeking, editing, download and canvas reload. Reproduce the queue checks with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/mouth_queue_smoke.py`; add `--mask-fixture` after generating the mask fixtures above. The anchor queue check now covers all nine general choices.
 
 Auto direction adds eight tests (44 total): scene-rotation invariance, reference-body camera cancellation, drift, mixed/still motion, range floors, inversion, gaps/cuts, rotation units and browser/Python action parity with variable timestamps. ComfyUI queue checks reuse two real pose caches and verify exact browser/Python exports without changing other scripts. The side-view mouth example selects a diagonal direction with a 0.091548 m fitted range; its directional share is about 93%, which is not an accuracy score. Browser checks cover both Auto controls, the 3D arrow, manual overrides, Undo, rotation channels, video playback, selected-axis isolation, responsive layout and offline fitting/re-export of older projects. Reproduce with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/auto_queue_smoke.py /absolute/path/to/project.json`, followed by `node scripts/auto_browser_smoke.mjs http://127.0.0.1:8198 BEFORE_PROJECT_ID` using the reported `before_project` directory name.
+
+The inversion regression passes 45 Python tests, JavaScript checks on both saved clips, and the live/offline browser suite. It verifies exact reflection of authored actions and manual edits, mirrored calibration center, unchanged timing/range/clipping, regeneration, Undo and selected-axis isolation. Reproduce the focused check with `node tests/test_invert.mjs /absolute/path/to/project.json`; `scripts/auto_browser_smoke.mjs` also exercises immediate inversion and offline manual edits.
 
 ## Next stages
 

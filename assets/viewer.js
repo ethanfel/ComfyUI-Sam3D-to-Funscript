@@ -1,4 +1,4 @@
-import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame} from "./curve.mjs";
+import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis} from "./curve.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -159,6 +159,16 @@ video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||vi
 video.addEventListener("seeked",()=>{currentMs=video.currentTime*1000;render();});
 video.addEventListener("error",()=>status("Choose the source video locally if this browser cannot load the server copy"));
 $("axis").addEventListener("change",()=>{controls();render();});$("zoom").addEventListener("change",render);
+$("invert").addEventListener("change",()=>{
+    if(!project)return;
+    const axis=$("axis").value;
+    if($("invert").checked===project.config.axis_settings[axis].invert)return;
+    const mirrored=invertAxis(project,axis),pendingCenter=$("center").valueAsNumber;
+    record();project.config.axis_settings[axis]=mirrored.settings;project.scripts[axis]=mirrored.script;
+    // Retain pending range/component edits; their center must reverse too.
+    if(Number.isFinite(pendingCenter)&&pendingCenter>=0&&pendingCenter<=100)$("center").value=100-pendingCenter;
+    dirty();render();
+});
 function regenerate(axis) {
     project.scripts[axis]=rebuildAxis(project,axis);
     const source=motionForAxis(project,axis),s=project.config.axis_settings[axis];

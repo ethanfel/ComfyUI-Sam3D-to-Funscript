@@ -142,6 +142,17 @@ class CoreTests(unittest.TestCase):
         self.assertLessEqual(max(positions) - min(positions), 1)
         self.assertEqual(set(project["scripts"]), {"L0"})
 
+    def test_mirrored_center_and_direction_preserve_off_center_curve_and_clipping(self):
+        config = {"axis_settings": {"L0": {"center": 64.014, "range": .12}}}
+        original = build_project(fixture(), config)
+        config["axis_settings"]["L0"].update(center=100-64.014, invert=True)
+        mirrored = build_project(fixture(), config)
+        self.assertEqual(mirrored["scripts"]["L0"]["actions"],
+                         [{**action, "pos": 100-action["pos"]} for action in original["scripts"]["L0"]["actions"]])
+        self.assertEqual(mirrored["metrics"]["L0"]["clipped_fraction"], original["metrics"]["L0"]["clipped_fraction"])
+        for axis in ("L1", "L2", "R0", "R1", "R2"):
+            self.assertEqual(mirrored["scripts"][axis], original["scripts"][axis])
+
     def test_vfr_uses_pts_not_average_fps(self):
         import av
         from fractions import Fraction

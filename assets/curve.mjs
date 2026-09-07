@@ -179,6 +179,16 @@ export function autoFitAxis(project,axis) {
     return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,range,center};
 }
 
+export function invertAxis(project, axis) {
+    // Mirror the authored curve, including manual edits. Mirroring the center
+    // also makes later regeneration use 100 - (center + gain * motion).
+    const settings=project.config.axis_settings[axis],script=project.scripts[axis];
+    return {
+        settings:{...settings,center:100-settings.center,invert:!settings.invert},
+        script:{...script,actions:script.actions.map(action=>({...action,pos:100-action.pos}))},
+    };
+}
+
 export function rebuildAxis(project, axis) {
     const s = project.config.axis_settings[axis];
     const source = motionForAxis(project,axis).processed;
