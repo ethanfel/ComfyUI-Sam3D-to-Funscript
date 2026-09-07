@@ -1,0 +1,259 @@
+{
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "S3F_VideoPose",
+      "pos": [
+        80,
+        140
+      ],
+      "size": [
+        380,
+        480
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "cache_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_VideoPose"
+      },
+      "widgets_values": [
+        "videos/nsfw/rcowgirl_6.mp4",
+        "sam_3d_body_dinov3_bf16.safetensors",
+        16.0,
+        0.0,
+        0.0,
+        2000,
+        "[[0,0,1,1]]",
+        8,
+        0.0,
+        true
+      ],
+      "title": "1 \u00b7 Video & person ROI"
+    },
+    {
+      "id": 2,
+      "type": "S3F_BuildMotion",
+      "pos": [
+        550,
+        140
+      ],
+      "size": [
+        380,
+        440
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "S3F_MOTION_PROJECT",
+          "type": "S3F_MOTION_PROJECT",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_BuildMotion"
+      },
+      "widgets_values": [
+        0,
+        "pelvis",
+        -1,
+        "pelvis",
+        "camera",
+        80.0,
+        "L0,L1,L2,R0,R1,R2",
+        "{}"
+      ],
+      "title": "2 \u00b7 Anchors & axis calibration"
+    },
+    {
+      "id": 3,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1450,
+        140
+      ],
+      "size": [
+        820,
+        720
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "S3F_MOTION_PROJECT",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_PreviewExport"
+      },
+      "widgets_values": [
+        "rcowgirl_6"
+      ],
+      "title": "3 \u00b7 Review, edit & export"
+    },
+    {
+      "id": 4,
+      "type": "S3F_CompareReference",
+      "pos": [
+        1030,
+        140
+      ],
+      "size": [
+        340,
+        240
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "S3F_MOTION_PROJECT",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_with_reference",
+          "type": "S3F_MOTION_PROJECT",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "comparison_json",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_CompareReference"
+      },
+      "widgets_values": [
+        "/absolute/path/to/reference.funscript",
+        "L0",
+        0.0
+      ],
+      "title": "3 \u00b7 Compare reference"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "S3F_POSE_SEQUENCE"
+    ],
+    [
+      2,
+      2,
+      0,
+      4,
+      0,
+      "S3F_MOTION_PROJECT"
+    ],
+    [
+      3,
+      4,
+      0,
+      3,
+      0,
+      "S3F_MOTION_PROJECT"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "SAM3D extraction \u00b7 cached",
+      "bounding": [
+        50,
+        60,
+        440,
+        610
+      ],
+      "color": "#365770",
+      "font_size": 22,
+      "flags": {}
+    },
+    {
+      "title": "Motion authoring",
+      "bounding": [
+        520,
+        60,
+        440,
+        610
+      ],
+      "color": "#446958",
+      "font_size": 22,
+      "flags": {}
+    },
+    {
+      "title": "Preview \u00b7 open full editor for more space",
+      "bounding": [
+        1000,
+        60,
+        1320,
+        850
+      ],
+      "color": "#655079",
+      "font_size": 22,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        20
+      ]
+    }
+  },
+  "version": 0.4
+}

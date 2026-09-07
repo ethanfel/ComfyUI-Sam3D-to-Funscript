@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Selected-point tracking pilot</title>
+<style>
+  *{box-sizing:border-box}body{margin:0 auto;padding:20px;max-width:1200px;background:#111923;color:#e5eaf0;font:15px system-ui}
+  h1{font-size:23px;margin:0 0 8px}p{color:#bac6d4;line-height:1.5}.toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:16px 0}
+  button,label.file{background:#25384d;border:1px solid #4b6581;border-radius:6px;padding:9px 13px;color:inherit;cursor:pointer}
+  input[type=file]{display:none}.stage{position:relative;background:#080d13;aspect-ratio:16/9}
+  video{width:100%;height:100%;display:block}.stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  #curve{width:100%;height:235px;display:block;background:#18232f;cursor:crosshair;margin-top:16px}
+  #seek{width:100%}#states{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0}.lost{font-weight:bold}
+  small{color:#adbccc}details{margin-top:20px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+<h1>Selected-point tracking pilot</h1>
+<p>Four image points tracked from the first frame. Yellow is the selected moving point; purple is the reference point. Rings marked × indicate a point the tracker considers lost. A visible ring can still follow the wrong point.</p>
+<div class="toolbar"><label class="file">Choose source video<input id="file" type="file" accept="video/*"></label><button id="start">Jump to clip start</button><span id="clock" role="status">Loading…</span></div>
+<div class="stage"><video id="video" controls playsinline preload="metadata"></video><canvas id="overlay"></canvas></div>
+<div id="states"></div><input id="seek" type="range" aria-label="Seek within analysed clip">
+<canvas id="curve" aria-label="Generated and reference motion curves"></canvas>
+<p><span style="color:#a96bd5">Purple: reference curve</span> · <span style="color:#42cfaa">Green: point tracking with holds</span> · <span style="color:#8e99ab">Grey: locally fitted SAM3D wrist</span>. Shaded intervals hold the last position because the selected point or reference was marked lost.</p>
+<small>Single-axis development test. Fit the first 12 seconds; evaluate after a one-second gap. This page previews recorded results. Point selection and correction are not interactive yet.</small>
+<details><summary>Initial point coordinates and motion direction</summary><pre id="recipe"></pre></details>
+<script>
+const data=/*__PILOT_DATA__*/;
+const video=document.getElementById('video'),overlay=document.getElementById('overlay'),curve=document.getElementById('curve'),seek=document.getElementById('seek');
+const colors=['#ffd23c','#47f074','#43baf5','#dd64e6'];
+const first=data.times[0]/1000,last=data.times.at(-1)/1000;
+seek.min=first;seek.max=last;seek.step=.04;seek.value=first;
+let frameIndex=0,blobURL=null;
+document.getElementById('recipe').textContent=JSON.stringify(data.recipe,null,2);
+function frameAt(seconds){let lo=0,hi=data.times.length-1,t=seconds*1000;while(lo<hi){const m=Math.ceil((lo+hi)/2);if(data.times[m]<=t)lo=m;else hi=m-1;}return lo;}
+function canvasSize(canvas){const box=canvas.getBoundingClientRect(),ratio=devicePixelRatio||1;const w=Math.round(box.width*ratio),h=Math.round(box.height*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}return [w,h];}
+function draw(seconds){
+ frameIndex=frameAt(seconds);const [w,h]=canvasSize(overlay),ctx=overlay.getContext('2d');ctx.clearRect(0,0,w,h);
+ const inRange=seconds>=first-.04&&seconds<=last+.04;
+ if(inRange){const [oh,ow]=data.size;for(let p=0;p<data.labels.length;p++){
+   const [x,y]=data.points[frameIndex][p],px=x/ow*w,py=y/oh*h,r=Math.max(6,w/140),good=data.visible[frameIndex][p];
+   ctx.strokeStyle=colors[p];ctx.fillStyle=colors[p];ctx.lineWidth=2*devicePixelRatio;ctx.beginPath();ctx.arc(px,py,r,0,Math.PI*2);ctx.stroke();
+   if(!good){ctx.beginPath();ctx.moveTo(px-r,py-r);ctx.lineTo(px+r,py+r);ctx.moveTo(px+r,py-r);ctx.lineTo(px-r,py+r);ctx.stroke();}
+   ctx.font=`${Math.max(12,w/65)}px system-ui`;ctx.fillText(String(p),px+r+4,py-r);
+   ctx.beginPath();let started=false;for(let j=Math.max(0,frameIndex-25);j<=frameIndex;j++){
+     if(!data.visible[j][p]){started=false;continue;}const q=data.points[j][p];if(started)ctx.lineTo(q[0]/ow*w,q[1]/oh*h);else ctx.moveTo(q[0]/ow*w,q[1]/oh*h);started=true;
+   }ctx.stroke();
+ }}
+ document.getElementById('clock').textContent=`${seconds.toFixed(2)} s · clip ${first.toFixed(2)}–${last.toFixed(2)} s`;
+ const states=document.getElementById('states');states.replaceChildren();
+ data.labels.forEach((name,p)=>{const s=document.createElement('span');s.style.color=colors[p];s.className=data.visible[frameIndex][p]?'':'lost';s.textContent=`${p}: ${name} — ${inRange?(data.visible[frameIndex][p]?'visible':'lost'):'outside clip'}`;states.append(s);});
+ seek.value=Math.max(first,Math.min(last,seconds));drawCurve(seconds);
+}
+function drawCurve(seconds){const [w,h]=canvasSize(curve),ctx=curve.getContext('2d'),pad=24*devicePixelRatio;ctx.clearRect(0,0,w,h);const x=t=>pad+(t/1000-first)/(last-first)*(w-2*pad),y=v=>h-pad-v/100*(h-2*pad);
+ ctx.fillStyle='#e5a53725';data.times.forEach((t,i)=>{if(!data.visible[i][data.recipe.target_index]||!data.visible[i][data.recipe.reference_index])ctx.fillRect(x(t),pad,Math.max(1,x(data.times[Math.min(i+1,data.times.length-1)])-x(t)),h-2*pad);});
+ ctx.font=`${12*devicePixelRatio}px system-ui`;ctx.fillStyle='#bac6d4';ctx.strokeStyle='#344454';for(const v of [0,50,100]){ctx.beginPath();ctx.moveTo(pad,y(v));ctx.lineTo(w-pad,y(v));ctx.stroke();ctx.fillText(String(v),0,y(v)+4);}
+ for(const [values,color] of [[data.reference,'#a96bd5'],[data.curves.sam3d_right_wrist_x_local_fit,'#8e99ab'],[data.curves.point_tracker_with_holds,'#42cfaa']]){ctx.strokeStyle=color;ctx.lineWidth=1.5*devicePixelRatio;ctx.beginPath();values.forEach((v,i)=>{if(i)ctx.lineTo(x(data.times[i]),y(v));else ctx.moveTo(x(data.times[i]),y(v));});ctx.stroke();}
+ ctx.strokeStyle='#fff';ctx.lineWidth=devicePixelRatio;ctx.beginPath();ctx.moveTo(x(seconds*1000),pad);ctx.lineTo(x(seconds*1000),h-pad);ctx.stroke();
+}
+function jump(value){const t=Math.max(first,Math.min(last,value));video.currentTime=t;draw(t);}
+seek.addEventListener('input',()=>jump(Number(seek.value)));
+document.getElementById('start').addEventListener('click',()=>jump(first));
+curve.addEventListener('click',e=>{const r=curve.getBoundingClientRect(),pad=24;const f=(e.clientX-r.left-pad)/(r.width-2*pad);jump(first+f*(last-first));});
+video.addEventListener('loadedmetadata',()=>jump(first));video.addEventListener('seeked',()=>draw(video.currentTime));
+video.addEventListener('timeupdate',()=>{if(video.currentTime>last){video.pause();jump(last);}else draw(video.currentTime);});
+if(video.requestVideoFrameCallback){const step=(_now,metadata)=>{draw(metadata.mediaTime);video.requestVideoFrameCallback(step);};video.requestVideoFrameCallback(step);}
+document.getElementById('file').addEventListener('change',e=>{if(!e.target.files[0])return;if(blobURL)URL.revokeObjectURL(blobURL);blobURL=URL.createObjectURL(e.target.files[0]);video.src=blobURL;});
+video.addEventListener('error',()=>{document.getElementById('clock').textContent='Choose the source video to enable synchronized playback.';});
+new ResizeObserver(()=>draw(video.readyState?video.currentTime:first)).observe(document.querySelector('.stage'));
+if(data.video_url)video.src=data.video_url;draw(first);
+</script>
+</html>

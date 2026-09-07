@@ -1,0 +1,189 @@
+{
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "S3F_LoadPoseCache",
+      "pos": [
+        80,
+        140
+      ],
+      "size": [
+        380,
+        120
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_LoadPoseCache"
+      },
+      "widgets_values": [
+        "/absolute/path/to/poses.npz"
+      ],
+      "title": "1 \u00b7 Reopen cached poses"
+    },
+    {
+      "id": 2,
+      "type": "S3F_BuildMotion",
+      "pos": [
+        550,
+        140
+      ],
+      "size": [
+        380,
+        440
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "S3F_MOTION_PROJECT",
+          "type": "S3F_MOTION_PROJECT",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_BuildMotion"
+      },
+      "widgets_values": [
+        0,
+        "pelvis",
+        -1,
+        "pelvis",
+        "camera",
+        80.0,
+        "L0,L1,L2,R0,R1,R2",
+        "{}"
+      ],
+      "title": "2 \u00b7 Anchors & axis calibration"
+    },
+    {
+      "id": 3,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1030,
+        140
+      ],
+      "size": [
+        820,
+        720
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "S3F_MOTION_PROJECT",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_PreviewExport"
+      },
+      "widgets_values": [
+        "rcowgirl_6"
+      ],
+      "title": "3 \u00b7 Review, edit & export"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "S3F_POSE_SEQUENCE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "S3F_MOTION_PROJECT"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "SAM3D extraction \u00b7 cached",
+      "bounding": [
+        50,
+        60,
+        440,
+        610
+      ],
+      "color": "#365770",
+      "font_size": 22,
+      "flags": {}
+    },
+    {
+      "title": "Motion authoring",
+      "bounding": [
+        520,
+        60,
+        440,
+        610
+      ],
+      "color": "#446958",
+      "font_size": 22,
+      "flags": {}
+    },
+    {
+      "title": "Preview \u00b7 open full editor for more space",
+      "bounding": [
+        1000,
+        60,
+        890,
+        850
+      ],
+      "color": "#655079",
+      "font_size": 22,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        20
+      ]
+    }
+  },
+  "version": 0.4
+}

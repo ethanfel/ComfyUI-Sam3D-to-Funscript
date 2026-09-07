@@ -1,0 +1,103 @@
+{
+  "scope": "Native body-only inference smoke test; repeated still image, not a motion accuracy benchmark",
+  "python": "3.13.11 | packaged by conda-forge | (main, Dec  6 2025, 11:24:03) [GCC 14.3.0]",
+  "executable": "/media/p5/miniforge3/envs/13_env_py313/bin/python",
+  "packages": {
+    "torch": "2.11.0+cu130",
+    "numpy": "2.5.2",
+    "scipy": "1.16.3",
+    "av": "18.1.0",
+    "safetensors": "0.8.0",
+    "comfyui-frontend-package": "1.51.9"
+  },
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "model_path": "/media/p5/ComfyUI-Model-CIFS-Cache/mnt/detection/sam_3d_body_dinov3_bf16.safetensors",
+  "image_path": "/media/p5/vampip-sam3d-runtime/sam-3d-body/notebook/images/dancing.jpg",
+  "empty_mask_bbox": [
+    0.0,
+    0.0,
+    32.0,
+    24.0
+  ],
+  "frame_mismatch_returns_no_tracking": true,
+  "load_seconds": 54.85077905199432,
+  "runs": [
+    {
+      "name": "cold_single",
+      "frames": 1,
+      "seconds": 1.7315165549953235
+    },
+    {
+      "name": "warm_repeated_pair",
+      "frames": 2,
+      "seconds": 0.2938557359884726
+    }
+  ],
+  "pose_envelope_keys": [
+    "canonical_colors",
+    "faces",
+    "frames",
+    "hand_vert_mask",
+    "image_size"
+  ],
+  "person_keys": [
+    "bbox",
+    "body_pose_params",
+    "expr_params",
+    "focal_length",
+    "global_rot",
+    "hand_pose_params",
+    "mask",
+    "mhr_model_params",
+    "pred_cam_t",
+    "pred_face_keypoints_2d",
+    "pred_face_keypoints_3d",
+    "pred_global_rots",
+    "pred_joint_coords",
+    "pred_keypoints_2d",
+    "pred_keypoints_3d",
+    "pred_pose_raw",
+    "pred_vertices",
+    "scale_params",
+    "shape_params"
+  ],
+  "shapes": {
+    "pred_keypoints_3d": [
+      70,
+      3
+    ],
+    "pred_keypoints_2d": [
+      70,
+      2
+    ],
+    "pred_joint_coords": [
+      127,
+      3
+    ],
+    "pred_global_rots": [
+      127,
+      3,
+      3
+    ],
+    "pred_vertices": [
+      18439,
+      3
+    ],
+    "pred_cam_t": [
+      3
+    ],
+    "global_rot": [
+      3
+    ]
+  },
+  "all_numeric_arrays_finite": true,
+  "projection_roundtrip_rmse_px": 2.522447051768787e-05,
+  "rotation_orthogonality_max_abs": 3.572586491085161e-07,
+  "rotation_determinant_min_max": [
+    0.9999996917682298,
+    1.0000002770973977
+  ],
+  "repeat_keypoint_max_abs_m": 1.1920928955078125e-07,
+  "peak_torch_allocated_bytes": 3086815744,
+  "peak_torch_reserved_bytes": 3319791616
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SAM3D Motion Studio</title><link rel="stylesheet" href="viewer.css"></head>
+<body>
+<header><div><span class="badge">SAM3D</span><strong>Motion Studio</strong><span id="name"></span></div><span id="status" role="status">Open a project to begin</span></header>
+<main>
+  <div class="toolbar"><label class="button">Open project<input id="projectFile" type="file" accept=".json"></label><label class="button">Choose source video<input id="videoFile" type="file" accept="video/*"></label><label class="button">Open reference script<input id="referenceFile" type="file" accept=".funscript,.json"></label><button id="save">Download project + scripts</button><button id="undo" disabled>Undo</button></div>
+  <section class="stage">
+    <div class="panel video-panel"><h2>Source & projected pose</h2><div class="video-wrap"><video id="video" controls playsinline preload="metadata"></video><canvas id="overlay"></canvas></div></div>
+    <div class="panel"><h2>3D pose <small>estimated metres · camera basis</small></h2><canvas id="skeleton" width="440" height="360"></canvas><p>Drag to orbit. Scroll to zoom.</p></div>
+    <div class="panel"><h2>Six-axis platform <small>kinematic preview</small></h2><canvas id="robot" width="440" height="360"></canvas><p>Normalized axis illustration. No device geometry or physical limits.</p><div id="readouts"></div></div>
+  </section>
+  <section class="panel curves"><div class="curve-head"><h2>Motion curves</h2><label>Axis <select id="axis"></select></label><label>View <select id="zoom"><option value="0">Full timeline</option><option value="4000">4 seconds</option><option value="1000">1 second</option></select></label><span id="time">0.000 s</span></div>
+    <canvas id="curve" width="1300" height="240" tabindex="0" aria-label="Editable axis timeline"></canvas>
+    <div class="legend"><span class="raw">Raw estimate</span><span class="filtered">Filtered</span><span class="script">Exported linear curve</span><span style="color:#dcadfa">Reference script</span><span>Click to seek · double-click to add · drag a point to edit · right-click to delete</span></div>
+    <div class="controls"><label>Source component <select id="component"><option value="0">Up</option><option value="1">Forward</option><option value="2">Left</option></select></label><label>Full-scale range <input id="range" type="number" min="0.001" step="0.01"><span id="unit"></span></label><label>Center <input id="center" type="number" min="0" max="100" step="1"></label><label><input id="invert" type="checkbox"> Invert</label><button id="rebuild">Regenerate selected axis</button><span id="metrics"></span></div>
+    <div class="controls"><label>Reference offset <input id="referenceOffset" type="number" step="20" value="0" disabled> ms</label><span id="referenceMetrics">No reference loaded for this axis</span></div>
+  </section>
+  <details class="panel"><summary>Analysis notes & provenance</summary><ul id="warnings"></ul><pre id="provenance"></pre></details>
+</main><script type="module" src="viewer.js"></script>
+</body></html>

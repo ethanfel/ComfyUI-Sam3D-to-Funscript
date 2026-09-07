@@ -1,0 +1,158 @@
+"""Bounded video decoding, exact presentation timestamps and native SAM3D inference."""
+
+from fractions import Fraction
+import hashlib
+import json
+from pathlib import Path
+import time
+
+import av
+import numpy as np
+
+from .core import PoseSequence
+
+CACHE_VERSION = 1
+
+
+def fingerprint(path):
+    path = Path(path).resolve(strict=True)
+    stat = path.stat()
+    return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def parse_rois(value):
+    """Ordered static normalized xywh rectangles; a slot is not a tracker ID."""
+    boxes = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(boxes, list) or not 1 <= len(boxes) <= 8:
+        raise ValueError("ROIs must be a list of 1–8 normalized [x,y,width,height] rectangles")
+    for box in boxes:
+        if len(box) != 4 or not all(isinstance(x, (float, int)) and np.isfinite(x) for x in box):
+            raise ValueError("Each ROI needs four finite numbers")
+        x, y, w, h = box
+        if min(x, y) < 0 or min(w, h) <= 0 or x + w > 1.000001 or y + h > 1.000001:
+            raise ValueError("ROIs must lie inside the image in normalized 0–1 coordinates")
+    return [[float(value) for value in box] for box in boxes]
+
+
+def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0, max_frames=2000):
+    """Yield RGB frames on a sampling grid, retaining actual frame PTS, never invented FPS times."""
+    if not np.isfinite(sample_fps) or sample_fps < 0 or not np.isfinite(start_seconds) or start_seconds < 0 or not np.isfinite(duration_seconds) or duration_seconds < 0 or max_frames < 2:
+        raise ValueError("Invalid video range/sampling settings")
+    start = Fraction(str(start_seconds))
+    end = start + Fraction(str(duration_seconds)) if duration_seconds else None
+    step = 1 / Fraction(str(sample_fps)) if sample_fps else None
+    due = start
+    origin, previous, count = None, None, 0
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        for frame in container.decode(stream):
+            if frame.pts is None or frame.time_base is None:
+                raise ValueError("Video lacks presentation timestamps; remux it before extraction")
+            presentation = frame.pts * frame.time_base
+            if origin is None:
+                origin = presentation
+            t = presentation - origin
+            if previous is not None and t <= previous:
+                raise ValueError("Video presentation timestamps are not strictly increasing")
+            previous = t
+            if end is not None and t >= end:
+                break
+            if t < due:
+                continue
+            if count >= max_frames:
+                break
+            if step:
+                due = start + ((t - start) // step + 1) * step
+            yield frame.to_ndarray(format="rgb24"), {
+                "time_ms": float(t * 1000), "pts": frame.pts,
+                "time_base": [frame.time_base.numerator, frame.time_base.denominator],
+                "origin": [origin.numerator, origin.denominator],
+                "frame_duration_ms": float((frame.duration or 0) * frame.time_base * 1000),
+            }
+            count += 1
+
+
+def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seconds=0.0,
+                  duration_seconds=0.0, max_frames=2000, rois_json="[[0,0,1,1]]",
+                  batch_size=8, fov=0.0, use_cache=True):
+    # Imports stay here so the geometry/editor can run without ComfyUI or CUDA.
+    import torch
+    import folder_paths
+    import comfy.model_management
+    from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
+
+    rois = parse_rois(rois_json)
+    model_path = folder_paths.get_full_path_or_raise("detection", model_file)
+    key = {"cache_version": CACHE_VERSION, "video": fingerprint(video_path), "model": fingerprint(model_path),
+           "sample_fps": float(sample_fps), "start_seconds": float(start_seconds), "duration_seconds": float(duration_seconds),
+           "max_frames": int(max_frames), "rois": rois, "fov": float(fov), "batch_size": int(batch_size),
+           "native_source": fingerprint(Path(__import__(SAM3DBody_Predict.__module__, fromlist=["__file__"]).__file__))}
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:24]
+    cache = Path(cache_dir).resolve() / f"{digest}.npz"
+    if use_cache and cache.exists():
+        sequence = PoseSequence.load(cache)
+        sequence.metadata = {**sequence.metadata, "cache_hit": True, "cache_path": str(cache)}
+        return sequence
+    started = time.perf_counter()
+    model = SAM3DBody_Loader.execute(model_file).result[0]
+    rows, timestamps, segments = [], [], []
+    images, batch_times = [], []
+    previous_thumbnail, segment = None, 0
+    image_size = None
+    def flush():
+        if not images:
+            return
+        comfy.model_management.throw_exception_if_processing_interrupted()
+        height, width = images[0].shape[:2]
+        bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
+        batch = torch.from_numpy(np.stack(images).astype(np.float32) / 255.0)
+        prediction = SAM3DBody_Predict.execute(model, batch, bboxes=bboxes, run_hand_refinement=False,
+                                              fov=fov, batch_size=batch_size).result[0]
+        for people in prediction["frames"]:
+            points = np.full((len(rois), 70, 3), np.nan, dtype=np.float32)
+            pixels = np.full((len(rois), 70, 2), np.nan, dtype=np.float32)
+            valid = np.zeros(len(rois), dtype=bool)
+            if len(people) != len(rois):
+                raise ValueError("SAM3D returned a different number of people than ROI slots")
+            for slot, person in enumerate(people):
+                points[slot] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
+                pixels[slot] = person["pred_keypoints_2d"]
+                valid[slot] = np.isfinite(points[slot]).all() and np.isfinite(pixels[slot]).all()
+            rows.append((points, pixels, valid))
+        timestamps.extend(batch_times)
+        print(f"SAM3D Funscript: extracted {len(rows)} samples", flush=True)
+        images.clear()
+        batch_times.clear()
+    for rgb, timing in video_frames(video_path, sample_fps, start_seconds, duration_seconds, max_frames):
+        if image_size is not None and rgb.shape[:2] != image_size:
+            raise ValueError("Video changes resolution; split it into constant-resolution clips")
+        image_size = rgb.shape[:2]
+        thumbnail = rgb[::max(1, rgb.shape[0] // 32), ::max(1, rgb.shape[1] // 32)].astype(np.float32) / 255
+        if previous_thumbnail is not None and np.mean(np.abs(thumbnail - previous_thumbnail)) > 0.22:
+            segment += 1
+        previous_thumbnail = thumbnail
+        segments.append(segment)
+        images.append(rgb)
+        batch_times.append(timing)
+        if len(images) >= max(1, batch_size // len(rois)):
+            flush()
+    flush()
+    if len(rows) < 2:
+        raise ValueError("Selected video range contains fewer than two sampled frames")
+    times = np.array([t["time_ms"] for t in timestamps])
+    # Export ends at the analysed range, not at an unanalysed tail of the video.
+    duration = times[-1] + timestamps[-1]["frame_duration_ms"]
+    metadata = {"source": key["video"], "model": key["model"], "image_size": list(image_size),
+                "duration_ms": duration, "analysed_start_ms": times[0], "analysed_end_ms": times[-1],
+                "timestamps": timestamps, "rois": rois, "cache_hit": False, "cache_path": str(cache),
+                "inference_seconds": time.perf_counter() - started, "sample_count": len(rows),
+                "settings": key, "units": "metres", "basis": "camera: X right, Y down, Z forward",
+                "warnings": ["Static ROI slots are not identity tracking. Inspect overlap, occlusion and subject changes.",
+                             "Validity means finite model output, not visibility or calibrated confidence.",
+                             "Cut detection is a thumbnail-change heuristic; review missed cuts and false positives."]}
+    if len(rows) >= max_frames:
+        metadata["warnings"].append("Sample limit reached; the analysed interval may stop before the video ends.")
+    sequence = PoseSequence(times, np.stack([r[0] for r in rows]), np.stack([r[1] for r in rows]),
+                            np.stack([r[2] for r in rows]), np.array(segments), metadata).validate()
+    sequence.save(cache)
+    return sequence
