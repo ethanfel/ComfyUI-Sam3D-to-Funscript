@@ -83,6 +83,7 @@ def write_workflow(name, workflow, api):
             raise ValueError('Example workflow contains a cycle')
         for node in ready:
             node['order'] = len(ordered); ordered.add(node['id']); del pending[node['id']]
+    (ROOT / 'workflows' / name).parent.mkdir(parents=True, exist_ok=True)
     (ROOT / f'workflows/{name}.json').write_text(json.dumps(workflow, indent=2) + '\n')
     (ROOT / f'workflows/{name}.api.json').write_text(json.dumps(api, indent=2) + '\n')
 
@@ -223,6 +224,69 @@ def main():
     core_workflow()
     masked_workflow()
     multitrack_workflow()
+    partial_person_workflow()
+
+
+def partial_person_workflow():
+    """Compare a partial person's inferred pelvis against a visible-body baseline."""
+    video = 'videos/general/2601102105_OC_00001.mp4'
+    extraction = {**API['1']['inputs'], 'video': ['1', 0], 'sample_fps': 0.0,
+                  'max_frames': 1000, 'batch_size': 16,
+                  'rois_json': '[[0,0,1,0.91], [0,0.83,0.55,0.17]]'}
+    api = {'1': {'class_type': 'LoadVideo', 'inputs': {'file': video}},
+           '2': {'class_type': 'S3F_VideoPose', 'inputs': extraction}}
+    nodes = [
+        make_node(1, api['1'], [80, 140], [360, 750], [],
+                  [{'name': 'VIDEO', 'type': 'VIDEO', 'links': [1]}], [video], 'Source · partial-person test clip'),
+        make_node(2, api['2'], [530, 140], [420, 560],
+                  [{'name': 'video', 'type': 'VIDEO', 'link': 1}],
+                  [{'name': 'poses', 'type': 'S3F_POSE_SEQUENCE', 'links': [2, 3, 4]},
+                   {'name': 'cache_path', 'type': 'STRING', 'links': None}],
+                  list(extraction.values())[1:], 'Two person slots · 0 woman / 1 partial man'),
+    ]
+    links = [[1, 1, 0, 2, 0, 'VIDEO']]
+    for slot, (target, reference, title) in enumerate((
+            (0, 1, 'Woman relative to man'), (0, -1, 'Woman only · camera baseline'),
+            (1, -1, 'Man only · inspect partial pose'))):
+        node_id = slot + 3
+        inputs = {**API['2']['inputs'], 'poses': ['2', 0], 'target_person': target,
+                  'reference_person': reference, 'target_anchor': 'pelvis', 'reference_anchor': 'pelvis',
+                  'frame': 'camera'}
+        api[str(node_id)] = {'class_type': 'S3F_BuildMotion', 'inputs': inputs}
+        nodes.append(make_node(node_id, api[str(node_id)], [1070, 140 + slot * 530], [410, 440],
+            [{'name': 'poses', 'type': 'S3F_POSE_SEQUENCE', 'link': slot + 2}],
+            [{'name': 'project', 'type': 'S3F_MOTION_PROJECT', 'links': [slot + 5]}],
+            list(inputs.values())[1:], f'project_{slot} · {title}'))
+        links.extend([[slot + 2, 2, 0, node_id, 0, 'S3F_POSE_SEQUENCE'],
+                      [slot + 5, node_id, 0, 6, slot, 'S3F_MOTION_PROJECT']])
+    api['6'] = {'class_type': 'S3F_PreviewExport', 'inputs': {
+        **{f'project_{slot}': [str(slot + 3), 0] for slot in range(3)}, 'filename': 'partial_person_reference_test'}}
+    nodes.append(make_node(6, api['6'], [1580, 140], [1180, 1100],
+        [{'name': f'project_{slot}', 'type': 'S3F_MOTION_PROJECT', 'link': slot + 5} for slot in range(3)],
+        [{'name': 'project_path', 'type': 'STRING', 'links': None}], ['partial_person_reference_test'], 'Compare relative and individual motion'))
+    notes = ('PARTIAL-PERSON SAM3D TEST\n\n'
+        'Local test: the second pose still often follows the woman. Use this workflow to inspect that failure; the relative curve is not a validated male-reference result.\n\n'
+        'One extraction creates two person slots. All three motion branches use that same pose result.\n\n'
+        'ROI format: [x, y, width, height], normalized 0 to 1.\n'
+        'Slot 0: woman / upper 91% of frame.\nSlot 1: partial man / lower-left region (55% width, bottom 17%).\n'
+        'These static crops are starting selections, not identity masks. SAM3D pads crops internally, so surrounding people can still influence the pose. Adjust them if a pose follows the wrong person. Leave mask_video disconnected; it would replace the two slots with one.\n\n'
+        'project_0: woman pelvis minus man pelvis (initial main).\n'
+        'project_1: woman pelvis in camera coordinates.\n'
+        'project_2: man pelvis in camera coordinates.\n\n'
+        'Run, then select each source row with Edit to inspect its target marker and 3D pose. Check project_2 through the entire clip before trusting project_0.\n\n'
+        'Frame=camera avoids using the unseen male torso as the reference orientation. His pelvis is still inferred from a very partial crop; SAM3D has no dedicated landmark for the indicated region.\n\n'
+        'Auto fits each curve independently, so curve height is not an accuracy comparison. Pose presence is not tracking confidence.\n\n'
+        'Every frame, up to 1000 frames; bounded streaming batches, cached poses. Changing anchors or calibration reuses the cache.')
+    nodes.append(make_node(7, {'class_type': 'Note'}, [530, 800], [420, 640], [], [], [notes], 'Read first · test setup and review'))
+    groups = [{'title': title, 'bounding': box, 'color': color, 'font_size': 22, 'flags': {}}
+        for title, box, color in [
+            ('Core video input', [50, 60, 420, 890], '#365770'),
+            ('Shared two-person extraction · static ROI test', [500, 60, 480, 1440], '#365770'),
+            ('Relative motion and individual baselines', [1040, 60, 470, 1630], '#446958'),
+            ('Preview · compare source tracks', [1550, 60, 1240, 1240], '#655079')]]
+    workflow = {'last_node_id': 7, 'last_link_id': 7, 'nodes': nodes, 'links': links, 'groups': groups,
+                'config': {}, 'extra': {'ds': {'scale': .45, 'offset': [30, 20]}}, 'version': .4}
+    write_workflow('tests/partial_person_reference', workflow, api)
 
 
 def multitrack_workflow():

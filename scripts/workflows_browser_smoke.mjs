@@ -1,4 +1,5 @@
 // Validate bundled workflows in an isolated ComfyUI. Optional cache path runs the cached example.
+// Arguments after OUTPUT select UI files relative to workflows/, including diagnostic examples.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,7 +30,8 @@ try{
     await until(()=>evaluate('!!window.s3fApp.positionConversion'),'extension setup');
     await until(()=>evaluate('window.s3fApp.graph._nodes.length>0'),'initial restoration');
     const read=name=>JSON.parse(fs.readFileSync('workflows/'+name,'utf8'));
-    for(const file of fs.readdirSync('workflows').filter(n=>n.endsWith('.json')&&!n.endsWith('.api.json')).sort()){
+    const files=process.argv.slice(5);
+    for(const file of (files.length?files:fs.readdirSync('workflows').filter(n=>n.endsWith('.json')&&!n.endsWith('.api.json'))).sort()){
         const workflow=read(file),api=read(file.replace('.json','.api.json'));
         await evaluate(`window.s3fApp.loadGraphData(${JSON.stringify(workflow)})`);
         const prompt=(await evaluate('window.s3fApp.graphToPrompt()')).output;
@@ -37,7 +39,7 @@ try{
             assert.equal(prompt[id]?.class_type,spec.class_type,file+' node '+id);
             for(const [key,value] of Object.entries(spec.inputs))assert.deepEqual(prompt[id].inputs[key],value,`${file} node ${id} input ${key}`);
         }
-        const nodes=await evaluate(`window.s3fApp.graph._nodes.map(n=>({id:n.id,type:n.type,pos:Array.from(n.pos),size:Array.from(n.size),inputs:n.inputs.map(i=>({name:i.name,link:i.link})),session:n.properties.s3f_session,frame:n.s3fFrame?.src||null}))`);
+        const nodes=await evaluate(`window.s3fApp.graph._nodes.map(n=>({id:n.id,type:n.type,pos:Array.from(n.pos),size:Array.from(n.size),inputs:(n.inputs||[]).map(i=>({name:i.name,link:i.link})),session:n.properties.s3f_session,frame:n.s3fFrame?.src||null}))`);
         const owners=nodes.filter(n=>n.type==='S3F_StandaloneExport'),views=nodes.filter(n=>n.type==='S3F_PreviewExport');
         assert.equal(owners.length,views.length);assert.ok(owners.length>0);
         assert.equal(new Set(owners.map(n=>n.session)).size,owners.length,'Person branches keep independent sessions');

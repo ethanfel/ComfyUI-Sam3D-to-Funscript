@@ -62,6 +62,8 @@ Your download includes `project.json` and `viewer.html`. Open the viewer and cho
 | A mask for each person | [Separate people](workflows/mask_videos_to_funscripts.json) |
 | Native ComfyUI prediction nodes | [Core-node workflow](workflows/core_video_to_funscript.json) |
 
+For the experimental two-person comparison, see the [partial-person reference test](workflows/tests/README.md).
+
 ## Before you export
 
 This is a development-stage authoring tool. Review tracking around occlusions, camera changes and hand motion. Device previews are schematic and do not control hardware or validate its physical limits.
