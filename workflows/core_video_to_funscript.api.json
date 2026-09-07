@@ -83,11 +83,21 @@
     }
   },
   "8": {
-    "class_type": "S3F_PreviewExport",
+    "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "project": [
+      "filename": "rcowgirl_6_core",
+      "project_0": [
         "7",
         0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "8",
+        2
       ],
       "filename": "rcowgirl_6_core"
     }

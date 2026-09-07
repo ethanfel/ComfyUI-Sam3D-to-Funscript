@@ -30,6 +30,63 @@ def make_node(node_id, spec, position, size, inputs, outputs, widgets, title):
             "title": title}
 
 
+def write_workflow(name, workflow, api):
+    """Give each export branch a standalone owner and an explicitly linked view."""
+    workflow, api = json.loads(json.dumps(workflow)), json.loads(json.dumps(api))
+    next_node = max(node['id'] for node in workflow['nodes'])
+    next_link = max((link[0] for link in workflow['links']), default=0)
+    for owner in list(workflow['nodes']):
+        if owner['type'] != 'S3F_PreviewExport':
+            continue
+        next_node += 1; next_link += 1
+        old_inputs = owner['inputs']
+        projects = [{**port, 'name': 'project_0' if port['name'] == 'project' else port['name']}
+                    for port in old_inputs if port['name'].startswith('project')]
+        if projects[-1]['link'] is not None:
+            projects.append({'name': f"project_{len(projects)}", 'type': 'S3F_MOTION_PROJECT', 'link': None})
+        owner['inputs'] = [{'name': 'editor_session', 'type': 'S3F_EDITOR_SESSION', 'link': None}, *projects]
+        for link in workflow['links']:
+            if link[3] == owner['id']:
+                link[4] = next(i for i, port in enumerate(owner['inputs']) if port.get('link') == link[0])
+        x, y = owner['pos']; width, height = owner['size']
+        preview = make_node(next_node, {'class_type': 'S3F_PreviewExport'}, [x + 460, y], [width, height],
+            [{'name': 'editor_session', 'type': 'S3F_EDITOR_SESSION', 'link': next_link},
+             {'name': 'project_0', 'type': 'S3F_MOTION_PROJECT', 'link': None}],
+            [{'name': 'project_path', 'type': 'STRING', 'links': None, 'slot_index': 0},
+             {'name': 'editor_session', 'type': 'S3F_EDITOR_SESSION', 'links': None, 'slot_index': 1}],
+            owner['widgets_values'][:1], 'Linked preview · same editing session')
+        owner.update(type='S3F_StandaloneExport', title='Motion Studio · open in new tab',
+                     size=[380, 190 + 22 * len(projects)], properties={'Node name for S&R': 'S3F_StandaloneExport'})
+        owner['outputs'] = [
+            {'name': 'project_path', 'type': 'STRING', 'links': None, 'slot_index': 0},
+            {'name': 'viewer_path', 'type': 'STRING', 'links': None, 'slot_index': 1},
+            {'name': 'editor_session', 'type': 'S3F_EDITOR_SESSION', 'links': [next_link], 'slot_index': 2}]
+        workflow['nodes'].append(preview)
+        workflow['links'].append([next_link, owner['id'], 2, next_node, 0, 'S3F_EDITOR_SESSION'])
+        for group in workflow['groups']:
+            gx, gy, gw, gh = group['bounding']
+            if gx <= x < gx + gw and gy <= y < gy + gh:
+                group['bounding'][2] = max(gw, x + 460 + width + 30 - gx)
+                if 'preview' in group['title'].lower():
+                    group['title'] = 'Motion Studio · standalone + linked preview'
+        spec = api[str(owner['id'])]
+        spec['class_type'] = 'S3F_StandaloneExport'
+        if 'project' in spec['inputs']:
+            spec['inputs']['project_0'] = spec['inputs'].pop('project')
+        api[str(next_node)] = {'class_type': 'S3F_PreviewExport', 'inputs': {
+            'editor_session': [str(owner['id']), 2], 'filename': owner['widgets_values'][0]}}
+    workflow.update(last_node_id=next_node, last_link_id=next_link)
+    pending = {node['id']: node for node in workflow['nodes']}; ordered = set()
+    while pending:
+        ready = [node for key, node in pending.items() if all(link[1] in ordered for link in workflow['links'] if link[3] == key)]
+        if not ready:
+            raise ValueError('Example workflow contains a cycle')
+        for node in ready:
+            node['order'] = len(ordered); ordered.add(node['id']); del pending[node['id']]
+    (ROOT / f'workflows/{name}.json').write_text(json.dumps(workflow, indent=2) + '\n')
+    (ROOT / f'workflows/{name}.api.json').write_text(json.dumps(api, indent=2) + '\n')
+
+
 def core_workflow():
     """An additional native-node path; leave the original examples intact."""
     api = {
@@ -84,8 +141,7 @@ def core_workflow():
                   ("Preview & export", [2440, 70, 1160, 1100], "#655079")]]
     workflow = {"last_node_id": 8, "last_link_id": 9, "nodes": nodes, "links": links, "groups": groups,
                 "config": {}, "extra": {"ds": {"scale": .45, "offset": [30, 20]}}, "version": .4}
-    (ROOT / "workflows/core_video_to_funscript.json").write_text(json.dumps(workflow, indent=2))
-    (ROOT / "workflows/core_video_to_funscript.api.json").write_text(json.dumps(api, indent=2))
+    write_workflow("core_video_to_funscript", workflow, api)
 
 
 def main():
@@ -114,7 +170,9 @@ def main():
     node.update(type="S3F_LoadPoseCache", title="1 · Reopen cached poses", size=[380, 120],
                 widgets_values=["/absolute/path/to/poses.npz"], inputs=[], outputs=node["outputs"][:1],
                 properties={"Node name for S&R": "S3F_LoadPoseCache"})
-    (ROOT / "workflows/cached_pose_to_funscript.json").write_text(json.dumps(cache_workflow, indent=2))
+    cache_api = {"1": {"class_type": "S3F_LoadPoseCache", "inputs": {"cache_path": "/absolute/path/to/poses.npz"}},
+                 "2": API["2"], "3": API["3"]}
+    write_workflow("cached_pose_to_funscript", cache_workflow, cache_api)
     detailed = json.loads(json.dumps(cache_workflow))
     detailed["nodes"][1]["inputs"][1]["link"] = 3
     detailed["nodes"][1]["widgets_values"][1] = "left_hand"
@@ -124,7 +182,7 @@ def main():
     detailed["links"].append([3, 4, 0, 2, 1, "S3F_ANCHOR"])
     detailed["last_node_id"] = 4; detailed["last_link_id"] = 3
     detailed["groups"][0]["title"] = "Cached poses & detailed anchor"
-    (ROOT / "workflows/detailed_anchor_override.json").write_text(json.dumps(detailed, indent=2))
+    detailed["nodes"][2]["widgets_values"] = ["detailed_anchor"]
     detailed_api = {
         "1": {"class_type": "S3F_LoadPoseCache", "inputs": {"cache_path": "/absolute/path/to/poses.npz"}},
         "2": {"class_type": "S3F_BuildMotion", "inputs": {
@@ -132,7 +190,7 @@ def main():
         "3": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["2", 0], "filename": "detailed_anchor"}},
         "4": {"class_type": "S3F_AnchorOverride", "inputs": {"anchor": "left_index_tip"}},
     }
-    (ROOT / "workflows/detailed_anchor_override.api.json").write_text(json.dumps(detailed_api, indent=2))
+    write_workflow("detailed_anchor_override", detailed, detailed_api)
     loader = make_node(4, API["4"], [-350, 140], [340, 550], [],
         [{"name": "VIDEO", "type": "VIDEO", "links": [3], "slot_index": 0}],
         [API["4"]["inputs"]["file"]], "Load video · core")
@@ -142,8 +200,7 @@ def main():
     workflow["groups"].insert(0, {"title": "Core video input", "bounding": [-380, 60, 400, 680],
         "color": "#365770", "font_size": 22, "flags": {}})
     workflow["extra"]["ds"] = {"scale": .6, "offset": [400, 20]}
-    (ROOT / "workflows/video_to_funscript.json").write_text(json.dumps(workflow, indent=2))
-    (ROOT / "workflows/video_to_funscript.api.json").write_text(json.dumps(API, indent=2))
+    write_workflow("video_to_funscript", workflow, API)
     comparison = json.loads(json.dumps(workflow))
     comparison["nodes"][2]["pos"] = [1450, 140]
     comparison["nodes"][2]["inputs"][0]["link"] = 4
@@ -158,7 +215,11 @@ def main():
                            [3, 4, 0, 1, 0, "VIDEO"], [4, 5, 0, 3, 0, "S3F_MOTION_PROJECT"]]
     comparison["last_node_id"] = 5; comparison["last_link_id"] = 4
     comparison["groups"][3]["bounding"] = [1000, 60, 1320, 850]
-    (ROOT / "workflows/video_with_reference.json").write_text(json.dumps(comparison, indent=2))
+    comparison_api = json.loads(json.dumps(API))
+    comparison_api["3"]["inputs"]["project"] = ["5", 0]
+    comparison_api["5"] = {"class_type": "S3F_CompareReference", "inputs": {
+        "project": ["2", 0], "reference_path": "/absolute/path/to/reference.funscript", "axis": "L0", "reference_offset_ms": 0.0}}
+    write_workflow("video_with_reference", comparison, comparison_api)
     core_workflow()
     masked_workflow()
     multitrack_workflow()
@@ -193,8 +254,7 @@ def multitrack_workflow():
             ("Assemble main · select sections · blend joins", [1030, 60, 1210, 1230], "#655079")]]
     workflow = {"last_node_id": 5, "last_link_id": 6, "nodes": nodes, "links": links, "groups": groups,
         "config": {}, "extra": {"ds": {"scale": .5, "offset": [30, 20]}}, "version": .4}
-    (ROOT / "workflows/multitrack_anchors.json").write_text(json.dumps(workflow, indent=2))
-    (ROOT / "workflows/multitrack_anchors.api.json").write_text(json.dumps(api, indent=2))
+    write_workflow("multitrack_anchors", workflow, api)
 
 
 def masked_workflow():
@@ -236,8 +296,7 @@ def masked_workflow():
             ("Person B · separate mask and script · target_person = 0", [490, 1220, 1810, 840], "#655079")]]
     workflow = {"last_node_id": 9, "last_link_id": 8, "nodes": nodes, "links": links, "groups": groups,
         "config": {}, "extra": {"ds": {"scale": .4, "offset": [30, 20]}}, "version": .4}
-    (ROOT / "workflows/mask_videos_to_funscripts.json").write_text(json.dumps(workflow, indent=2))
-    (ROOT / "workflows/mask_videos_to_funscripts.api.json").write_text(json.dumps(api, indent=2))
+    write_workflow("mask_videos_to_funscripts", workflow, api)
 
 
 if __name__ == "__main__":

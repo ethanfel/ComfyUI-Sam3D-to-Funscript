@@ -23,7 +23,8 @@ Load [workflows/video_to_funscript.json](../workflows/video_to_funscript.json) i
 1. **Load Video** (core): select or upload a video and connect its `VIDEO` output.
 2. **SAM3D Video → Cached Poses:** select the model, sampling and person ROI(s).
 3. **Poses → Multi-axis Motion:** choose anchors, reference frame, smoothing and enabled axes.
-4. **Preview & Export Funscripts:** write scripts and a project, then open the embedded preview or **Open full motion editor**.
+4. **Motion Studio · Standalone:** write scripts and a project, then click **Open Motion Studio in new tab**.
+5. **Preview & Export Funscripts:** the connected `editor_session` displays the same editing session inside the workflow.
 
 Core **Load Video → SAM3D Video → Cached Poses** preserves the original node's lower-RAM streaming behavior. **Load Video** supplies a lazy file reference; the inference node decodes selected frames in small batches. No **Get Video Components** node is needed. Optional core **Trim Video** can sit between them.
 
@@ -59,7 +60,8 @@ Load Video → Trim Video → Get Video Components → Run SAM3D Body Prediction
 
 SAM3D poses + the same trimmed VIDEO → Core SAM3D → Funscript Poses
                                     → Poses → Multi-axis Motion
-                                    → Preview & Export Funscripts
+                                    → Motion Studio · Standalone
+                                      └ editor_session → Preview & Export Funscripts
 ```
 
 The **Core SAM3D → Funscript Poses** adapter requires two connections: `MHR_POSE_DATA` from native prediction and the same `VIDEO` supplied to **Get Video Components**. Its optional `sam3d_body_model` input accepts the same loaded model to recover mouth corners from body-only predictions; the example includes this connection. It performs no additional model inference. The adapter reads source frame timestamps, preserves the original timeline through trims, and writes a pose cache compatible with **Load SAM3D Pose Cache**. A frame-count mismatch stops conversion rather than silently shifting the script.
@@ -221,7 +223,7 @@ Simplification limits vertical interpolation error to `tolerance` position units
 
 Load [workflows/multitrack_anchors.json](../workflows/multitrack_anchors.json) for a shared pose cache feeding **mouth**, **left hand** and **right hand** motion projects into one editor. Set the cache path, or connect the same `poses` output from your streaming/core workflow to the three **Poses → Multi-axis Motion** nodes. Each branch has independent anchor, reference and axis calibration. Changing these branches does not rerun pose inference.
 
-**Preview & Export Funscripts** and **Motion Studio · Standalone** start with `project_0`. Connecting it adds `project_1`, and each connected last socket adds another. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket automatically; existing API prompts using `project` still work. The [multitrack API example](../workflows/multitrack_anchors.api.json) shows numbered inputs.
+**Preview & Export Funscripts** and **Motion Studio · Standalone** place `editor_session` first, followed by `project_0`. Connecting a project adds `project_1`, and each connected last project socket adds another below it. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket and input order automatically, preserving existing wires; existing API prompts using `project` still work. The [multitrack API example](../workflows/multitrack_anchors.api.json) shows numbered inputs connected to the standalone node.
 
 1. Select the **Main axis** to assemble, such as **L0 · stroke**. The first numbered project supplies its initial main curve; other enabled axes are retained too.
 2. Every connected project adds a source row. Click **Edit** or its curve to select it; the yellow marker and 3D view show that row's anchor. Its **Project** and **Axis** selectors can be reassigned freely. Reassignment resets that row to the chosen project's calibration and curve; Undo restores its previous edits. **Add track** creates another independently editable row, including alternate calibrations of the same project. Track names are editable.
@@ -258,7 +260,7 @@ The smoother averages the interpolated motion over elapsed milliseconds, so extr
 
 ### Dedicated-tab editing
 
-Add **Motion Studio · Standalone** from `motion/SAM3D Funscript` and connect the same motion projects you would send to the preview node. It has no embedded editor, so it stays compact. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
+Every bundled workflow and its API companion includes **Motion Studio · Standalone** with a session connection to an embedded preview. Motion projects feed the standalone node; each masked-person branch has its own session. Remove the linked preview if you only want the compact node and dedicated tab. To add this setup to an existing graph, find **Motion Studio · Standalone** under `motion/SAM3D Funscript` and connect your motion projects. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
 
 Keep the tab open while running your workflow. It receives the latest projects automatically, including newly connected anchors, using the same track refresh, composition and lock rules as the embedded editor. This connection also survives reloading the ComfyUI page when you reopen the saved workflow. Separate export nodes have separate editor sessions. The existing preview node's **Open full motion editor** button uses this same dedicated-tab behaviour.
 
@@ -341,6 +343,8 @@ node tests/test_migrate.mjs
 ```
 
 Tests cover variable-rate timestamps, rigid-camera invariance in a body reference frame, gap holds, filter isolation across cuts, fixed-gain behavior, interpolation error, cache/project round trips, action validation and browser/Python export parity.
+
+`node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 /absolute/path/to/poses.npz` checks all seven bundled workflows against their API companions in a disposable Chrome profile. It verifies socket order, save/reload, dynamic connections, independent person sessions and node spacing, then runs the cached example to check that both editor views reuse one export. Omit the cache argument to skip execution. Use an isolated ComfyUI instance; QA screenshots hide the source video.
 
 The multitrack suite covers geometry deduplication, different sampling, mismatched-video rejection, source isolation, section joins, overlapping section provenance, undo snapshots, and numbered socket growth with no fixed cap. Reproduce it with:
 

@@ -1,6 +1,6 @@
 {
-  "last_node_id": 9,
-  "last_link_id": 8,
+  "last_node_id": 11,
+  "last_link_id": 10,
   "nodes": [
     {
       "id": 1,
@@ -212,39 +212,64 @@
     },
     {
       "id": 8,
-      "type": "S3F_PreviewExport",
+      "type": "S3F_StandaloneExport",
       "pos": [
         1450,
         480
       ],
       "size": [
-        820,
-        720
+        380,
+        234
       ],
       "flags": {},
       "order": 7,
       "mode": 0,
       "inputs": [
         {
-          "name": "project",
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": null
+        },
+        {
+          "name": "project_0",
           "type": "S3F_MOTION_PROJECT",
           "link": 7
+        },
+        {
+          "name": "project_1",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
         }
       ],
       "outputs": [
         {
           "name": "project_path",
           "type": "STRING",
-          "links": null
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "viewer_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": [
+            9
+          ],
+          "slot_index": 2
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_PreviewExport"
+        "Node name for S&R": "S3F_StandaloneExport"
       },
       "widgets_values": [
         "person_A"
       ],
-      "title": "person_A \u00b7 preview & export"
+      "title": "Motion Studio \u00b7 open in new tab"
     },
     {
       "id": 5,
@@ -359,9 +384,118 @@
     },
     {
       "id": 9,
-      "type": "S3F_PreviewExport",
+      "type": "S3F_StandaloneExport",
       "pos": [
         1450,
+        1300
+      ],
+      "size": [
+        380,
+        234
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": null
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": 8
+        },
+        {
+          "name": "project_1",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "viewer_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": [
+            10
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_StandaloneExport"
+      },
+      "widgets_values": [
+        "person_B"
+      ],
+      "title": "Motion Studio \u00b7 open in new tab"
+    },
+    {
+      "id": 10,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1910,
+        480
+      ],
+      "size": [
+        820,
+        720
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": 9
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_PreviewExport"
+      },
+      "widgets_values": [
+        "person_A"
+      ],
+      "title": "Linked preview \u00b7 same editing session"
+    },
+    {
+      "id": 11,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1910,
         1300
       ],
       "size": [
@@ -369,20 +503,32 @@
         720
       ],
       "flags": {},
-      "order": 8,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
-          "name": "project",
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": 10
+        },
+        {
+          "name": "project_0",
           "type": "S3F_MOTION_PROJECT",
-          "link": 8
+          "link": null
         }
       ],
       "outputs": [
         {
           "name": "project_path",
           "type": "STRING",
-          "links": null
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": null,
+          "slot_index": 1
         }
       ],
       "properties": {
@@ -391,7 +537,7 @@
       "widgets_values": [
         "person_B"
       ],
-      "title": "person_B \u00b7 preview & export"
+      "title": "Linked preview \u00b7 same editing session"
     }
   ],
   "links": [
@@ -424,7 +570,7 @@
       6,
       0,
       8,
-      0,
+      1,
       "S3F_MOTION_PROJECT"
     ],
     [
@@ -456,8 +602,24 @@
       7,
       0,
       9,
-      0,
+      1,
       "S3F_MOTION_PROJECT"
+    ],
+    [
+      9,
+      8,
+      2,
+      10,
+      0,
+      "S3F_EDITOR_SESSION"
+    ],
+    [
+      10,
+      9,
+      2,
+      11,
+      0,
+      "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
@@ -478,7 +640,7 @@
       "bounding": [
         490,
         400,
-        1810,
+        2270,
         810
       ],
       "color": "#446958",
@@ -490,7 +652,7 @@
       "bounding": [
         490,
         1220,
-        1810,
+        2270,
         840
       ],
       "color": "#655079",

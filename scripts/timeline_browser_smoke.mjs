@@ -142,6 +142,7 @@ try{
         await until(()=>evaluate("!!document.querySelector('canvas')"),"Comfy canvas");
         await evaluate("(async()=>{window.s3fTestApp=(await import('/scripts/app.js')).app})()");
         await until(()=>evaluate("!!window.s3fTestApp?.graph"),"Comfy app");
+        await until(()=>evaluate("!!window.LiteGraph?.registered_node_types?.S3F_StandaloneExport&&!!window.s3fTestApp.positionConversion&&window.s3fTestApp.graph._nodes.length>0"),"node registration and extension setup");
         const workflow=JSON.parse(fs.readFileSync(process.argv[5],"utf8"));
         await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
         await until(()=>evaluate("document.querySelector('iframe[title=\"SAM3D motion preview\"]')?.contentDocument?.querySelectorAll('#tracks .track').length===3"),"embedded tracks");
@@ -165,7 +166,9 @@ try{
         assert.equal(history.status.status_str,"success",JSON.stringify(history.status));
         // Migrate a genuinely old one-input saved graph without shifting its link.
         const legacy=structuredClone(workflow),preview=legacy.nodes.find(n=>n.id===5);
-        legacy.links=legacy.links.filter(l=>l[3]!==5||l[4]===0);preview.inputs=preview.inputs.slice(0,1);preview.inputs[0].name="project";
+        const project=preview.inputs.find(i=>i.name==='project_0'||i.name==='project');
+        legacy.links=legacy.links.filter(l=>l[3]!==5||l[0]===project.link);
+        legacy.links.find(l=>l[0]===project.link)[4]=0;preview.inputs=[{...project,name:'project'}];
         for(const node of legacy.nodes.filter(n=>[3,4].includes(n.id)))node.outputs[0].links=[];
         await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(legacy)})`);
         assert.deepEqual((await evaluate("window.s3fTestApp.graphToPrompt()")).output["5"].inputs.project_0,["2",0]);

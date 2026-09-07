@@ -39,7 +39,7 @@
     "inputs": {
       "filename": "rcowgirl_6",
       "project_0": [
-        "2",
+        "5",
         0
       ]
     }
@@ -51,6 +51,18 @@
     }
   },
   "5": {
+    "class_type": "S3F_CompareReference",
+    "inputs": {
+      "project": [
+        "2",
+        0
+      ],
+      "reference_path": "/absolute/path/to/reference.funscript",
+      "axis": "L0",
+      "reference_offset_ms": 0.0
+    }
+  },
+  "6": {
     "class_type": "S3F_PreviewExport",
     "inputs": {
       "editor_session": [

@@ -57,13 +57,13 @@
     }
   },
   "8": {
-    "class_type": "S3F_PreviewExport",
+    "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "project": [
+      "filename": "person_A",
+      "project_0": [
         "6",
         0
-      ],
-      "filename": "person_A"
+      ]
     }
   },
   "5": {
@@ -106,11 +106,31 @@
     }
   },
   "9": {
-    "class_type": "S3F_PreviewExport",
+    "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "project": [
+      "filename": "person_B",
+      "project_0": [
         "7",
         0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "8",
+        2
+      ],
+      "filename": "person_A"
+    }
+  },
+  "11": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "9",
+        2
       ],
       "filename": "person_B"
     }

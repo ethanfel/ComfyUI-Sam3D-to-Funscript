@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { migrateVideoInputs, migrateAnchorOverrides } from "./migrate.mjs";
-import { EDITOR_NODES, migrateProjectInputs, syncProjectInputs } from "./projects.mjs";
+import { EDITOR_NODES, migrateProjectInputs, syncProjectInputs, orderEditorInputs } from "./projects.mjs";
 import { notifyEditorRun, prepareEditorSessions } from "./editor-bridge.mjs";
 import { editorOwner, sessionId, prepareNodeSessions } from "./sessions.mjs";
 
@@ -64,6 +64,7 @@ app.registerExtension({
             this.s3fEditorNode=true;
             sessionId(this);
             syncProjectInputs(this);
+            orderEditorInputs(this);
             if(embedded){
                 const frame = document.createElement("iframe");
                 frame.style.cssText = "width:100%;height:100%;border:0;border-radius:8px;background:#111820";
@@ -91,12 +92,13 @@ app.registerExtension({
         const executed = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (output) {executed?.apply(this,arguments);update(this,output?.s3f_project?.[0]).catch(console.error);};
         const configured = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {configured?.apply(this,arguments);syncProjectInputs(this);queueMicrotask(()=>{prepareNodeSessions(app.graph?._nodes||[]);update(this,this.properties.s3f_project).catch(console.error);});};
+        nodeType.prototype.onConfigure = function () {configured?.apply(this,arguments);syncProjectInputs(this);queueMicrotask(()=>{orderEditorInputs(this);prepareNodeSessions(app.graph?._nodes||[]);update(this,this.properties.s3f_project).catch(console.error);});};
         const connections = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (type) {
             connections?.apply(this, arguments);
             if (type === 1) syncProjectInputs(this);
             queueMicrotask(()=>{
+                orderEditorInputs(this);
                 prepareNodeSessions(app.graph?._nodes||[]);
                 for(const node of app.graph?._nodes||[])if(node.s3fEditorNode)update(node).catch(console.error);
             });

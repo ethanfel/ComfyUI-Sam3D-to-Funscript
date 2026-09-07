@@ -107,7 +107,7 @@ def main():
     for node in workflow["nodes"]:
         if node["type"] == "LoadVideo":
             node["widgets_values"] = [api[str(node["id"])]["inputs"]["file"]]
-        if node["type"] == "S3F_PreviewExport":
+        if node["type"] == "S3F_StandaloneExport":
             node["properties"]["s3f_project"] = Path(projects[node["id"] - 8]["path"]).parent.name
     (ROOT / "development/mask-fixture/workflow.json").write_text(json.dumps(workflow, indent=2))
     report = {"projects": projects, "separate_person_selection": True, "missing_masks_preserved": True,

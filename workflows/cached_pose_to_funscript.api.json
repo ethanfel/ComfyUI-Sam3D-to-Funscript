@@ -1,20 +1,8 @@
 {
   "1": {
-    "class_type": "S3F_VideoPose",
+    "class_type": "S3F_LoadPoseCache",
     "inputs": {
-      "video": [
-        "4",
-        0
-      ],
-      "model_file": "sam_3d_body_dinov3_bf16.safetensors",
-      "sample_fps": 16.0,
-      "start_seconds": 0.0,
-      "duration_seconds": 0.0,
-      "max_frames": 2000,
-      "rois_json": "[[0,0,1,1]]",
-      "batch_size": 8,
-      "fov": 0.0,
-      "use_cache": true
+      "cache_path": "/absolute/path/to/poses.npz"
     }
   },
   "2": {
@@ -45,12 +33,6 @@
     }
   },
   "4": {
-    "class_type": "LoadVideo",
-    "inputs": {
-      "file": "videos/nsfw/rcowgirl_6.mp4"
-    }
-  },
-  "5": {
     "class_type": "S3F_PreviewExport",
     "inputs": {
       "editor_session": [

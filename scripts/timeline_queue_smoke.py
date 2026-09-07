@@ -19,13 +19,14 @@ assert [s["data"]["config"]["target_anchor"] for s in project["timeline"]["sourc
 assert project["scripts"] == project["timeline"]["sources"][0]["data"]["scripts"]
 workflow = json.loads((ROOT / "workflows/multitrack_anchors.json").read_text())
 workflow["nodes"][0]["widgets_values"] = [cache]
-workflow["nodes"][-1]["properties"]["s3f_project"] = path.parent.name
+next(node for node in workflow["nodes"] if node["id"] == 5)["properties"]["s3f_project"] = path.parent.name
 (ROOT / "development/timeline-workflow.json").write_text(json.dumps(workflow, indent=2))
 # Legacy API remains valid, and sparse numeric sockets sort numerically.
 legacy = queue({"1": api["1"], "2": api["2"], "5": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["2", 0], "filename": "timeline_legacy"}}})
 legacy_path = Path(legacy["outputs"]["5"]["text"][0])
 assert json.loads(legacy_path.read_text())["scripts"] == project["scripts"]
-sparse = {**api, "5": {"class_type": "S3F_PreviewExport", "inputs": {"project_1000": ["4", 0], "project_2": ["3", 0], "filename": "timeline_sparse"}}}
+sparse = {key: spec for key, spec in api.items() if spec["class_type"] != "S3F_PreviewExport"}
+sparse["5"] = {"class_type": "S3F_PreviewExport", "inputs": {"project_1000": ["4", 0], "project_2": ["3", 0], "filename": "timeline_sparse"}}
 result = queue(sparse)
 sparse_path = Path(result["outputs"]["5"]["text"][0])
 assert [s["id"] for s in json.loads(sparse_path.read_text())["timeline"]["sources"]] == ["project_2", "project_1000"]

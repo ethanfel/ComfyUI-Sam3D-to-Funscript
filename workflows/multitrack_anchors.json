@@ -1,6 +1,6 @@
 {
-  "last_node_id": 5,
-  "last_link_id": 6,
+  "last_node_id": 6,
+  "last_link_id": 7,
   "nodes": [
     {
       "id": 1,
@@ -203,19 +203,24 @@
     },
     {
       "id": 5,
-      "type": "S3F_PreviewExport",
+      "type": "S3F_StandaloneExport",
       "pos": [
         1060,
         140
       ],
       "size": [
-        1150,
-        1080
+        380,
+        278
       ],
       "flags": {},
       "order": 4,
       "mode": 0,
       "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": null
+        },
         {
           "name": "project_0",
           "type": "S3F_MOTION_PROJECT",
@@ -241,7 +246,70 @@
         {
           "name": "project_path",
           "type": "STRING",
-          "links": null
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "viewer_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": [
+            7
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_StandaloneExport"
+      },
+      "widgets_values": [
+        "multitrack"
+      ],
+      "title": "Motion Studio \u00b7 open in new tab"
+    },
+    {
+      "id": 6,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1520,
+        140
+      ],
+      "size": [
+        1150,
+        1080
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": 7
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": null,
+          "slot_index": 1
         }
       ],
       "properties": {
@@ -250,7 +318,7 @@
       "widgets_values": [
         "multitrack"
       ],
-      "title": "Main timeline + anchor tracks \u00b7 open full editor"
+      "title": "Linked preview \u00b7 same editing session"
     }
   ],
   "links": [
@@ -267,7 +335,7 @@
       2,
       0,
       5,
-      0,
+      1,
       "S3F_MOTION_PROJECT"
     ],
     [
@@ -283,7 +351,7 @@
       3,
       0,
       5,
-      1,
+      2,
       "S3F_MOTION_PROJECT"
     ],
     [
@@ -299,8 +367,16 @@
       4,
       0,
       5,
-      2,
+      3,
       "S3F_MOTION_PROJECT"
+    ],
+    [
+      7,
+      5,
+      2,
+      6,
+      0,
+      "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
@@ -333,7 +409,7 @@
       "bounding": [
         1030,
         60,
-        1210,
+        1670,
         1230
       ],
       "color": "#655079",

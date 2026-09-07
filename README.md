@@ -28,12 +28,12 @@ Download [`sam_3d_body_dinov3_bf16.safetensors`](https://huggingface.co/Comfy-Or
 1. Open the [video-to-funscript workflow](workflows/video_to_funscript.json).
 2. Choose a video in **Load Video** and select your SAM3D model.
 3. Choose a target anchor in **Poses → Multi-axis Motion**, then run the workflow.
-4. Open **Open full motion editor** to review the video, pose and motion curves.
+4. Click **Open Motion Studio in new tab** on the standalone node, or use the connected embedded preview.
 5. Edit the curves, preview a device and choose **Download project + scripts**.
 
 The default workflow streams video in batches and caches the poses. Changing anchors or calibration reuses that cache.
 
-For a smaller graph, replace **Preview & Export Funscripts** with **Motion Studio · Standalone**, connect the same `project_0`, `project_1`, … inputs, and click **Open Motion Studio in new tab**. The tab receives workflow reruns automatically. The node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. Connect its `editor_session` output to the embedded preview’s `editor_session` input to share edits between both views. Unconnected nodes keep separate sessions. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
+All bundled workflows include **Motion Studio · Standalone** connected to **Preview & Export Funscripts** through `editor_session`. Connect motion projects to the standalone node's numbered inputs; both views share edits and receive workflow reruns. The session input sits above the project inputs. For a smaller graph, remove the embedded preview. Unconnected editor nodes keep separate sessions. The standalone node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
 
 | Setting | What to know |
 |---|---|

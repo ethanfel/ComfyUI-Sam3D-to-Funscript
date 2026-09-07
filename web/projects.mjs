@@ -1,5 +1,21 @@
-// Preserve socket names and connected slot indices; only trim unused tail sockets.
+// Group session/project sockets while preserving connection destinations.
 export const EDITOR_NODES = ["S3F_PreviewExport", "S3F_StandaloneExport"];
+
+function inputOrder(input) {
+    return input.name === "editor_session" ? -1 : /^project_\d+$/.test(input.name) ? Number(input.name.slice(8)) : Infinity;
+}
+
+export function orderEditorInputs(node) {
+    if (!EDITOR_NODES.includes(node.type)) return;
+    const inputs = [...node.inputs].sort((a,b) => inputOrder(a)-inputOrder(b));
+    if (inputs.every((input,i) => input === node.inputs[i])) return;
+    node.inputs.splice(0,node.inputs.length,...inputs);
+    for (const [slot,input] of node.inputs.entries()) {
+        const link = node.graph?.links?.get?.(input.link) ?? node.graph?.links?.[input.link];
+        if (link) link.target_slot = slot;
+    }
+    node.setDirtyCanvas?.(true,true);
+}
 
 export function syncProjectInputs(node) {
     if (node.s3fSyncingProjects) return;
@@ -28,6 +44,14 @@ export function syncProjectInputs(node) {
 export function migrateProjectInputs(graph) {
     for (const node of graph.nodes || []) if (EDITOR_NODES.includes(node.type)) {
         for (const input of node.inputs || []) if (input.name === "project") input.name = "project_0";
+        node.inputs ??= [];
+        if (!node.inputs.some(i=>i.name === "editor_session")) node.inputs.push({name:"editor_session",type:"S3F_EDITOR_SESSION",link:null});
+        node.inputs.sort((a,b)=>inputOrder(a)-inputOrder(b));
+        const links = new Map((graph.links || []).map(link=>[Array.isArray(link)?link[0]:link.id,link]));
+        for(const [slot,input] of node.inputs.entries()) {
+            const link=links.get(input.link);
+            if(link){if(Array.isArray(link))link[4]=slot;else link.target_slot=slot;}
+        }
     }
     for (const subgraph of graph.definitions?.subgraphs || []) migrateProjectInputs(subgraph);
 }

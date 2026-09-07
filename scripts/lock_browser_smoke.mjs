@@ -110,14 +110,15 @@ try{
     await until(()=>evaluate("!!document.querySelector('canvas')"),'Comfy canvas');
     await evaluate("(async()=>{window.s3fTestApp=(await import('/scripts/app.js')).app})()");
     await until(()=>evaluate('!!window.s3fTestApp?.graph'),'Comfy app');
+    await until(()=>evaluate('!!window.LiteGraph?.registered_node_types?.S3F_StandaloneExport&&!!window.s3fTestApp.positionConversion&&window.s3fTestApp.graph._nodes.length>0'),'node registration and extension setup');
     const workflow=JSON.parse(fs.readFileSync('development/timeline-workflow.json','utf8'));
     const workflowSession=crypto.randomUUID();workflow.nodes.find(n=>n.id===5).properties.s3f_session=workflowSession;
     await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
     await until(()=>evaluate("document.querySelector('iframe[title=\"SAM3D motion preview\"]')?.contentDocument?.querySelectorAll('#tracks .track').length===3"),'embedded session');
-    await evaluate("window.s3fFrame=window.s3fTestApp.graph.getNodeById(5).s3fFrame;window.s3fFrame.contentWindow.s3fFlush()");
+    await evaluate("window.s3fPreview=window.s3fTestApp.graph._nodes.find(n=>n.s3fFrame);window.s3fFrame=window.s3fPreview.s3fFrame;window.s3fFrame.contentWindow.s3fFlush()");
     const workflowEndpoint=`${base}/sam3d_funscript/editors/${workflowSession}`;
     const beforeFull=(await(await fetch(workflowEndpoint)).json()).project;
-    await evaluate("(()=>{const original=window.open;window.open=(...args)=>(window.s3fFull=original(...args));window.s3fTestApp.graph.getNodeById(5).widgets.find(w=>w.name==='Open full motion editor').callback();window.open=original;})()");
+    await evaluate("(()=>{const original=window.open;window.open=(...args)=>(window.s3fFull=original(...args));window.s3fPreview.widgets.find(w=>w.name==='Open full motion editor').callback();window.open=original;})()");
     try{await until(()=>evaluate("window.s3fFull?.document.querySelectorAll('#tracks .track').length===3"),'full editor');}catch(error){console.log(await evaluate("({exists:!!window.s3fFull,href:window.s3fFull?.location.href,status:window.s3fFull?.document.querySelector('#status')?.textContent})"));throw error;}
     await evaluate("window.s3fFull.document.querySelector('#selectMain').click();window.s3fFull.document.querySelector('#invert').click();window.s3fFull.document.querySelector('#lockMain').click()");
     // Add another connected project, then immediately queue without waiting for autosave.

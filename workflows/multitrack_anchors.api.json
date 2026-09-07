@@ -57,7 +57,7 @@
     }
   },
   "5": {
-    "class_type": "S3F_PreviewExport",
+    "class_type": "S3F_StandaloneExport",
     "inputs": {
       "project_0": [
         "2",
@@ -70,6 +70,16 @@
       "project_2": [
         "4",
         0
+      ],
+      "filename": "multitrack"
+    }
+  },
+  "6": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "5",
+        2
       ],
       "filename": "multitrack"
     }

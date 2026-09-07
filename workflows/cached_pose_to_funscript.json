@@ -1,6 +1,6 @@
 {
-  "last_node_id": 3,
-  "last_link_id": 2,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
@@ -93,23 +93,33 @@
     },
     {
       "id": 3,
-      "type": "S3F_PreviewExport",
+      "type": "S3F_StandaloneExport",
       "pos": [
         1030,
         140
       ],
       "size": [
-        820,
-        720
+        380,
+        234
       ],
       "flags": {},
       "order": 2,
       "mode": 0,
       "inputs": [
         {
-          "name": "project",
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": null
+        },
+        {
+          "name": "project_0",
           "type": "S3F_MOTION_PROJECT",
           "link": 2
+        },
+        {
+          "name": "project_1",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
         }
       ],
       "outputs": [
@@ -118,6 +128,68 @@
           "type": "STRING",
           "links": null,
           "slot_index": 0
+        },
+        {
+          "name": "viewer_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": [
+            3
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_StandaloneExport"
+      },
+      "widgets_values": [
+        "rcowgirl_6"
+      ],
+      "title": "Motion Studio \u00b7 open in new tab"
+    },
+    {
+      "id": 4,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1490,
+        140
+      ],
+      "size": [
+        820,
+        720
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": 3
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": null,
+          "slot_index": 1
         }
       ],
       "properties": {
@@ -126,7 +198,7 @@
       "widgets_values": [
         "rcowgirl_6"
       ],
-      "title": "3 \u00b7 Review, edit & export"
+      "title": "Linked preview \u00b7 same editing session"
     }
   ],
   "links": [
@@ -143,8 +215,16 @@
       2,
       0,
       3,
-      0,
+      1,
       "S3F_MOTION_PROJECT"
+    ],
+    [
+      3,
+      3,
+      2,
+      4,
+      0,
+      "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
@@ -173,11 +253,11 @@
       "flags": {}
     },
     {
-      "title": "Preview \u00b7 open full editor for more space",
+      "title": "Motion Studio \u00b7 standalone + linked preview",
       "bounding": [
         1000,
         60,
-        890,
+        1340,
         850
       ],
       "color": "#655079",

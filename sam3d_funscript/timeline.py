@@ -17,11 +17,12 @@ class ProjectInputs(dict):
 
     def __init__(self, editor=False):
         self.editor = editor
-        super().__init__(project_0=("S3F_MOTION_PROJECT", {"tooltip":
-            "Connect anchor/calibration projects from the same video. Another input appears automatically."}))
+        super().__init__()
         if editor:
             self['editor_session'] = ('S3F_EDITOR_SESSION', {'tooltip':
                 'Share the connected Motion Studio session. This view uses the upstream projects; its own project inputs are ignored.'})
+        self['project_0'] = ("S3F_MOTION_PROJECT", {"tooltip":
+            "Connect anchor/calibration projects from the same video. Another input appears automatically."})
 
     def __contains__(self, name):
         return (self.editor and name == 'editor_session') or name == "project" or bool(re.fullmatch(r"project_\d+", name))

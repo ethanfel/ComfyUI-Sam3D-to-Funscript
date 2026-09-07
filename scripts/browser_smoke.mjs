@@ -94,8 +94,9 @@ try{
     await until(()=>evaluate("!!document.querySelector('canvas')"),"ComfyUI frontend",300);
     await evaluate("(async()=>{window.s3fTestApp=(await import('/scripts/app.js')).app})()");
     await until(()=>evaluate("!!window.s3fTestApp?.graph"),"Comfy graph");
+    await until(()=>evaluate("!!window.LiteGraph?.registered_node_types?.S3F_StandaloneExport&&!!window.s3fTestApp.positionConversion&&window.s3fTestApp.graph._nodes.length>0"),"node registration and extension setup",300);
     const workflow=JSON.parse(fs.readFileSync(workflowFile,"utf8"));
-    workflow.nodes.find(n=>n.type==="S3F_PreviewExport").properties.s3f_project=id;
+    (workflow.nodes.find(n=>n.type==="S3F_StandaloneExport")||workflow.nodes.find(n=>n.type==="S3F_PreviewExport")).properties.s3f_project=id;
     await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
     await until(()=>evaluate("!!document.querySelector('iframe[title=\"SAM3D motion preview\"]')"),"Comfy preview widget");
     const frontend=await evaluate("({nodes:window.s3fTestApp.graph._nodes.map(n=>({type:n.type,size:n.size})),iframe:document.querySelector('iframe[title=\"SAM3D motion preview\"]').src})");
@@ -129,7 +130,10 @@ try{
         const prompt=(await evaluate("window.s3fTestApp.graphToPrompt()")).output;
         // Core's display-only preview widget can initialize after graphToPrompt.
         const expected=structuredClone(report.frontend.prompt);
-        delete prompt["4"].inputs["video-preview"];delete expected["4"].inputs["video-preview"];
+        const loader=prompt["1"].inputs.video[0];
+        expected[loader]=expected["4"];if(loader!=="4")delete expected["4"];
+        expected["1"].inputs.video=[loader,0];
+        delete prompt[loader].inputs["video-preview"];delete expected[loader].inputs["video-preview"];
         assert.deepEqual(prompt,expected);
         report.checks.push("Legacy path workflow migrates to core VIDEO without changing the generated prompt");
     }
