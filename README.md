@@ -2,9 +2,9 @@
 
 A working first version of a local **video → SAM 3D Body → multi-axis motion → editable preview → funscript** pipeline.
 
-The node uses ComfyUI's native SAM 3D Body implementation and your existing model. Pose inference is cached separately from motion authoring. The browser editor includes the source video, projected skeleton, an orbitable 3D skeleton, six editable curves and a generic six-axis platform preview.
+The node uses ComfyUI's native SAM 3D Body implementation and your existing model. Pose inference is cached separately from motion authoring. The browser editor includes the source video, projected skeleton, an orbitable 3D skeleton, six editable curves and selectable Handy 2 / SR6 wireframe previews.
 
-**Status:** development version, tested on the provided `rcowgirl_6.mp4` and the local `13_env_py313` environment. This is an authoring tool. The platform is a kinematic illustration, without OSR/SR6 inverse kinematics, collision modelling or hardware control. Static person ROIs require visual review; they do not provide automatic identity tracking.
+**Status:** development version, tested on the provided `rcowgirl_6.mp4` and the local `13_env_py313` environment. This is an authoring tool. Device models are schematic; the SR6 renderer solves illustrative linkage geometry, without device calibration, collision modelling or hardware control. Static person ROIs require visual review; they do not provide automatic identity tracking.
 
 ## Open it locally
 
@@ -158,7 +158,7 @@ The default channel components are:
 | R1 | `name.roll.funscript` | Rotation about forward |
 | R2 | `name.pitch.funscript` | Rotation about left |
 
-These are editable signal mappings. Axis labels do not establish a device's physical orientation. Rotation channels are projections of a relative rotation vector; the illustration applies them as ordered rotations. They are useful authoring signals, not exact platform IK or independently measured contact rotations. Continuous multi-revolution rotation is not supported.
+These are editable signal mappings. Axis labels do not establish a device's physical orientation. Rotation channels are projections of a relative rotation vector; the SR6 illustration applies pitch then roll, with twist local to its inner receiver. They are useful authoring signals, not calibrated hardware commands or independently measured contact rotations. Continuous multi-revolution rotation is not supported.
 
 `enabled_axes` controls which files are emitted. For stroke-only authoring, use `L0`.
 
@@ -184,16 +184,18 @@ Simplification limits vertical interpolation error to `tolerance` position units
 
 ## Edit and save
 
-The source video is the playback clock. Seeking updates the overlay, 3D skeleton, platform and curves. The selected anchor is marked in yellow, with a one-second projection trail. This identifies the named landmark; it does not add click-to-select tracking. The pose display uses the nearest analysed frame; the platform evaluates the actual funscript actions at the video time. A 16 Hz pose sample is therefore less temporally precise than the original 32 fps video.
+The source video is the playback clock. Seeking updates the overlay, 3D skeleton, selected device and curves. The selected anchor is marked in yellow, with a one-second projection trail. This identifies the named landmark; it does not add click-to-select tracking. The pose display uses the nearest analysed frame; the device evaluates the actual funscript actions at the video time. A 16 Hz pose sample is therefore less temporally precise than the original 32 fps video.
+
+Choose **Handy 2 · stroke only** to preview L0 or **SR6 · six axes** for L0/L1/L2/R0/R1/R2. Readouts show only the selected device's supported channels; missing channels hold neutral at 50. Device selection controls the preview, while curve editing and exports retain every authored axis. Drag or use arrow keys to orbit the device, scroll or press +/− to zoom, and toggle the sleeve outline. SR6 uses a schematic six-linkage mechanism with an inner twist receiver. Dashed coral rods mark poses outside that model's linkage reach; this is not a calibrated hardware simulator. Geometry details and the interactive asset demo are in [assets/device-previews](assets/device-previews/README.md).
 
 - Click the timeline to seek; double-click to add an action.
 - Drag a point to edit its time and position; right-click to remove it.
 - Choose a 4-second or 1-second view for detailed edits.
 - Adjust range, center, component or inversion, then **Regenerate selected axis**. This replaces manual edits on that axis; Undo restores them.
 - Change smoothing in the ComfyUI motion node and queue again. Cached poses avoid inference.
-- **Download project + scripts** saves a ZIP containing all active axes and `project.json`.
+- **Download project + scripts** saves a ZIP containing all active axes, `project.json`, and a self-contained `viewer.html` with the selected device and current edits.
 
-Browser edits remain in memory until downloaded. They do not silently overwrite the node's original exports. Extract the ZIP and pass its `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI. A local-file project opened directly in the editor requires selecting its matching source video.
+Browser edits remain in memory until downloaded. They do not silently overwrite the node's original exports. Extract the ZIP and open **viewer.html** directly in a browser, then choose the matching source video. The editor, both device renderers and project are embedded: offline playback, editing and re-export work without ComfyUI or a web server. Node exports also include this HTML. Pass `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI.
 
 Each node export writes a new directory under `output/sam3d_funscript/`, so earlier runs remain intact and disabled axes do not leave stale files alongside new ones. Pose caches live in the `cache/` subdirectory. The combined node's cache identity includes source/model paths, sizes and modification times, inference settings and the native predictor source's file metadata. It is not a content hash of large video/model files; use `use_cache=false` if files have been replaced while retaining their metadata. The core adapter hashes the received pose/timing arrays and source metadata; upstream inference caching remains under ComfyUI's control.
 
@@ -259,6 +261,8 @@ The updated streaming `VIDEO` input passed a fresh 270-sample run in 42.90 secon
 Mask-video validation uses a four-second, two-panel copy of the supplied clip with two half-resolution mask videos. Native GPU inference selected the correct panel in each 64-sample branch, preserved four deliberately blank mask frames per person, and reused independent pose caches. The nine-node canvas and masked editor passed browser checks; the unmasked ROI path also passed fresh inference. All 29 Python tests pass, covering mask packing, timestamp mismatches, missing-mask gaps and cache invalidation. This fixture validates mask integration, not an upstream tracker's identity accuracy. Reproduce it with `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/mask_queue_smoke.py`; the test uploads its generated videos under ComfyUI's `input/s3f_mask_test/` directory.
 
 The anchor cleanup passes 30 Python tests plus JavaScript migration/export checks. The ComfyUI queue verifies all eight general anchors, both override inputs and legacy API selections against direct calculations. Browser checks cover the hand-average marker, short dropdowns, both migrated selections and save/reload. Reproduce the queue checks without inference using `S3F_TEST_BASE=http://127.0.0.1:8198 python scripts/anchor_queue_smoke.py --cache /absolute/path/to/poses.npz`.
+
+Device integration passes 31 Python tests, the asset geometry checks (1,870 SR6 poses), the existing editor/ComfyUI browser checks and `scripts/device_browser_smoke.mjs`. Chrome verifies live playback and seeking for both devices, supported-channel readouts, Handy channel isolation and missing-L0 neutrality, the supplied demo, and offline video playback and re-export with networking disabled. A real ComfyUI export also preserves the scripts and writes `viewer.html`. These tests establish software integration and schematic geometry, not hardware fidelity.
 
 ## Next stages
 

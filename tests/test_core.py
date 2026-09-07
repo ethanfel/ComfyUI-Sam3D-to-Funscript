@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from sam3d_funscript.core import (PoseSequence, build_project, body_basis, expor
                                   load_project, simplify, validate_actions)
 from sam3d_funscript.video import parse_rois, video_frames
 from sam3d_funscript.anchors import ANCHORS, GENERAL_ANCHORS, MHR70_NAMES
+from sam3d_funscript.standalone import standalone_html
 
 
 def fixture():
@@ -101,9 +103,23 @@ class CoreTests(unittest.TestCase):
             project = build_project(recovered)
             path = export_project(project, folder, "example")
             self.assertEqual(load_project(path), project)
+            self.assertEqual(path.with_name("viewer.html").read_text(), standalone_html(project))
             self.assertEqual(sorted(p.name for p in path.parent.glob("*.funscript")),
                              ["example.funscript", "example.pitch.funscript", "example.roll.funscript", "example.surge.funscript", "example.sway.funscript", "example.twist.funscript"])
             self.assertNotEqual(path, export_project(project, folder, "example"))
+
+    def test_standalone_embeds_project_safely_and_includes_both_modules(self):
+        project = build_project(fixture())
+        project["metadata"]["source"]["path"] = '</script><script>alert("test")</script>.mp4'
+        html = standalone_html(project)
+        embedded = re.search(r'<script id="s3f-project" type="application/json">(.*?)</script>', html).group(1)
+        self.assertEqual(json.loads(embedded), project)
+        self.assertNotIn("<", embedded)
+        self.assertNotRegex(html, r'(?m)^import .* from ')
+        self.assertNotIn('src="viewer.js"', html)
+        self.assertNotIn('href="viewer.css"', html)
+        self.assertIn("function drawDeviceWireframe", html)
+        self.assertIn("function rebuildAxis", html)
 
     def test_simplification_obeys_error_budget(self):
         t = np.arange(0, 2000, 17)

@@ -9,6 +9,7 @@ import folder_paths
 from server import PromptServer
 
 from .sam3d_funscript.core import load_project
+from .sam3d_funscript.standalone import standalone_html
 
 
 def register_routes():
@@ -28,9 +29,18 @@ def register_routes():
     @routes.get("/sam3d_funscript/assets/{name}")
     async def asset(request):
         name = request.match_info["name"]
+        if name == "viewer-standalone.html":
+            return web.Response(text=standalone_html(), content_type="text/html")
         if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs"):
             raise web.HTTPNotFound()
         return web.FileResponse(assets / name)
+
+    @routes.get("/sam3d_funscript/assets/device-previews/{name}")
+    async def device_asset(request):
+        name = request.match_info["name"]
+        if name not in ("device-wireframes.mjs", "preview.html", "handy2.svg", "sr6.svg", "preview.svg"):
+            raise web.HTTPNotFound()
+        return web.FileResponse(assets / "device-previews" / name)
 
     @routes.get("/sam3d_funscript/projects/{project}")
     async def project(request):

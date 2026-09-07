@@ -1,4 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement} from "./curve.mjs";
+import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
 const COLORS = ["#75e2ba", "#dcadfa", "#78baf7", "#ffc07d"];
@@ -7,6 +8,9 @@ const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:
 let project, history = [], currentMs = 0, dragging = null, bounds = [0, 1], videoURL;
 let comparisonRevision=0, comparisonCache=null;
 let orbit = {yaw: .2, pitch: -.1, zoom: 1};
+const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
+// Capture the untouched offline document before project installation updates its UI.
+let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 function dirty() { project.manual_edits = true; ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
@@ -15,6 +19,7 @@ function install(data) {
     video.pause(); video.removeAttribute("src"); video.load();
     if(videoURL){URL.revokeObjectURL(videoURL);videoURL=null;}
     project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
     $("name").textContent = data.metadata.source.path.split("/").at(-1);
     $("warnings").replaceChildren(...(data.warnings||[]).map(text=>{const li=document.createElement("li");li.textContent=text;return li;}));
@@ -87,20 +92,11 @@ function drawSkeleton(index) {
 function drawRobot() {
     const [ctx,w,h]=resize($("robot"));
     const values=Object.fromEntries(AXES.map(a=>[a,evaluate(project.scripts[a]?.actions,currentMs)]));
-    $("readouts").replaceChildren(...AXES.map(a=>{const el=document.createElement("span");el.textContent=`${a} ${values[a].toFixed(1)}${project.scripts[a]?"":" (off)"}`;return el;}));
-    const n=a=>(values[a]-50)/50, translate=[-n("L2")*.35,n("L0")*.5+.6,n("L1")*.35];
-    const transform=p=>{
-        let [x,y,z]=p,rx=-n("R2")*.5,ry=n("R0")*.5,rz=n("R1")*.5;
-        [y,z]=[y*Math.cos(rx)-z*Math.sin(rx),y*Math.sin(rx)+z*Math.cos(rx)];
-        [x,z]=[x*Math.cos(ry)+z*Math.sin(ry),-x*Math.sin(ry)+z*Math.cos(ry)];
-        [x,y]=[x*Math.cos(rz)-y*Math.sin(rz),x*Math.sin(rz)+y*Math.cos(rz)];
-        return [x+translate[0],y+translate[1]-.3,z+translate[2]];
-    };
-    const map=p=>[w/2+(p[0]-.55*p[2])*w*.37,h*.64-(p[1]+.3*p[2])*h*.62];
-    const base=[],top=[];
-    for(let i=0;i<6;i++){const a=i*Math.PI/3;base.push([Math.cos(a)*.7,-.3,Math.sin(a)*.7]);top.push(transform([Math.cos(a)*.38,0,Math.sin(a)*.38]));}
-    for(let i=0;i<6;i++){line(ctx,map(base[i]),map(base[(i+1)%6]),"#486076");line(ctx,map(base[i]),map(top[i]),"#72919d",3);line(ctx,map(top[i]),map(top[(i+1)%6]),"#75e2ba",3);}
-    line(ctx,map(transform([0,0,0])),map(transform([0,.35,0])),"#eabf71",4);
+    const device=$("device").value;
+    const frame=drawDeviceWireframe(ctx,w,h,device,values,{...deviceOrbit,sleeve:$("deviceSleeve").checked});
+    $("readouts").replaceChildren(...DEVICE_INFO[device].axes.map(a=>{const el=document.createElement("span");el.dataset.axis=a;el.textContent=`${a} ${values[a].toFixed(1)}${project.scripts[a]?"":" (off)"}`;return el;}));
+    $("deviceReach").hidden=frame.reachable!==false;
+    $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
 function drawCurve() {
     const [ctx,w,h]=resize($("curve")), axis=$("axis").value;
@@ -166,11 +162,53 @@ $("skeleton").addEventListener("pointerdown",e=>{lastOrbit=[e.clientX,e.clientY]
 $("skeleton").addEventListener("pointermove",e=>{if(!lastOrbit)return;orbit.yaw+=(e.clientX-lastOrbit[0])*.01;orbit.pitch+=(e.clientY-lastOrbit[1])*.01;lastOrbit=[e.clientX,e.clientY];render();});
 $("skeleton").addEventListener("pointerup",()=>lastOrbit=null);$("skeleton").addEventListener("pointercancel",()=>lastOrbit=null);
 $("skeleton").addEventListener("wheel",e=>{e.preventDefault();orbit.zoom=Math.max(.1,Math.min(5,orbit.zoom*Math.exp(-e.deltaY*.001)));render();},{passive:false});
+$("device").addEventListener("change",render);
+$("deviceSleeve").addEventListener("change",render);
+let devicePointer;
+$("robot").addEventListener("pointerdown",e=>{if(e.button!==0||devicePointer)return;devicePointer={id:e.pointerId,x:e.clientX,y:e.clientY};$("robot").setPointerCapture(e.pointerId);});
+$("robot").addEventListener("pointermove",e=>{
+    if(devicePointer?.id!==e.pointerId)return;
+    deviceOrbit.yaw+=(e.clientX-devicePointer.x)*.009;
+    deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch+(e.clientY-devicePointer.y)*.009));
+    devicePointer.x=e.clientX;devicePointer.y=e.clientY;render();
+});
+for(const event of ["pointerup","pointercancel","lostpointercapture"])$("robot").addEventListener(event,e=>{if(devicePointer?.id===e.pointerId)devicePointer=null;});
+$("robot").addEventListener("wheel",e=>{e.preventDefault();deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom*Math.exp(-e.deltaY*.001)));render();},{passive:false});
+$("robot").addEventListener("keydown",e=>{
+    if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","+","=","-"].includes(e.key))return;
+    e.preventDefault();
+    if(e.key==="ArrowLeft")deviceOrbit.yaw-=.1;if(e.key==="ArrowRight")deviceOrbit.yaw+=.1;
+    if(e.key==="ArrowUp")deviceOrbit.pitch-=.1;if(e.key==="ArrowDown")deviceOrbit.pitch+=.1;
+    if(e.key==="+"||e.key==="=")deviceOrbit.zoom*=1.1;if(e.key==="-")deviceOrbit.zoom/=1.1;
+    deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch));deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom));render();
+});
 $("projectFile").addEventListener("change",async e=>{try{install(JSON.parse(await e.target.files[0].text()));}catch(error){status(error.message);}});
 $("videoFile").addEventListener("change",e=>{if(videoURL)URL.revokeObjectURL(videoURL);videoURL=URL.createObjectURL(e.target.files[0]);video.src=videoURL;status("Local source loaded");});
 $("referenceFile").addEventListener("change",async e=>{if(!project){status("Open a project first");return;}try{const file=e.target.files[0],data=JSON.parse(await file.text()),actions=validateReference(data);record();project.references={...project.references,[$("axis").value]:{actions,offset_ms:0,source:{path:file.name},header_inverted:!!data.inverted,interpretation:"Positions compared as written; legacy headers not applied"}};dirty();controls();render();}catch(error){status(error.message);}});
 $("referenceOffset").addEventListener("change",()=>{const ref=project?.references?.[$("axis").value],offset=Number($("referenceOffset").value);if(!ref||!Number.isFinite(offset))return;record();ref.offset_ms=offset;dirty();render();});
-$("save").addEventListener("click",()=>{if(!project)return;const stem=project.metadata.source.path.split("/").at(-1).replace(/\.[^.]+$/,"");const files={"project.json":JSON.stringify(project)};for(const [axis,script]of Object.entries(project.scripts))files[stem+SUFFIX[axis]+".funscript"]=JSON.stringify(script);const url=URL.createObjectURL(makeZip(files)),a=document.createElement("a");a.href=url;a.download=stem+"-motion.zip";a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);status("Download created · import project.json with Load Funscript Project to re-export in ComfyUI");});
+$("save").addEventListener("click",async()=>{
+    if(!project)return;
+    $("save").disabled=true;
+    // Capture edits and the preview choice together before fetching the offline template.
+    const snapshot=structuredClone({...project,preview:{...project.preview,device:$("device").value}});
+    const projectJSON=JSON.stringify(snapshot);
+    try{
+        if(!standaloneTemplate){
+            const response=await fetch("viewer-standalone.html");
+            if(!response.ok)throw new Error(`Offline viewer load failed (${response.status})`);
+            standaloneTemplate=await response.text();
+        }
+        const html=standaloneTemplate.replace(/(<script id="s3f-project" type="application\/json">)[\s\S]*?(<\/script>)/,
+            (_,open,close)=>open+projectJSON.replaceAll("<","\\u003c")+close);
+        const stem=snapshot.metadata.source.path.split("/").at(-1).replace(/\.[^.]+$/,"");
+        const files={"project.json":projectJSON,"viewer.html":"<!doctype html>\n"+html.replace(/^<!doctype html>\s*/i,"")};
+        for(const [axis,script]of Object.entries(snapshot.scripts))files[stem+SUFFIX[axis]+".funscript"]=JSON.stringify(script);
+        const url=URL.createObjectURL(makeZip(files)),a=document.createElement("a");a.href=url;a.download=stem+"-motion.zip";a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
+        status("Download created · extract and open viewer.html for offline playback, or reimport project.json in ComfyUI");
+    }catch(error){status(error.message);}finally{$("save").disabled=false;}
+});
 new ResizeObserver(render).observe(document.body);
 const id=new URLSearchParams(location.search).get("project");
-if(id){try{const response=await fetch(`../projects/${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Project load failed (${response.status})`);install(await response.json());video.src=`../video/${encodeURIComponent(id)}`;}catch(error){status(error.message);}}
+const embedded=document.getElementById("s3f-project");
+if(embedded){try{const data=JSON.parse(embedded.textContent);if(data)install(data);}catch(error){status(error.message);}}
+else if(id){try{const response=await fetch(`../projects/${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Project load failed (${response.status})`);install(await response.json());video.src=`../video/${encodeURIComponent(id)}`;}catch(error){status(error.message);}}

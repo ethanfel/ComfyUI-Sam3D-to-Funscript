@@ -8,7 +8,11 @@
   <section class="stage">
     <div class="panel video-panel"><h2>Source & projected pose</h2><div class="video-wrap"><video id="video" controls playsinline preload="metadata"></video><canvas id="overlay"></canvas></div></div>
     <div class="panel"><h2>3D pose <small>estimated metres · camera basis</small></h2><canvas id="skeleton" width="440" height="360"></canvas><p>Drag to orbit. Scroll to zoom.</p></div>
-    <div class="panel"><h2>Six-axis platform <small>kinematic preview</small></h2><canvas id="robot" width="440" height="360"></canvas><p>Normalized axis illustration. No device geometry or physical limits.</p><div id="readouts"></div></div>
+    <div class="panel device-panel"><h2>Device preview <small>schematic motion model</small></h2>
+      <div class="device-controls"><label>Device <select id="device"><option value="sr6">SR6 · six axes</option><option value="handy2">Handy 2 · stroke only</option></select></label><label><input id="deviceSleeve" type="checkbox" checked> Sleeve</label></div>
+      <canvas id="robot" width="440" height="360" tabindex="0" aria-label="Device wireframe. Drag or use arrow keys to orbit; scroll or plus and minus to zoom."></canvas>
+      <div id="readouts"></div><p>Drag or arrow keys to orbit · scroll or +/− to zoom.</p><p>Illustrative geometry. Device limits and collisions are not simulated.</p><p id="deviceReach" role="status" hidden></p>
+    </div>
   </section>
   <section class="panel curves"><div class="curve-head"><h2>Motion curves</h2><label>Axis <select id="axis"></select></label><label>View <select id="zoom"><option value="0">Full timeline</option><option value="4000">4 seconds</option><option value="1000">1 second</option></select></label><span id="time">0.000 s</span></div>
     <canvas id="curve" width="1300" height="240" tabindex="0" aria-label="Editable axis timeline"></canvas>

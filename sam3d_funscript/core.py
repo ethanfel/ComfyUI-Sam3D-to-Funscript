@@ -11,6 +11,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation
 
 from .anchors import ANCHORS
+from .standalone import standalone_html
 
 AXES = ("L0", "L1", "L2", "R0", "R1", "R2")
 SUFFIXES = dict(zip(AXES, ("", ".surge", ".sway", ".twist", ".roll", ".pitch")))
@@ -281,4 +282,5 @@ def export_project(project, output_dir, name="motion"):
     path.write_text(json.dumps(project, separators=(",", ":"), allow_nan=False))
     # Video range requests need only this small manifest, not every cached pose.
     (output / "source.json").write_text(json.dumps(project["metadata"]["source"], allow_nan=False))
+    (output / "viewer.html").write_text(standalone_html(project))
     return path
