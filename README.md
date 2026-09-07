@@ -37,12 +37,35 @@ PYTHONDONTWRITEBYTECODE=1 /media/p5/miniforge3/envs/13_env_py313/bin/python \
 
 Only this custom node pack is enabled in that test process. Existing native model paths are read from ComfyUI's configuration. No model weights are bundled or downloaded.
 
+### Core-node alternative
+
+Load [workflows/core_video_to_funscript.json](workflows/core_video_to_funscript.json) for a separate workflow using ComfyUI's native input and inference nodes. The original combined node and all original workflows remain available.
+
+```text
+Load Video → Trim Video → Get Video Components → Run SAM3D Body Prediction
+                                                   ↑
+                                         Load SAM3D Body Model
+
+SAM3D poses + the same trimmed VIDEO → Core SAM3D → Funscript Poses
+                                    → Poses → Multi-axis Motion
+                                    → Preview & Export Funscripts
+```
+
+The new **Core SAM3D → Funscript Poses** adapter has two connections and no model-loading controls. Connect `MHR_POSE_DATA` from native prediction and the same `VIDEO` supplied to **Get Video Components**. The adapter reads source frame timestamps, preserves the original timeline through trims, and writes a pose cache compatible with **Load SAM3D Pose Cache**. A frame-count mismatch stops conversion rather than silently shifting the script.
+
+The example uses every frame, batch size 8, and hand refinement disabled to match the combined node's inference settings. Native SAM3D exposes hand refinement, field of view, batch size, tracking data and bounding-box inputs for further changes. Full-frame single-person prediction is used when no tracking/boxes are connected.
+
+Core **Get Video Components** materializes the selected frames in RAM. Set a duration in **Trim Video** for long sources; the original combined node remains the streaming option with sampling and frame limits. The adapter currently supports file-backed **Load Video / Trim Video** inputs and matching uncropped image batches. It does not infer person identity or detect scene cuts. Model choice remains in the saved upstream workflow; native pose output does not carry checkpoint provenance.
+
+After reloading ComfyUI's custom nodes, both entry points appear under `motion/SAM3D Funscript`. The API companion is [core_video_to_funscript.api.json](workflows/core_video_to_funscript.api.json).
+
 ## Nodes
 
 | Node | Purpose |
 |---|---|
 | SAM3D Video → Cached Poses | Decode a bounded number of frames, preserve presentation timestamps, invoke native body inference in batches, save compact poses to NPZ. |
 | Load SAM3D Pose Cache | Resume authoring from an NPZ without loading model weights. |
+| Core SAM3D → Funscript Poses | Adapt native `MHR_POSE_DATA` and its source `VIDEO`, preserving timestamps and writing an editor-compatible pose cache. |
 | Poses → Multi-axis Motion | Build body/camera-relative curves and map them to normalized axes. |
 | Load Funscript Project | Reopen `project.json`, including manual browser edits. |
 | Preview & Export Funscripts | Save a new run directory and expose its synchronized editor. |
@@ -50,7 +73,7 @@ Only this custom node pack is enabled in that test process. Existing native mode
 
 Paths may be absolute, or relative to the ComfyUI input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
 
-`sample_fps=16` selects actual frames on a 16 Hz sampling grid. Set `0` for all frames. `max_frames` bounds memory and inference work; `duration_seconds=0` processes until EOF or that limit. Inference holds at most one batch of source frames and retains compact landmarks, rather than all meshes and images.
+In the original combined node, `sample_fps=16` selects actual frames on a 16 Hz sampling grid. Set `0` for all frames. `max_frames` bounds memory and inference work; `duration_seconds=0` processes until EOF or that limit. Inference holds at most one batch of source frames and retains compact landmarks, rather than all meshes and images.
 
 `start_seconds` and `duration_seconds` select an analysis interval. **Export timestamps remain aligned to the original source video**, including when the interval starts after zero. The first position is held before the analysed interval; the last is held through its final sampled frame. An unanalysed tail is not extrapolated.
 
@@ -64,7 +87,7 @@ Paths may be absolute, or relative to the ComfyUI input directory. The supplied 
 
 This runs one full-frame person estimate. With two separately selected crops, slot `0` can be the target and slot `1` the reference. Crop slots have a fixed order; overlapping crops can estimate the same person, and occluded people can be hallucinated by the model. Finite output is recorded as validity, **not as visibility or confidence**. The preview draws each crop and estimated skeleton so those failures are reviewable.
 
-Automatic SAM 3 mask tracking, interactive ROI drawing and a direct native `MHR_POSE_DATA` adapter remain follow-up work. This version's inference path uses native bounding-box inputs.
+Automatic SAM 3 mask tracking and interactive ROI drawing remain follow-up work for the combined node. The core-node alternative accepts native prediction output through the new `MHR_POSE_DATA` adapter and exposes the native predictor's optional tracking/bounding-box inputs.
 
 ### Coordinates and anchors
 
@@ -134,7 +157,7 @@ The source video is the playback clock. Seeking updates the overlay, 3D skeleton
 
 Browser edits remain in memory until downloaded. They do not silently overwrite the node's original exports. Extract the ZIP and pass its `project.json` to **Load Funscript Project → Preview & Export Funscripts** to save those edits through ComfyUI. A local-file project opened directly in the editor requires selecting its matching source video.
 
-Each node export writes a new directory under `output/sam3d_funscript/`, so earlier runs remain intact and disabled axes do not leave stale files alongside new ones. Pose caches live in the `cache/` subdirectory. Cache identity includes source/model paths, sizes and modification times, inference settings and the native predictor source's file metadata. It is not a content hash of large video/model files; use `use_cache=false` if files have been replaced while retaining their metadata.
+Each node export writes a new directory under `output/sam3d_funscript/`, so earlier runs remain intact and disabled axes do not leave stale files alongside new ones. Pose caches live in the `cache/` subdirectory. The combined node's cache identity includes source/model paths, sizes and modification times, inference settings and the native predictor source's file metadata. It is not a content hash of large video/model files; use `use_cache=false` if files have been replaced while retaining their metadata. The core adapter hashes the received pose/timing arrays and source metadata; upstream inference caching remains under ComfyUI's control.
 
 The project contains raw/processed motion, camera-space landmarks, projections, selected settings, original PTS/time bases and source/model provenance. Keep the source file in place for server playback. No source video is copied into exports.
 
@@ -189,6 +212,8 @@ The first full test produced 270 poses over the 16.844-second clip in 44.99 seco
 A second test on the first four seconds of `cowgirl_7.mp4` produced 64 finite poses in 26.79 seconds including model loading. No samples clipped under the default calibration in that interval.
 
 The complete three-node graph also passed the actual ComfyUI queue. Browser tests cover video decoding/seeking, regeneration, undo, action dragging, ZIP download, responsive layout and canvas preview restoration. Local diagnostic outputs are under `development/`; they are excluded from version control.
+
+The additional eight-node core workflow passed a full 539-frame run and a 32-frame trim from 4–5 seconds, preserving original timestamps. Its canvas connections/native settings, editor controls and downloads passed browser checks. All 20 Python tests and JavaScript curve/export checks pass. Reproduce the core queue check with `scripts/core_queue_smoke.py --base http://127.0.0.1:8198` on the isolated test instance.
 
 ## Next stages
 

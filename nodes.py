@@ -8,6 +8,7 @@ import folder_paths
 from .sam3d_funscript.core import ANCHORS, PoseSequence, build_project, export_project, load_project
 from .sam3d_funscript.video import extract_video, fingerprint
 from .sam3d_funscript.calibration import load_reference, compare_project
+from .sam3d_funscript.native import adapt_native_poses
 
 CATEGORY = "motion/SAM3D Funscript"
 
@@ -67,6 +68,25 @@ class S3F_LoadPoseCache:
 
     def run(self, cache_path):
         return (PoseSequence.load(resolve_input(cache_path)),)
+
+
+class S3F_CorePoseAdapter:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mhr_pose_data": ("MHR_POSE_DATA",),
+            "video": ("VIDEO", {"tooltip": "The same file-backed VIDEO connected to Get Video Components, including any Trim Video node. Preserves original frame timestamps."}),
+        }}
+
+    RETURN_TYPES = ("S3F_POSE_SEQUENCE", "STRING")
+    RETURN_NAMES = ("poses", "cache_path")
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+
+    def run(self, mhr_pose_data, video):
+        cache = Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "cache"
+        sequence = adapt_native_poses(mhr_pose_data, video, cache)
+        return sequence, sequence.metadata["cache_path"]
 
 
 class S3F_BuildMotion:
@@ -157,10 +177,11 @@ class S3F_CompareReference:
         return output, json.dumps(report, indent=2)
 
 
-NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_LoadPoseCache, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_CompareReference)}
+NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_CompareReference)}
 NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_VideoPose": "SAM3D Video → Cached Poses", "S3F_LoadPoseCache": "Load SAM3D Pose Cache",
     "S3F_BuildMotion": "Poses → Multi-axis Motion", "S3F_LoadProject": "Load Funscript Project",
     "S3F_PreviewExport": "Preview & Export Funscripts",
     "S3F_CompareReference": "Compare Reference Funscript",
+    "S3F_CorePoseAdapter": "Core SAM3D → Funscript Poses",
 }

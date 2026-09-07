@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 
 const base=process.argv[2]||"http://127.0.0.1:8197";
 const id=process.argv[3]||"rcowgirl_6_d60f261e17cf";
-const output=path.resolve("development/browser");fs.mkdirSync(output,{recursive:true});
+const workflowFile=process.argv[4]||"workflows/video_to_funscript.json";
+const output=path.resolve(process.argv[5]||"development/browser");fs.mkdirSync(output,{recursive:true});
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),"s3f-chrome-"));
 const chrome=spawn("/opt/google/chrome/chrome",["--headless","--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--no-first-run","--no-default-browser-check","--remote-debugging-port=0",`--user-data-dir=${profile}`,"about:blank"],{stdio:["ignore","ignore","pipe"]});
 let diagnostics="",ws;chrome.stderr.on("data",chunk=>diagnostics+=chunk);
@@ -82,15 +83,24 @@ try{
     await until(()=>evaluate("!!document.querySelector('canvas')"),"ComfyUI frontend",300);
     await evaluate("(async()=>{window.s3fTestApp=(await import('/scripts/app.js')).app})()");
     await until(()=>evaluate("!!window.s3fTestApp?.graph"),"Comfy graph");
-    const workflow=JSON.parse(fs.readFileSync("workflows/video_to_funscript.json","utf8"));
-    workflow.nodes[2].properties.s3f_project=id;
+    const workflow=JSON.parse(fs.readFileSync(workflowFile,"utf8"));
+    workflow.nodes.find(n=>n.type==="S3F_PreviewExport").properties.s3f_project=id;
     await evaluate(`window.s3fTestApp.loadGraphData(${JSON.stringify(workflow)})`);
     await until(()=>evaluate("!!document.querySelector('iframe[title=\"SAM3D motion preview\"]')"),"Comfy preview widget");
     const frontend=await evaluate("({nodes:window.s3fTestApp.graph._nodes.map(n=>({type:n.type,size:n.size})),iframe:document.querySelector('iframe[title=\"SAM3D motion preview\"]').src})");
-    assert.equal(frontend.nodes.length,3);assert.ok(frontend.iframe.includes(id));report.frontend=frontend;
+    assert.equal(frontend.nodes.length,workflow.nodes.length);assert.ok(frontend.iframe.includes(id));report.frontend=frontend;
     await until(()=>evaluate("document.querySelector('iframe[title=\"SAM3D motion preview\"]').contentDocument?.querySelector('#axis')?.options.length===6"),"embedded editor data load");
     assert.equal(report.viewer_errors.length,0);
-    report.checks.push("Canvas workflow loads all three nodes and restores the preview iframe");
+    report.frontend.prompt=(await evaluate("window.s3fTestApp.graphToPrompt()" )).output;
+    for(const node of workflow.nodes)assert.equal(report.frontend.prompt[node.id]?.class_type,node.type);
+    if(report.frontend.prompt["5"]?.class_type==="SAM3DBody_Predict"){
+        assert.equal(report.frontend.prompt["1"].inputs.file,"videos/nsfw/rcowgirl_6.mp4");
+        assert.equal(report.frontend.prompt["5"].inputs.run_hand_refinement,false);
+        assert.equal(report.frontend.prompt["5"].inputs.batch_size,8);
+        assert.equal(report.frontend.prompt["5"].inputs.bboxes,undefined);
+        assert.deepEqual(report.frontend.prompt["6"].inputs.video,["2",0]);
+    }
+    report.checks.push(`Canvas workflow loads all ${workflow.nodes.length} nodes, preserves connections/settings and restores the preview iframe`);
     fs.writeFileSync(output+"/report.json",JSON.stringify(report,null,2));
     console.log(JSON.stringify(report,null,2));
 }finally{ws?.close();chrome.kill("SIGTERM");}

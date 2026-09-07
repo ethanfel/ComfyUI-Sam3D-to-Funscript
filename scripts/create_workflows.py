@@ -25,6 +25,63 @@ def make_node(node_id, spec, position, size, inputs, outputs, widgets, title):
             "title": title}
 
 
+def core_workflow():
+    """An additional native-node path; leave the original examples intact."""
+    api = {
+        "1": {"class_type": "LoadVideo", "inputs": {"file": "videos/nsfw/rcowgirl_6.mp4"}},
+        "2": {"class_type": "Video Slice", "inputs": {"video": ["1", 0], "start_time": 0.0, "duration": 0.0, "strict_duration": False}},
+        "3": {"class_type": "GetVideoComponents", "inputs": {"video": ["2", 0]}},
+        "4": {"class_type": "SAM3DBody_Loader", "inputs": {"model_file": "sam_3d_body_dinov3_bf16.safetensors"}},
+        "5": {"class_type": "SAM3DBody_Predict", "inputs": {"sam3d_body_model": ["4", 0], "image": ["3", 0],
+            "run_hand_refinement": False, "fov": 0.0, "batch_size": 8}},
+        "6": {"class_type": "S3F_CorePoseAdapter", "inputs": {"mhr_pose_data": ["5", 0], "video": ["2", 0]}},
+        "7": {"class_type": "S3F_BuildMotion", "inputs": {**API["2"]["inputs"], "poses": ["6", 0]}},
+        "8": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["7", 0], "filename": "rcowgirl_6_core"}},
+    }
+    def output(name, type_name, links, slot=0):
+        return {"name": name, "type": type_name, "links": links, "slot_index": slot}
+    def port(name, type_name, link):
+        return {"name": name, "type": type_name, "link": link}
+    nodes = [
+        make_node(1, api["1"], [80, 150], [340, 550], [], [output("VIDEO", "VIDEO", [1])],
+                  [api["1"]["inputs"]["file"]], "1 · Load video · core"),
+        make_node(2, api["2"], [500, 150], [290, 190], [port("video", "VIDEO", 1)], [output("VIDEO", "VIDEO", [2, 6])],
+                  [0.0, 0.0, False], "2 · Trim video · core"),
+        make_node(3, api["3"], [870, 150], [260, 160], [port("video", "VIDEO", 2)],
+                  [output(name, kind, [3] if slot == 0 else None, slot) for slot, (name, kind) in enumerate([
+                      ("images", "IMAGE"), ("audio", "AUDIO"), ("fps", "FLOAT"), ("bit_depth", "COMBO"), ("color_space", "COMBO")])],
+                  [], "3 · Get video components · core"),
+        make_node(4, api["4"], [500, 490], [360, 100], [], [output("sam3d_body_model", "SAM3D_BODY_MODEL", [4])],
+                  [api["4"]["inputs"]["model_file"]], "Load SAM3D Body model · core"),
+        make_node(5, api["5"], [1210, 150], [330, 250],
+                  [port("sam3d_body_model", "SAM3D_BODY_MODEL", 4), port("image", "IMAGE", 3),
+                   port("track_data", "SAM3_TRACK_DATA", None), port("bboxes", "BOUNDING_BOX", None)],
+                  [output("mhr_pose_data", "MHR_POSE_DATA", [5])], [False, 0.0, 8], "4 · SAM3D Body prediction · core"),
+        make_node(6, api["6"], [1620, 150], [300, 150],
+                  [port("mhr_pose_data", "MHR_POSE_DATA", 5), port("video", "VIDEO", 6)],
+                  [output("poses", "S3F_POSE_SEQUENCE", [7]), output("cache_path", "STRING", None, 1)],
+                  [], "5 · Adapt native poses & timing"),
+        make_node(7, api["7"], [2000, 150], [380, 440], [port("poses", "S3F_POSE_SEQUENCE", 7)],
+                  [output("S3F_MOTION_PROJECT", "S3F_MOTION_PROJECT", [8])],
+                  list(API["2"]["inputs"].values())[1:], "6 · Anchors & axis calibration"),
+        make_node(8, api["8"], [2470, 150], [1100, 980], [port("project", "S3F_MOTION_PROJECT", 8)],
+                  [output("project_path", "STRING", None)], ["rcowgirl_6_core"], "7 · Review, edit & export"),
+    ]
+    links = [[1, 1, 0, 2, 0, "VIDEO"], [2, 2, 0, 3, 0, "VIDEO"], [3, 3, 0, 5, 1, "IMAGE"],
+             [4, 4, 0, 5, 0, "SAM3D_BODY_MODEL"], [5, 5, 0, 6, 0, "MHR_POSE_DATA"],
+             [6, 2, 0, 6, 1, "VIDEO"], [7, 6, 0, 7, 0, "S3F_POSE_SEQUENCE"], [8, 7, 0, 8, 0, "S3F_MOTION_PROJECT"]]
+    groups = [{"title": title, "bounding": box, "color": color, "font_size": 22, "flags": {}}
+              for title, box, color in [
+                  ("Core video & SAM3D", [50, 70, 1520, 710], "#365770"),
+                  ("Native pose adapter", [1590, 70, 360, 280], "#446958"),
+                  ("Motion authoring", [1970, 70, 440, 610], "#446958"),
+                  ("Preview & export", [2440, 70, 1160, 1100], "#655079")]]
+    workflow = {"last_node_id": 8, "last_link_id": 8, "nodes": nodes, "links": links, "groups": groups,
+                "config": {}, "extra": {"ds": {"scale": .45, "offset": [30, 20]}}, "version": .4}
+    (ROOT / "workflows/core_video_to_funscript.json").write_text(json.dumps(workflow, indent=2))
+    (ROOT / "workflows/core_video_to_funscript.api.json").write_text(json.dumps(api, indent=2))
+
+
 def main():
     nodes = [
         make_node(1, API["1"], [80, 140], [380, 480], [],
@@ -68,6 +125,7 @@ def main():
     comparison["last_node_id"] = 4; comparison["last_link_id"] = 3
     comparison["groups"][2]["bounding"] = [1000, 60, 1320, 850]
     (ROOT / "workflows/video_with_reference.json").write_text(json.dumps(comparison, indent=2))
+    core_workflow()
 
 
 if __name__ == "__main__":
