@@ -16,3 +16,5 @@
 .waiting-for-workflow .stage,.waiting-for-workflow .curves,.waiting-for-workflow main>details{display:none}#workflowWaiting{margin-bottom:16px}
 
 .editing-points .track canvas{cursor:crosshair}
+
+.video-panel .curve-head{margin-bottom:14px}

@@ -14,6 +14,7 @@ from .sam3d_funscript.anchors import GENERAL_ANCHORS, MHR70_NAMES
 from .sam3d_funscript.timeline import ProjectInputs, combine_projects
 
 CATEGORY = "motion/SAM3D Funscript"
+folder_paths.add_model_folder_path("cotracker", str(Path(folder_paths.models_dir) / "cotracker"))
 
 
 def resolve_input(value):
@@ -82,6 +83,59 @@ class S3F_LoadPoseCache:
 
     def run(self, cache_path):
         return (PoseSequence.load(resolve_input(cache_path)),)
+
+
+class S3F_ReferenceStabilize:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "video": ("VIDEO", {"tooltip": "Core Load Video or Trim Video. Frames are streamed in overlapping windows; the stabilized output is a file-backed VIDEO."}),
+            "model_file": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
+            "reference_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "Queue once, then use Open reference editor to select points and correct sections. Editor settings are stored here with the workflow."}),
+            "agreement_pixels": ("FLOAT", {"default": 12, "min": .1, "max": 1024, "step": 1, "tooltip": "Maximum displacement disagreement between reference points, in original source pixels."}),
+            "max_step_pixels": ("FLOAT", {"default": 48, "min": .1, "max": 4096, "step": 1, "tooltip": "Jump screening per source frame. Missing intervals accumulate this allowance; this is not a physical speed limit."}),
+            "use_cache": ("BOOLEAN", {"default": True, "tooltip": "Point tracking is cached separately from manual corrections. Correction-only changes skip GPU tracking."}),
+        }}
+
+    RETURN_TYPES = ("VIDEO", "STRING")
+    RETURN_NAMES = ("stabilized_video", "reference_path")
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, video, model_file, use_cache=True, **kwargs):
+        if video is None or not use_cache:
+            return float("nan")
+        path, start, duration = video_input_range(video)
+        model = folder_paths.get_full_path("cotracker", model_file)
+        return json.dumps([fingerprint(path), str(start), str(duration), fingerprint(model) if model else None], sort_keys=True)
+
+    def run(self, video, model_file="cotracker3_scaled_online.pth", reference_json="{}",
+            agreement_pixels=12, max_step_pixels=48, use_cache=True):
+        from comfy_api.latest._input_impl.video_types import VideoFromFile
+        from comfy_execution.graph import ExecutionBlocker
+        from comfy.utils import ProgressBar
+        from comfy.model_management import throw_exception_if_processing_interrupted
+        from .sam3d_funscript.reference import run_reference
+
+        path, start, duration = video_input_range(video)
+        checkpoint = folder_paths.get_full_path("cotracker", model_file)
+        root = Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "reference"
+        progress = ProgressBar(max(1, int((float(duration) or video.get_duration()) * float(video.get_frame_rate()))))
+        manifest, output = run_reference(path, start, duration, reference_json, checkpoint, root,
+            tolerance=agreement_pixels, max_step=max_step_pixels, use_cache=use_cache,
+            progress=lambda n: progress.update_absolute(n), interrupt=throw_exception_if_processing_interrupted)
+        reference_path = str(root / manifest["id"] / "reference.json")
+        if output is None:
+            summary = "Video changed; select reference points for this source." if manifest["source_changed"] else "Open reference editor, select at least 3 points, apply, then queue again."
+            result = (ExecutionBlocker(None), reference_path)
+        else:
+            counts = manifest["data"]["counts"]
+            summary = f"{counts['tracked']} tracked · {counts['manual']} corrected · {counts['held']} held frames. "
+            summary += "Tracking cache reused." if manifest["cache_hit"] else "Tracking complete."
+            result = (VideoFromFile(str(output)), reference_path)
+        return {"ui": {"s3f_reference": [manifest["id"]], "s3f_reference_status": [summary], "text": [reference_path]}, "result": result}
 
 
 class S3F_CorePoseAdapter:
@@ -263,7 +317,9 @@ class S3F_CompareReference:
         return output, json.dumps(report, indent=2)
 
 
-NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_StandaloneExport, S3F_CompareReference)}
+from .processing_nodes import S3F_ProcessingTimeline
+
+NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_ReferenceStabilize, S3F_ProcessingTimeline, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_StandaloneExport, S3F_CompareReference)}
 NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_VideoPose": "SAM3D Video → Cached Poses", "S3F_LoadPoseCache": "Load SAM3D Pose Cache",
     "S3F_BuildMotion": "Poses → Multi-axis Motion", "S3F_LoadProject": "Load Funscript Project",
@@ -272,4 +328,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_CompareReference": "Compare Reference Funscript",
     "S3F_CorePoseAdapter": "Core SAM3D → Funscript Poses",
     "S3F_AnchorOverride": "Detailed Anchor Override",
+    "S3F_ReferenceStabilize": "Reference Stabilizer · CoTracker3",
+    "S3F_ProcessingTimeline": "Video Processing Timeline",
 }

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference stabilization comparison</title>
+<style>
+:root{color-scheme:dark;font:14px system-ui;background:#121b23;color:#dce6ed}body{margin:24px auto;max-width:1600px;padding:0 20px}h1{font-size:23px}p{color:#a3b8c8;line-height:1.5}button,select{background:#293e4d;color:inherit;border:1px solid #466073;border-radius:5px;padding:7px 12px;cursor:pointer}.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px;background:#1d2b36;border-radius:8px}.controls input[type=range]{flex:1;min-width:200px}#views{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:18px 0}.panel{background:#1d2b36;border:1px solid #324755;padding:12px;border-radius:8px}.stage{position:relative;height:540px;background:#050b10}.stage video{width:100%;height:100%;object-fit:contain}.stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}h2{font-size:16px;margin:0 0 12px}.stats{font:13px ui-monospace,monospace;line-height:1.6;min-height:45px;padding-top:10px}.good{color:#77dfb4}.bad{color:#ffb568}#graph{width:100%;height:180px;background:#1d2b36;border-radius:6px}a{color:#8ccfff}#error{color:#ffb568}@media(max-width:900px){#views{grid-template-columns:1fr}.stage{height:500px}}
+</style>
+<h1>Reference stabilization comparison</h1>
+<p>Same crop and starting points. Translation only, fixed scale and black padding. Circles are fitting points; squares are extra audit points. Track agreement does not prove correct identity. Review the surface under each point throughout the clip.</p>
+<div class="controls"><button id="play">Play</button><button id="previous">−1 frame</button><button id="next">+1 frame</button><input id="seek" type="range" min="0" value="0" step="1" aria-label="Frame"><output id="time"></output><label><input type="checkbox" id="overlay" checked> Points</label><label>Original overlay <select id="model"></select></label></div>
+<p id="error" role="alert"></p><div id="views"></div>
+<canvas id="graph"></canvas>
+<p>Graph: horizontal displacement (blue), vertical displacement (green), before inverse stabilization. Orange shading marks held transforms after failed consensus. Click the graph to seek.</p>
+<p id="summary"></p>
+<script src="review-data.js"></script>
+<script>
+"use strict";
+const runs=window.STABILIZATION_REVIEW, $=id=>document.getElementById(id);
+if(!runs) throw new Error("review-data.js is missing; keep it beside this page");
+const entries=Object.entries(runs), first=entries[0][1], times=first.times_ms, names={tapnextpp:"TAPNext++ · 512",cotracker3:"CoTracker3 · online"}, panels=[];
+let current=0, playing=false;
+for(const [key] of entries){const o=document.createElement("option");o.value=key;o.textContent=names[key];$("model").append(o)}
+function panel(key,title,source){
+ const section=document.createElement("section");section.className="panel";
+ const heading=document.createElement("h2");heading.textContent=title;section.append(heading);
+ const stage=document.createElement("div");stage.className="stage";
+ const video=document.createElement("video");video.src=source;video.muted=true;video.preload="auto";video.playsInline=true;stage.append(video);
+ const canvas=document.createElement("canvas");stage.append(canvas);section.append(stage);
+ const stats=document.createElement("div");stats.className="stats";section.append(stats);
+ const download=document.createElement("a");download.href=source;download.download="";download.textContent="Download video";section.append(download);
+ $("views").append(section);const p={key,video,canvas,stats};panels.push(p);
+ video.addEventListener("error",()=>{$("error").textContent="Could not play "+source+". Keep the videos beside the review page."});
+ video.addEventListener("seeked",draw);video.addEventListener("loadedmetadata",draw);
+ return p;
+}
+const original=panel("source","Original","source.mp4");
+for(const [key] of entries)panel(key,names[key],key+"/stabilized.mp4");
+$("seek").max=times.length-1;
+function nearest(ms){let lo=0,hi=times.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(times[mid]<ms)lo=mid+1;else hi=mid}return lo>0&&Math.abs(times[lo-1]-ms)<Math.abs(times[lo]-ms)?lo-1:lo}
+function pause(){playing=false;for(const p of panels)p.video.pause();$("play").textContent="Play"}
+function seek(i){pause();current=Math.max(0,Math.min(times.length-1,i));for(const p of panels)p.video.currentTime=times[current]/1000;draw()}
+$("play").onclick=async()=>{if(playing){pause();return}if(current===times.length-1)seek(0);try{await Promise.all(panels.map(p=>p.video.play()));playing=true;$("play").textContent="Pause"}catch(e){pause();$("error").textContent=String(e)}};
+$("previous").onclick=()=>seek(current-1);$("next").onclick=()=>seek(current+1);$("seek").oninput=()=>seek(Number($("seek").value));
+$("overlay").onchange=draw;$("model").onchange=draw;original.video.onended=pause;
+function prepare(canvas){const r=canvas.getBoundingClientRect(),d=devicePixelRatio||1;canvas.width=Math.round(r.width*d);canvas.height=Math.round(r.height*d);const ctx=canvas.getContext("2d");ctx.setTransform(d,0,0,d,0,0);return [ctx,r.width,r.height]}
+function draw(){
+ $("seek").value=current;$("time").textContent=`${(times[current]/1000).toFixed(3)} s · ${current+1}/${times.length}`;
+ for(const p of panels){
+  const key=p.key==="source"?$("model").value:p.key,data=runs[key],r=data.report,ok=data.good[current];
+  const [ctx,w,h]=prepare(p.canvas),size=p.key==="source"?r.metadata.image_size_wh:r.output_size_wh;
+  const scale=Math.min(w/size[0],h/size[1]),left=(w-size[0]*scale)/2,top=(h-size[1]*scale)/2;
+  const offset=p.key==="source"?[0,0]:r.padding_xy.map((v,j)=>v-data.shift_xy[current][j]);
+  if($("overlay").checked){
+   ctx.lineWidth=1.6;
+   data.points[current].forEach((point,i)=>{const x=left+(point[0]+offset[0])*scale,y=top+(point[1]+offset[1])*scale,audit=r.metadata.recipe.points[i].role==="audit";ctx.strokeStyle=!data.visible[current][i]?"#ff8877":audit?"#d7b2ff":"#79edc2";ctx.beginPath();if(audit)ctx.rect(x-4,y-4,8,8);else ctx.arc(x,y,4,0,2*Math.PI);ctx.stroke();ctx.fillStyle=ctx.strokeStyle;ctx.fillText(i,x+6,y-5)});
+   if(p.key!=="source"){
+    const refs=r.metadata.recipe.points.map((p,i)=>p.role==="reference"?i:-1).filter(i=>i>=0),anchor=[0,1].map(j=>refs.reduce((s,i)=>s+data.points[0][i][j],0)/refs.length+r.padding_xy[j]);
+    const x=left+anchor[0]*scale,y=top+anchor[1]*scale;ctx.strokeStyle="#ffd878";ctx.beginPath();ctx.moveTo(x-12,y);ctx.lineTo(x+12,y);ctx.moveTo(x,y-12);ctx.lineTo(x,y+12);ctx.stroke();
+   }
+  }
+  p.stats.className="stats "+(ok?"good":"bad");p.stats.textContent=`${ok?"Point consensus":"HOLD · "+data.reasons[current]} · Δx ${data.shift_xy[current][0].toFixed(1)} px · Δy ${data.shift_xy[current][1].toFixed(1)} px`;
+ }
+ drawGraph();
+}
+function drawGraph(){
+ const data=runs[$("model").value],[ctx,w,h]=prepare($("graph")),all=data.shift_xy.flat(),max=Math.max(1,...all.map(Math.abs)),x=i=>20+(w-40)*(times[i]-times[0])/(times.at(-1)-times[0]),y=v=>h/2-v/max*(h/2-15);
+ ctx.fillStyle="#c176393b";data.good.forEach((good,i)=>{if(!good)ctx.fillRect(x(i),0,Math.max(2,x(Math.min(i+1,times.length-1))-x(i)),h)});
+ ctx.strokeStyle="#3b4d5a";ctx.beginPath();ctx.moveTo(20,h/2);ctx.lineTo(w-20,h/2);ctx.stroke();
+ for(let axis=0;axis<2;axis++){ctx.strokeStyle=axis?"#78dfb3":"#83c5ff";ctx.beginPath();data.shift_xy.forEach((v,i)=>i?ctx.lineTo(x(i),y(v[axis])):ctx.moveTo(x(i),y(v[axis])));ctx.stroke()}
+ ctx.strokeStyle="#fff";ctx.beginPath();ctx.moveTo(x(current),0);ctx.lineTo(x(current),h);ctx.stroke();ctx.fillStyle="#b9cddc";ctx.fillText(`±${max.toFixed(0)} px`,25,15);
+}
+$("graph").onclick=e=>{const r=$("graph").getBoundingClientRect(),f=Math.max(0,Math.min(1,(e.clientX-r.left-20)/(r.width-40)));seek(nearest(times[0]+f*(times.at(-1)-times[0])))};
+$("summary").textContent=entries.map(([key,d])=>`${names[key]}: ${(d.report.consensus_fraction*100).toFixed(1)}% consensus; ${d.report.metadata.elapsed_tracking_seconds.toFixed(1)} s tracking; ${(d.report.metadata.peak_cuda_allocated_bytes/2**30).toFixed(2)} GiB peak PyTorch allocation`).join(". ")+". Internal measurements only; no independent accuracy labels.";
+function tick(){if(playing){current=nearest(original.video.currentTime*1000);for(const p of panels.slice(1))if(Math.abs(p.video.currentTime-original.video.currentTime)>.08)p.video.currentTime=original.video.currentTime;draw()}requestAnimationFrame(tick)}
+new ResizeObserver(draw).observe($("views"));draw();requestAnimationFrame(tick);
+</script></html>

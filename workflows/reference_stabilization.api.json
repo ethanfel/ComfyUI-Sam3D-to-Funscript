@@ -1,0 +1,77 @@
+{
+  "1": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "videos/general/2601102105_OC_00001.mp4"
+    }
+  },
+  "2": {
+    "class_type": "S3F_ReferenceStabilize",
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ],
+      "model_file": "cotracker3_scaled_online.pth",
+      "reference_json": "{}",
+      "agreement_pixels": 12.0,
+      "max_step_pixels": 48.0,
+      "use_cache": true
+    }
+  },
+  "3": {
+    "class_type": "S3F_VideoPose",
+    "inputs": {
+      "video": [
+        "2",
+        0
+      ],
+      "model_file": "sam_3d_body_dinov3_bf16.safetensors",
+      "sample_fps": 16.0,
+      "start_seconds": 0.0,
+      "duration_seconds": 0.0,
+      "max_frames": 2000,
+      "rois_json": "[[0,0,1,1]]",
+      "batch_size": 8,
+      "fov": 0.0,
+      "use_cache": true
+    }
+  },
+  "4": {
+    "class_type": "S3F_BuildMotion",
+    "inputs": {
+      "poses": [
+        "3",
+        0
+      ],
+      "target_person": 0,
+      "target_anchor": "pelvis",
+      "reference_person": -1,
+      "reference_anchor": "pelvis",
+      "frame": "camera",
+      "smoothing_ms": 80.0,
+      "enabled_axes": "L0,L1,L2,R0,R1,R2",
+      "settings_json": "{}"
+    }
+  },
+  "5": {
+    "class_type": "S3F_StandaloneExport",
+    "inputs": {
+      "filename": "reference_stabilized",
+      "project_0": [
+        "4",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "5",
+        2
+      ],
+      "filename": "reference_stabilized"
+    }
+  }
+}

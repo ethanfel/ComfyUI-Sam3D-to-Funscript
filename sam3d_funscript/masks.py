@@ -40,7 +40,10 @@ class MaskVideoReader:
 
     def __enter__(self):
         self.container = av.open(str(self.path))
-        self.frames = self.container.decode(video=0)
+        self.stream = self.container.streams.video[0]
+        self.stream.thread_type = "AUTO"
+        self.stream.codec_context.thread_count = 4
+        self.frames = self.container.decode(self.stream)
         return self
 
     def __exit__(self, *exc):
@@ -52,6 +55,19 @@ class MaskVideoReader:
             raise ValueError(f"Mask video trim does not cover source time {float(source_time):.3f}s. Use matching source/mask timelines and trims.")
         # Allow timestamp rounding when a mask is encoded with a different time base.
         tolerance = Fraction(1, 1000)
+        if self.origin is None:
+            # Each timeline chunk opens its own reader. Establish the original
+            # clock once, then seek near the first requested frame instead of
+            # decoding every earlier mask again for each later chunk.
+            first = next(self.frames, None)
+            if first is None or first.pts is None or first.time_base is None:
+                raise ValueError("Mask video lacks presentation timestamps")
+            self.origin = first.pts * first.time_base
+            if source_time > 0:
+                self.container.seek(int((self.origin + source_time) / self.stream.time_base), stream=self.stream, backward=True)
+                self.frames = self.container.decode(self.stream)
+            else:
+                self.frame, self.time, self.previous = first, Fraction(0), Fraction(0)
         while self.frame is None or self.time < source_time - tolerance:
             frame = next(self.frames, None)
             if frame is None:

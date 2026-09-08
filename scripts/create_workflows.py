@@ -225,6 +225,52 @@ def main():
     masked_workflow()
     multitrack_workflow()
     partial_person_workflow()
+    reference_stabilization_workflow()
+
+
+def reference_stabilization_workflow():
+    """Prepare/select/track a 2D reference, then feed a native VIDEO into SAM3D."""
+    video = 'videos/general/2601102105_OC_00001.mp4'
+    api = {
+        '1': {'class_type': 'LoadVideo', 'inputs': {'file': video}},
+        '2': {'class_type': 'S3F_ReferenceStabilize', 'inputs': {'video': ['1', 0],
+            'model_file': 'cotracker3_scaled_online.pth', 'reference_json': '{}',
+            'agreement_pixels': 12.0, 'max_step_pixels': 48.0, 'use_cache': True}},
+        '3': {'class_type': 'S3F_VideoPose', 'inputs': {**API['1']['inputs'], 'video': ['2', 0]}},
+        '4': {'class_type': 'S3F_BuildMotion', 'inputs': {**API['2']['inputs'], 'poses': ['3', 0]}},
+        '5': {'class_type': 'S3F_PreviewExport', 'inputs': {'project': ['4', 0], 'filename': 'reference_stabilized'}},
+    }
+    def port(name,kind,link): return {'name':name,'type':kind,'link':link}
+    def output(name,kind,links): return {'name':name,'type':kind,'links':links}
+    nodes = [
+        make_node(1,api['1'],[80,140],[360,750],[],[output('VIDEO','VIDEO',[1])],[video],'1 · Source video · core'),
+        make_node(2,api['2'],[540,140],[390,340],[port('video','VIDEO',1)],
+                  [output('stabilized_video','VIDEO',[2]),output('reference_path','STRING',None)],
+                  list(api['2']['inputs'].values())[1:],'2 · Select and stabilize a reference'),
+        make_node(3,api['3'],[1030,140],[410,560],[port('video','VIDEO',2),port('mask_video','VIDEO',None)],
+                  [output('poses','S3F_POSE_SEQUENCE',[3]),output('cache_path','STRING',None)],
+                  list(api['3']['inputs'].values())[1:],'3 · Stream stabilized video into SAM3D'),
+        make_node(4,api['4'],[1540,140],[410,440],[port('poses','S3F_POSE_SEQUENCE',3)],
+                  [output('project','S3F_MOTION_PROJECT',[4])],list(api['4']['inputs'].values())[1:],'4 · Anchor and axis calibration'),
+        make_node(5,api['5'],[2050,140],[1100,1050],[port('project','S3F_MOTION_PROJECT',4)],
+                  [output('project_path','STRING',None)],['reference_stabilized'],'5 · Review stabilized motion'),
+    ]
+    notes = ('REFERENCE STABILIZATION\n\n'
+        '1. Choose your source VIDEO and queue once. Downstream extraction waits until reference points exist.\n\n'
+        '2. Open reference editor on the stabilization node. Draw a crop covering the reference motion, then select at least three points on the same surface in the first frame. Apply to node and queue.\n\n'
+        '3. Review orange gaps. Use one manual section for each interval; place reference-center keyframes on source frames. Add the current estimate at each end for a continuous join. Apply and queue again; corrections reuse cached tracking.\n\n'
+        'Starting points and corrections are stored in reference_json with the workflow. Switching the source or trim requires a new reference selection.\n\n'
+        'Output: file-backed VIDEO with fixed scale and black padding. Orange intervals hold the last transform until corrected. No depth, rotation, perspective correction or invented reference through occlusion.\n\n'
+        'Trims become output clips starting at zero; exact source frame timing and the source-time mapping are retained. Audio is omitted. A person mask downstream must match the stabilized canvas/timeline.\n\n'
+        'Optional dependency setup: see docs/reference-stabilization.md. These previews do not establish physical accuracy.')
+    nodes.append(make_node(6,{'class_type':'Note'},[540,580],[390,630],[],[],[notes],'Read first · reference editing'))
+    workflow={'nodes':nodes,'links':[[1,1,0,2,0,'VIDEO'],[2,2,0,3,0,'VIDEO'],
+             [3,3,0,4,0,'S3F_POSE_SEQUENCE'],[4,4,0,5,0,'S3F_MOTION_PROJECT']],
+             'groups':[{'title':title,'bounding':bounds,'color':color,'font_size':22,'flags':{}} for title,bounds,color in [
+                 ('Core video input',[50,60,420,900],'#365770'),('Reference selection and correction',[510,60,450,1210],'#6b5940'),
+                 ('Streaming SAM3D extraction',[1000,60,470,720],'#365770'),('Motion authoring',[1510,60,470,600],'#446958'),
+                 ('Motion Studio',[2020,60,1160,1200],'#655079')]],'config':{},'extra':{'ds':{'scale':.42,'offset':[30,20]}},'version':.4}
+    write_workflow('reference_stabilization',workflow,api)
 
 
 def partial_person_workflow():

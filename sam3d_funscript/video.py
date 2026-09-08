@@ -85,6 +85,14 @@ def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0,
         # Bounded decoder parallelism, independent of the inference batch.
         stream.thread_type = "AUTO"
         stream.codec_context.thread_count = 4
+        if start:
+            # Establish the original clock before seeking. Using the first frame
+            # after seek as the origin would silently move every trimmed script.
+            first = next(container.decode(stream), None)
+            if first is None or first.pts is None or first.time_base is None:
+                raise ValueError("Video lacks presentation timestamps; remux it before extraction")
+            origin = first.pts * first.time_base
+            container.seek(int((origin + start) / stream.time_base), stream=stream, backward=True)
         for frame in container.decode(stream):
             if frame.pts is None or frame.time_base is None:
                 raise ValueError("Video lacks presentation timestamps; remux it before extraction")

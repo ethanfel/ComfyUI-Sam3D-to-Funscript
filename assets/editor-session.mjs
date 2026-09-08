@@ -59,6 +59,7 @@ export function editorSession({install, snapshot, status}) {
     window.addEventListener('beforeunload', event => {if (pending || saving || failure) {event.preventDefault();event.returnValue = '';}});
     window.s3fFlush = flush;
     window.s3fUpdate = refresh;
+    window.s3fHasUnsavedEdits = () => pending || !!saving || !!failure;
     return {
         async load(fallback) {
             const state = await read();

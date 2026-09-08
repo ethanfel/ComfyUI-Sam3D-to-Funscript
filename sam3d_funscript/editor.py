@@ -23,6 +23,16 @@ def initialize(project):
     if project.get('timeline'):
         timeline = project['timeline']
         timeline.setdefault('latest', {s.get('input', s['id'].split('@')[0]): s['id'] for s in timeline['sources']})
+        # Processing inputs are identified by region and anchor, not their current
+        # row number. Adding another anchor must not redirect another region's row.
+        names = {}
+        for source in timeline['sources']:
+            region = source['data'].get('metadata', {}).get('processing_region', {})
+            if region.get('id'):
+                name = f"region:{region['id']}:{source['data']['config']['target_anchor']}"
+                names[source['id']] = name
+                source['input'] = name
+        timeline['latest'] = {names.get(source, name): source for name, source in timeline['latest'].items()}
         return project
     data = {k: copy.deepcopy(project[k]) for k in SOURCE_FIELDS if k in project}
     label = f"project_0 · {data['config']['target_anchor'].replace('_', ' ')} · person {data['config']['target_person']}"
@@ -85,6 +95,8 @@ def source_digest(data):
 def merge_projects(previous, incoming):
     """Follow changed inputs on unlocked lanes; retain locks and composed sections."""
     old, new = initialize(copy.deepcopy(previous)), initialize(copy.deepcopy(incoming))
+    was_processing_generated = 'processing_timeline' in old['metadata'] and all(
+        main.get('processing_generated') for main in old['timeline']['main'].values())
     locked = any(t.get('locked') for t in old['timeline']['tracks']) or any(m.get('locked') for m in old['timeline']['main'].values())
     if not same_video(old, new):
         if locked:
@@ -143,7 +155,8 @@ def merge_projects(previous, incoming):
         timeline['tracks'].append({**track, 'id': f'track_{n}', 'source': mapping[track['source']]})
     for axis, main in new['timeline']['main'].items():
         prior = timeline['main'].get(axis, {})
-        if prior.get('locked') or prior.get('assembled') or prior.get('source') == mapping[main['source']]:
+        generated = prior.get('processing_generated') and main.get('processing_generated') and not prior.get('edited')
+        if prior.get('locked') or (prior.get('assembled') and not generated) or (prior.get('source') == mapping[main['source']] and not generated):
             continue
         main = copy.deepcopy(main); main['source'] = mapping[main['source']]
         for region in main['regions']: region['source'] = mapping[region['source']]
@@ -152,7 +165,18 @@ def merge_projects(previous, incoming):
         out['config']['axis_settings'][axis] = new['config']['axis_settings'][axis]
         out.setdefault('metrics', {})[axis] = new.get('metrics', {}).get(axis, {})
     out['config']['enabled_axes'] = list(out['scripts'])
-    out['metadata']['duration_ms'] = max(out['metadata']['duration_ms'], new['metadata']['duration_ms'])
+    generated_main = bool(timeline['main']) and all(main.get('processing_generated') and not main.get('edited')
+        and not main.get('locked') for main in timeline['main'].values())
+    retained_tracks = any(track.get('edited') or track.get('locked') or track.get('window') for track in timeline['tracks'])
+    if was_processing_generated and 'processing_timeline' in new['metadata'] and generated_main and not retained_tracks:
+        # A shorter processing trim replaces the generated result's extent.
+        # Authored/locked lanes retain the historical ruler they may still use;
+        # ordinary multi-project Motion Studio merging keeps its existing rule.
+        out['metadata']['duration_ms'] = new['metadata']['duration_ms']
+    else:
+        out['metadata']['duration_ms'] = max(out['metadata']['duration_ms'], new['metadata']['duration_ms'])
+    if 'processing_timeline' in new['metadata']:
+        out['metadata']['processing_timeline'] = copy.deepcopy(new['metadata']['processing_timeline'])
     # Keep historical poses only while a track or a copied main section uses them.
     used = set(latest.values()) | {t['source'] for t in timeline['tracks']}
     for main in timeline['main'].values():

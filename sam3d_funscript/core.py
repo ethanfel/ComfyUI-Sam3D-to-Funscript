@@ -296,7 +296,12 @@ def build_project(sequence, overrides=None):
         warnings.append("Camera-relative motion includes camera movement and monocular depth/scale drift.")
     if config["target_anchor"] == "mouth" or (reference >= 0 and config["reference_anchor"] == "mouth"):
         warnings.append(MOUTH_NOTE)
-    return {"schema": SCHEMA, "metadata": sequence.metadata, "config": config, "scripts": scripts,
+    from .reference_preview import reference_preview
+    metadata = dict(sequence.metadata)
+    comparison = reference_preview(metadata.get("source", {}))
+    if comparison:
+        metadata["reference_stabilization"] = comparison
+    return {"schema": SCHEMA, "metadata": metadata, "config": config, "scripts": scripts,
             "anchor_indices": {"target": list(ANCHORS[config["target_anchor"]]),
                                "reference": list(ANCHORS[config["reference_anchor"]]) if reference >= 0 else None},
             "metrics": metrics, "warnings": warnings, "times_ms": times.tolist(), "valid": valid.tolist(),
@@ -321,6 +326,10 @@ def load_project(path):
 
 
 def export_project(project, output_dir, name="motion"):
+    from .reference_preview import reference_preview
+    comparison = project["metadata"].get("reference_stabilization") or reference_preview(project["metadata"]["source"])
+    if comparison:
+        project = {**project, "metadata": {**project["metadata"], "reference_stabilization": comparison}}
     # A separate run directory keeps old results intact and stale axes out of playback.
     name = re.sub(r"[^\w.-]+", "_", name).strip(".") or "motion"
     output = Path(output_dir) / f"{name}_{uuid.uuid4().hex[:12]}"
@@ -334,5 +343,8 @@ def export_project(project, output_dir, name="motion"):
     path.write_text(json.dumps(project, separators=(",", ":"), allow_nan=False))
     # Video range requests need only this small manifest, not every cached pose.
     (output / "source.json").write_text(json.dumps(project["metadata"]["source"], allow_nan=False))
+    if comparison:
+        (output / "original-source.json").write_text(json.dumps(comparison["source"], allow_nan=False))
+        (output / "reference-preview.json").write_text(json.dumps(comparison, separators=(",", ":"), allow_nan=False))
     (output / "viewer.html").write_text(standalone_html(project))
     return path

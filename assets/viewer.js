@@ -5,12 +5,15 @@ import {smoothActions} from "./curve-edit.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
+import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
 const COLORS = ["#75e2ba", "#dcadfa", "#78baf7", "#ffc07d"];
 const EDGES = [[5,6],[5,7],[7,62],[6,8],[8,41],[5,9],[6,10],[9,10],[9,11],[11,13],[10,12],[12,14],[0,5],[0,6]];
 const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:[41]};
 let project, history = [], currentMs = 0, dragging = null, bounds = [0, 1], videoURL;
+let videoVariant="stabilized",videoMapping=null,videoOutput=null,mediaLoading=false,mediaRevision=0;
+const localVideos={stabilized:null,original:null};
 let comparisonRevision=0, comparisonCache=null;
 let deviceOutputCache=null;
 let view = timelineView(1), scrollPosition = 0;
@@ -114,14 +117,40 @@ const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status});
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
+function videoChoices(){
+    $("videoVariantLabel").hidden=!videoMapping;$("videoVariant").value=videoVariant;
+    $("videoFile").parentElement.title=videoMapping?`Choose the ${videoVariant} video for this view`:"Choose the source video";
+}
+function loadPreviewVideo(resume=false){
+    const url=localVideos[videoVariant]||(videoOutput?`../video/${encodeURIComponent(videoOutput)}?variant=${videoVariant}`:null);
+    const revision=++mediaRevision;video.pause();mediaLoading=true;
+    video.onloadedmetadata=()=>{
+        if(revision!==mediaRevision)return;
+        video.currentTime=previewMediaTime(currentMs,videoVariant,videoMapping,project.metadata.source_origin_ms||0);mediaLoading=false;
+        if(resume)video.play().catch(error=>status(error.message));render();
+    };
+    if(url)video.src=url;
+    else{video.removeAttribute("src");video.load();status(`Choose the ${videoVariant} video locally for this view`)}
+}
+async function loadVideoComparison(data,output){
+    // Old cached projects can obtain their mapping without another pose extraction.
+    if(videoMapping||!output||!data.metadata.source.path.endsWith("/stabilized.mp4"))return;
+    try{
+        const response=await fetch(`../video/${encodeURIComponent(output)}/reference`);
+        if(!response.ok)return;
+        const mapping=await response.json();if(project!==data||!mapping)return;
+        videoMapping=mapping;data.metadata.reference_stabilization=mapping;videoChoices();render();
+    }catch{/* Local file selection and stabilized playback remain available. */}
+}
 function install(data, keepPlayback=false, output=null) {
     const oldAxis=$("axis").value, previousMs=currentMs, hadVideo=!!video.getAttribute("src");
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
     document.body.classList.remove("waiting-for-workflow");$("workflowWaiting").hidden=true;
     keepPlayback=!!(keepPlayback&&sameVideoSource(project?.metadata?.source,data.metadata.source));
     dragging=null;
-    if(!keepPlayback){video.pause(); video.removeAttribute("src"); video.load();
-    if(videoURL){URL.revokeObjectURL(videoURL);videoURL=null;}}
+    if(!keepPlayback){video.pause();video.onloadedmetadata=null;video.removeAttribute("src");video.load();++mediaRevision;mediaLoading=false;
+    for(const key of Object.keys(localVideos)){if(localVideos[key])URL.revokeObjectURL(localVideos[key]);localVideos[key]=null;}
+    videoURL=null;videoVariant="stabilized";videoMapping=null;}
     initializeTimeline(data);restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
     $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
@@ -129,8 +158,11 @@ function install(data, keepPlayback=false, output=null) {
     $("warnings").replaceChildren(...(data.warnings||[]).map(text=>{const li=document.createElement("li");li.textContent=text;return li;}));
     $("provenance").textContent = JSON.stringify({source:data.metadata.source,model:data.metadata.model,samples:data.times_ms.length,basis:data.metadata.basis,config:data.config},null,2);
     if(keepPlayback&&data.scripts[oldAxis])$("axis").value=oldAxis;
-    if(output&&(!keepPlayback||!hadVideo))video.src=`../video/${encodeURIComponent(output)}`;
+    videoOutput=output;videoMapping=data.metadata.reference_stabilization||videoMapping;
+    if(videoMapping)data.metadata.reference_stabilization=videoMapping;videoChoices();
     currentMs=keepPlayback?previousMs:data.times_ms[0]; buildTracks(); selectionControls(); controls(); deviceOutputControls(); render(); status("Project loaded · choose the matching source video");
+    if(output&&(!keepPlayback||!hadVideo))loadPreviewVideo();
+    loadVideoComparison(data,output);
 }
 function selected() { return editProject(project,$("axis").value); }
 function commitSelected(data,axis,track) {
@@ -221,7 +253,7 @@ function buildTracks() {
         source.onchange=()=>{if(track.locked)return;record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};
         axis.onchange=()=>{if(track.locked)return;record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};
         const remove=document.createElement("button");remove.className="remove-track";remove.textContent="Remove";
-        remove.onclick=()=>{if(track.locked)return;record();project.timeline.tracks=project.timeline.tracks.filter(t=>t!==track);if(project.timeline.active===track.id)project.timeline.active="main";buildTracks();dirty();controls();render();};
+        remove.onclick=()=>{if(track.locked)return;record();project.timeline.tracks=project.timeline.tracks.filter(t=>t!==track);if(project.timeline.active===track.id)project.timeline.active="main";buildTracks();dirty(false);controls();render();};
         const sourceLabel=document.createElement("label");sourceLabel.append("Project ",source);
         const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
         const lock=document.createElement("button");lock.className="track-lock";lock.title="Protect this curve and calibration across edits and reruns. Unlock explicitly to edit.";lock.textContent=track.locked?"Unlock":"Lock";lock.setAttribute("aria-pressed",String(!!track.locked));lock.onclick=()=>toggleLock(track);
@@ -250,15 +282,18 @@ const finitePoint = point => point && point.every(Number.isFinite);
 function line(ctx,a,b,color,width=2) {ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke();}
 function drawOverlay(index, project) {
     const [ctx,w,h]=resize($("overlay"));
-    const [ih,iw]=project.metadata.image_size;
+    const original=videoVariant==="original"&&videoMapping;
+    const [ih,iw]=original?videoMapping.image_size:project.metadata.image_size;
+    const [poseHeight,poseWidth]=project.metadata.image_size;
     const scale=Math.min(w/iw,h/ih),ox=(w-iw*scale)/2,oy=(h-ih*scale)/2;
+    const pixel=(p,t=currentMs)=>{const q=original?originalPixel(videoMapping,p,t):p;return [q[0]*scale+ox,q[1]*scale+oy]};
     (project.pixels?.[index]||[]).forEach((person,slot)=>{
-        for(const [a,b] of EDGES) if(finitePoint(person[a])&&finitePoint(person[b])) line(ctx,[person[a][0]*scale+ox,person[a][1]*scale+oy],[person[b][0]*scale+ox,person[b][1]*scale+oy],COLORS[slot%COLORS.length]);
+        for(const [a,b] of EDGES) if(finitePoint(person[a])&&finitePoint(person[b])) line(ctx,pixel(person[a]),pixel(person[b]),COLORS[slot%COLORS.length]);
         const roi=project.metadata.mask_boxes?.[index]?.[slot]||project.metadata.rois?.[slot];
-        if(roi){ctx.strokeStyle=COLORS[slot%COLORS.length];ctx.strokeRect(ox+roi[0]*iw*scale,oy+roi[1]*ih*scale,roi[2]*iw*scale,roi[3]*ih*scale);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(`${project.metadata.mask_video?"Mask person":"ROI"} ${slot}`,ox+roi[0]*iw*scale+6,oy+roi[1]*ih*scale+15);}
+        if(roi){const [x,y]=pixel([roi[0]*poseWidth,roi[1]*poseHeight]);ctx.strokeStyle=COLORS[slot%COLORS.length];ctx.strokeRect(x,y,roi[2]*poseWidth*scale,roi[3]*poseHeight*scale);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(`${project.metadata.mask_video?"Mask person":"ROI"} ${slot}`,x+6,y+15);}
     });
     const slot=project.config.target_person,joints=project.anchor_indices?.target||ANCHORS[project.config.target_anchor];
-    const pointAt=i=>{const points=joints.map(j=>project.pixels?.[i]?.[slot]?.[j]);if(!points.every(finitePoint))return null;return [points.reduce((s,p)=>s+p[0],0)/points.length*scale+ox,points.reduce((s,p)=>s+p[1],0)/points.length*scale+oy];};
+    const pointAt=i=>{const points=joints.map(j=>project.pixels?.[i]?.[slot]?.[j]);if(!points.every(finitePoint))return null;return pixel([points.reduce((s,p)=>s+p[0],0)/points.length,points.reduce((s,p)=>s+p[1],0)/points.length],i===index?currentMs:project.times_ms[i]);};
     let previous=null;
     for(let i=Math.max(0,index-40);i<=index;i++){
         if(project.times_ms[i]<currentMs-1000||!project.valid[i]){previous=null;continue;}
@@ -426,10 +461,19 @@ function render() {
         if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);else curveLayers.delete(canvas);
     }
 }
-function frameCallback(_,metadata){currentMs=metadata.mediaTime*1000;render();video.requestVideoFrameCallback(frameCallback);}
+function updateVideoTime(seconds){
+    if(mediaLoading||!project||!video.getAttribute("src")||!video.readyState)return;
+    const time=previewTimelineTime(seconds,videoVariant,videoMapping,project.metadata.source_origin_ms||0),end=project.metadata.duration_ms;
+    if(videoVariant==="original"&&(time<-.5||time>end+.5)){
+        if(time>end)video.pause();
+        currentMs=Math.max(0,Math.min(end,time));
+        video.currentTime=previewMediaTime(currentMs,videoVariant,videoMapping,project.metadata.source_origin_ms||0);
+    }else currentMs=time;
+}
+function frameCallback(_,metadata){updateVideoTime(metadata.mediaTime);render();video.requestVideoFrameCallback(frameCallback);}
 if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frameCallback);
-video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||video.paused){currentMs=video.currentTime*1000;render();}});
-video.addEventListener("seeked",()=>{currentMs=video.currentTime*1000;if(project&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);render();});
+video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||video.paused){updateVideoTime(video.currentTime);render();}});
+video.addEventListener("seeked",()=>{updateVideoTime(video.currentTime);if(project&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);render();});
 video.addEventListener("error",()=>status("Choose the source video locally if this browser cannot load the server copy"));
 $("axis").addEventListener("change",()=>{controls();render();});
 $("zoom").addEventListener("change",()=>{if(project)zoomTimeline(Number($("zoom").value)||project.metadata.duration_ms);});
@@ -503,7 +547,7 @@ function nearest(event,canvas,actions){
     if(stop-first>(rect.width-54)/4)return -1;
     for(let i=first;i<stop;i++){const p=actions[i];if(Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9)return i;}return -1;
 }
-function seek(time){currentMs=time;if(video.readyState)video.currentTime=time/1000;render();}
+function seek(time){currentMs=time;if(video.readyState&&!mediaLoading)video.currentTime=previewMediaTime(time,videoVariant,videoMapping,project.metadata.source_origin_ms||0);render();}
 function bindCurve(canvas,id){
     canvas.addEventListener("wheel",event=>timelineWheel(event,canvas),{passive:false});
     const actions=()=>id==="main"?project.scripts[$("axis").value].actions:project.timeline.tracks.find(t=>t.id===id).script.actions;
@@ -616,9 +660,10 @@ $("robot").addEventListener("keydown",e=>{
     deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch));deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom));render();
 });
 $("projectFile").addEventListener("change",async e=>{try{install(JSON.parse(await e.target.files[0].text()));dirty(false);}catch(error){status(error.message);}});
-$("videoFile").addEventListener("change",e=>{if(videoURL)URL.revokeObjectURL(videoURL);videoURL=URL.createObjectURL(e.target.files[0]);video.src=videoURL;status("Local source loaded");});
-$("referenceFile").addEventListener("change",async e=>{if(!project){status("Open a project first");return;}try{const file=e.target.files[0],data=JSON.parse(await file.text()),actions=validateReference(data);record();project.references={...project.references,[$("axis").value]:{actions,offset_ms:0,source:{path:file.name},header_inverted:!!data.inverted,interpretation:"Positions compared as written; legacy headers not applied"}};dirty();controls();render();}catch(error){status(error.message);}});
-$("referenceOffset").addEventListener("change",()=>{const ref=project?.references?.[$("axis").value],offset=Number($("referenceOffset").value);if(!ref||!Number.isFinite(offset))return;record();ref.offset_ms=offset;dirty();render();});
+$("videoFile").addEventListener("change",e=>{if(!e.target.files[0])return;const resume=!video.paused;if(localVideos[videoVariant])URL.revokeObjectURL(localVideos[videoVariant]);videoURL=URL.createObjectURL(e.target.files[0]);localVideos[videoVariant]=videoURL;loadPreviewVideo(resume);status(`Local ${videoMapping?videoVariant:"source"} video loaded`);e.target.value="";});
+$("videoVariant").onchange=()=>{const resume=!video.paused;videoVariant=$("videoVariant").value;videoChoices();loadPreviewVideo(resume);render();};
+$("referenceFile").addEventListener("change",async e=>{if(!project){status("Open a project first");return;}try{const file=e.target.files[0],data=JSON.parse(await file.text()),actions=validateReference(data);record();project.references={...project.references,[$("axis").value]:{actions,offset_ms:0,source:{path:file.name},header_inverted:!!data.inverted,interpretation:"Positions compared as written; legacy headers not applied"}};dirty(false);controls();render();}catch(error){status(error.message);}});
+$("referenceOffset").addEventListener("change",()=>{const ref=project?.references?.[$("axis").value],offset=Number($("referenceOffset").value);if(!ref||!Number.isFinite(offset))return;record();ref.offset_ms=offset;dirty(false);render();});
 function downloadArchive(files,name) {
     const url=URL.createObjectURL(makeZip(files)),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);
 }

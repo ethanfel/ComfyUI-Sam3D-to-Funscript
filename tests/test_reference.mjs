@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import {correctedMotion,curveBuckets} from "../assets/reference-edit.mjs";
+const times=[0,20,70,100,160,200],shifts=times.map(()=>[0,0]);
+const sections=[{keys:[{at_ms:20,xy:[12,20]},{at_ms:100,xy:[20,28]}]},{keys:[{at_ms:160,xy:[14,22]}]}];
+const result=correctedMotion(times,shifts,[true,false,false,true,false,true],[10,20],sections);
+assert.deepEqual(result.shifts,[[0,0],[2,0],[7,5],[10,8],[4,2],[0,0]]);
+assert.deepEqual(result.quality,["tracked","manual","manual","manual","manual","tracked"]);
+assert.deepEqual(shifts,times.map(()=>[0,0]));
+assert.throws(()=>correctedMotion(times,shifts,times.map(()=>true),[0,0],[sections[0],sections[0]]),/overlap/);
+const longTimes=Array.from({length:115201},(_,i)=>i*31.25),longShifts=longTimes.map(()=>[0,0]),quality=longTimes.map(()=>"tracked");
+longShifts[60001]=[99,-70];quality[60001]="held";
+const full=curveBuckets(longTimes,longShifts,quality,0,3600000,900);
+assert.equal(full.length,900);assert.equal(Math.max(...full.map(b=>b.max[0])),99);assert.ok(full.some(b=>b.quality===2));
+const zoomed=curveBuckets(longTimes,longShifts,quality,60000,70000,900);
+assert.equal(Math.max(...zoomed.filter(b=>Number.isFinite(b.max[0])).map(b=>b.max[0])),0);
+assert.ok(zoomed.every(b=>b.quality===0));
+console.log("Reference preview parity, bounded corrections, overlap rejection, and hour-long timeline extrema passed.");

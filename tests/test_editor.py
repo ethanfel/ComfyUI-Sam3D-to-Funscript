@@ -88,6 +88,50 @@ class EditorTests(unittest.TestCase):
         self.initial['timeline']['tracks'] = []
         self.assertEqual(merge_projects(self.initial, incoming)['timeline']['tracks'], [])
 
+    def test_processing_generated_main_refreshes_but_user_edits_and_locks_survive(self):
+        previous = copy.deepcopy(self.initial)
+        for main in previous['timeline']['main'].values():
+            main.update(assembled=True, processing_generated=True)
+        incoming = copy.deepcopy(previous)
+        for axis in incoming['scripts']:
+            incoming['scripts'][axis]['actions'] = [{'at': 0, 'pos': 12}, {'at': 2000, 'pos': 84}]
+        # Join settings can change the generated main while all source poses and
+        # calibrated source scripts remain identical.
+        refreshed = merge_projects(previous, incoming)
+        self.assertEqual(refreshed['scripts'], incoming['scripts'])
+        for protection in ('edited', 'locked'):
+            protected = copy.deepcopy(previous)
+            protected['timeline']['main']['L0'][protection] = True
+            protected['scripts']['L0']['actions'] = [{'at': 0, 'pos': 19}, {'at': 2000, 'pos': 67}]
+            merged = merge_projects(protected, incoming)
+            self.assertEqual(merged['scripts']['L0'], protected['scripts']['L0'])
+            self.assertEqual(merged['scripts']['L1'], incoming['scripts']['L1'])
+
+    def test_shortened_processing_trim_shrinks_only_unprotected_generated_extent(self):
+        previous = copy.deepcopy(self.initial)
+        previous['metadata']['processing_timeline'] = {'version': 1}
+        for main in previous['timeline']['main'].values():
+            main.update(assembled=True, processing_generated=True)
+        incoming = copy.deepcopy(previous)
+        incoming['metadata']['duration_ms'] = 1000
+        for script in incoming['scripts'].values():
+            script['actions'] = [{'at': 0, 'pos': 20}, {'at': 1000, 'pos': 80}]
+        merged = merge_projects(previous, incoming)
+        self.assertEqual(merged['metadata']['duration_ms'], 1000)
+        for protection in ('edited', 'locked'):
+            protected = copy.deepcopy(previous)
+            protected['timeline']['main']['L0'][protection] = True
+            self.assertEqual(merge_projects(protected, incoming)['metadata']['duration_ms'], previous['metadata']['duration_ms'])
+        for protection, value in (('edited', True), ('locked', True), ('window', [1200,2000])):
+            protected = copy.deepcopy(previous)
+            protected['timeline']['tracks'][0][protection] = value
+            self.assertEqual(merge_projects(protected, incoming)['metadata']['duration_ms'], previous['metadata']['duration_ms'])
+        # Existing ordinary Motion Studio inputs still retain the longest ruler.
+        normal = copy.deepcopy(previous)
+        normal['metadata'].pop('processing_timeline')
+        shorter = copy.deepcopy(incoming); shorter['metadata'].pop('processing_timeline')
+        self.assertEqual(merge_projects(normal, shorter)['metadata']['duration_ms'], previous['metadata']['duration_ms'])
+
     def test_unchanged_input_and_appended_anchor_preserve_unlocked_edits(self):
         previous = self.initial
         track = previous['timeline']['tracks'][0]

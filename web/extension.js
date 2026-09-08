@@ -1,3 +1,4 @@
+import {openWorkspace,registerWorkspaceTool,refreshWorkspaces} from "./workspace.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { migrateVideoInputs, migrateAnchorOverrides } from "./migrate.mjs";
@@ -17,16 +18,12 @@ function matchingEditor(win, session) {
     try{return win&&!win.closed&&win.location.origin===location.origin&&new URL(win.location.href).searchParams.get("session")===session;}
     catch{return false;} // A user may navigate a previously opened tab elsewhere.
 }
-function openEditor(node) {
-    const session=sessionId(node);
-    let win=editorWindows.get(session);
-    if(!win||win.closed)win=window.open("",`s3f-motion-${session}`);
-    if(!win)return;
-    editorWindows.set(session,win);
-    if(matchingEditor(win,session)&&win.s3fUpdate)win.s3fUpdate(editorOwner(node).properties.s3f_project).catch(console.error);
-    else win.location.href=editorURL(node);
-    win.focus();
-}
+function openEditor(node) {prepareNodeSessions(app.graph._nodes||[]);openWorkspace(node);}
+registerWorkspaceTool("motion",{
+    describe:node=>({key:`motion:${sessionId(node)}`,label:"Motion Studio",url:editorURL(node)}),
+    attach:(node,win)=>editorWindows.set(sessionId(node),win),
+    detach:(node,win)=>{const session=sessionId(node);if(editorWindows.get(session)===win)editorWindows.delete(session)},
+});
 
 app.registerExtension({
     name: "sam3d.funscript.preview",
@@ -87,7 +84,7 @@ app.registerExtension({
             }
             const win=editorWindows.get(sessionId(node));
             if(matchingEditor(win,sessionId(node)))win.s3fUpdate?.(id).catch(console.error);
-            notifyEditorRun(sessionId(node),id);
+            notifyEditorRun(sessionId(node),id);refreshWorkspaces();
         }
         const executed = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (output) {executed?.apply(this,arguments);update(this,output?.s3f_project?.[0]).catch(console.error);};

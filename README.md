@@ -5,8 +5,9 @@
 [Quick start](#quick-start) · [Workflows](#workflows) · [Full guide](docs/guide.md)
 
 - **Track motion** using body, hand or mouth anchors. Add mask videos to select individual people.
+- **Plan long videos:** select anchor and stabilization regions in the [processing timeline](docs/processing-timeline.md), then process all, selected or unfinished intervals.
 - **Build your timeline** with multiple tracks, zoom, section blending and locks that protect edits across reruns.
-- **Edit in a dedicated tab:** use **Motion Studio · Standalone** for a compact workflow node that sends results to the full editor.
+- **Edit in a dedicated tab:** connected Processing Timeline, Reference Editor and Motion Studio tools share one tabbed workspace. **Motion Studio · Standalone** keeps the workflow node compact.
 - **Preview devices** with Handy 2 for stroke or SR6 for all six axes.
 - **Compare device output:** use [stroke profiles](docs/device-output.md) to derive a separate L0 script for a physical range and speed limit.
 - **Export and keep editing** with `.funscript` files, your project and a standalone offline editor.
@@ -61,8 +62,14 @@ Your download includes `project.json` and `viewer.html`. Open the viewer and cho
 | Several anchors | [Multiple motion tracks](workflows/multitrack_anchors.json) |
 | A mask for each person | [Separate people](workflows/mask_videos_to_funscripts.json) |
 | Native ComfyUI prediction nodes | [Core-node workflow](workflows/core_video_to_funscript.json) |
+| A reference region instead of a partial-body pose | [Reference stabilization](workflows/reference_stabilization.json) |
+| A long video with different anchors or stabilization by region | [Processing timeline](workflows/processing_timeline.json) |
 
 For the experimental two-person comparison, see the [partial-person reference test](workflows/tests/README.md).
+The [reference stabilizer](docs/reference-stabilization.md) adds visual point
+selection, gap markers and manual correction sections before SAM3D extraction.
+The optional [comparison probe](docs/stabilization-probe.md) records the CoTracker3
+and TAPNext++ experiments.
 
 ## Before you export
 

@@ -1,0 +1,44 @@
+{
+  "1": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": ""
+    }
+  },
+  "2": {
+    "class_type": "S3F_ProcessingTimeline",
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ],
+      "model_file": "sam_3d_body_dinov3_bf16.safetensors",
+      "sample_fps": 0.0,
+      "batch_size": 8,
+      "tracker_model": "cotracker3_scaled_online.pth",
+      "operation": "prepare",
+      "plan_json": "{}",
+      "use_cache": true
+    }
+  },
+  "3": {
+    "class_type": "S3F_StandaloneExport",
+    "inputs": {
+      "project_0": [
+        "2",
+        0
+      ],
+      "filename": "processing_timeline"
+    }
+  },
+  "4": {
+    "class_type": "S3F_PreviewExport",
+    "inputs": {
+      "editor_session": [
+        "3",
+        2
+      ],
+      "filename": "processing_timeline"
+    }
+  }
+}
