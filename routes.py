@@ -23,6 +23,7 @@ def register_routes():
     routes = PromptServer.instance.routes
     assets = Path(__file__).parent / "assets"
     thumbnail_slots = asyncio.Semaphore(2)
+    frame_index_slots = asyncio.Semaphore(1)
 
     def editor_store():
         return EditorStore(Path(folder_paths.get_output_directory()) / "sam3d_funscript")
@@ -73,7 +74,9 @@ def register_routes():
         except (ValueError, TypeError) as error:
             raise web.HTTPBadRequest(text=str(error))
         directory = processing_store().directory(state["session"]) / "thumbnails" / state["info"]["source_id"]
-        path = directory / f"{round(at)}.jpg"
+        # Versioned key avoids previously cached, millisecond-rounded thumbnails
+        # that could show the frame after a fractional-rate boundary.
+        path = directory / f"frame-{round(at * 1_000_000)}.jpg"
 
         def generate():
             from contextlib import closing
@@ -100,6 +103,21 @@ def register_routes():
                 if not path.is_file() and not await asyncio.to_thread(generate):
                     raise web.HTTPNotFound(text="No source frame at this time")
         return web.FileResponse(path)
+
+    @routes.get("/sam3d_funscript/timelines/{session}/frames")
+    async def processing_frames(request):
+        from .sam3d_funscript.frame_index import frame_index
+        state = processing_state(request)
+        if request.query.get("source_id") != state["info"]["source_id"]:
+            raise web.HTTPConflict(text="The source changed. Reload the timeline.")
+        try:
+            async with frame_index_slots:
+                result = await asyncio.to_thread(frame_index, state["info"], processing_store().root / "frame-index")
+            if processing_state(request)["info"]["source_id"] != result["source_id"]:
+                raise web.HTTPConflict(text="The source changed while indexing frames. Reload the timeline.")
+            return web.json_response(result)
+        except (ValueError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
 
     @routes.get("/sam3d_funscript/editors/{session}")
     async def editor_get(request):
@@ -137,7 +155,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html")
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "timeline-layout.mjs"):
+        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "timeline-layout.mjs", "frame-clock.mjs"):
             raise web.HTTPNotFound()
         return web.FileResponse(assets / name)
 

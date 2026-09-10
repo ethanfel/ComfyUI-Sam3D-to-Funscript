@@ -3,6 +3,7 @@ import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as b
 import {LANES, ANCHORS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, validateInterval, validateReference, regionRows, isolateSelection} from "./processing-timeline-edit.mjs";
 import {neighboringCut,snapCut,shotRange,visibleCuts} from "./cut-markers.mjs";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs";
+import {frameClock} from "./frame-clock.mjs";
 
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
@@ -12,15 +13,22 @@ let state, plan, savedPlan, revision, dirty = false, history = [], view, playhea
 let savePromise = null, applyTask = null, applyPending = null, processPending = null, pendingState = null, activeId = null;
 let timelineDrag = null, sourceDrag = null, sourceMap = null, renderQueued = false, lastFrame = 0;
 let appliedPlan = null, pollTimer = null, loading = false, thumbTimer = null, thumbnailView = "", conflictingDraft = false;
+let frames = null, presentedTime = null, frameCuts = [];
 const draftKey = `s3f-processing-timeline:${session}`;
 const laneElement = lane => $(`${lane}Lane`);
 const selected = () => regionById(plan || {}, activeId);
-const sourceBounds = () => bounds(state.info);
+const sourceBounds = () => {const [a,b]=bounds(state.info);return frames?[Math.max(a,frames.at(frames.first)),Math.min(b,frames.at(frames.end))]:[a,b];};
 const duration = () => sourceBounds()[1];
-const frameMs = () => 1000 / Math.max(.01, fraction(state?.info?.rate) || 30);
 const clipDuration = () => sourceBounds()[1]-sourceBounds()[0];
-const cuts = () => state?.scene_cuts && state.scene_cuts.source_id===state.info.source_id ? state.scene_cuts.times_ms : [];
-const snapTime = (time,width) => $("showCuts").checked&&$("snapCuts").checked ? snapCut(cuts(),time,Math.min(250,view.span_ms/Math.max(1,width)*7)) : time;
+const cuts = () => frameCuts;
+// requestVideoFrameCallback reports a frame PTS (possibly rounded by the browser),
+// while currentTime is a continuously advancing clock inside a frame.
+const activeFrame = () => !video.paused&&!video.seeking?(presentedTime!==null?frames.nearest(presentedTime):frames.containing((video.currentTime-fraction(state.info.source_origin))*1000)):frames.containing(playhead);
+const snapTime = (time,width) => frames.snap($("showCuts").checked&&$("snapCuts").checked ? snapCut(cuts(),time,Math.min(250,view.span_ms/Math.max(1,width)*7)) : time,true);
+const useFrames = () => $("timelineUnit").value === "frames";
+const positionValue = time => useFrames() ? String(frames.ceil(time)) : (time/1000).toFixed(3);
+const positionTime = value => useFrames() ? frames.at(Number(value)) : frames.snap(Number(value)*1000,true);
+const positionLabel = time => useFrames() ? `F ${frames.ceil(time)}` : formatTime(time,3);
 const localView = value => ({...value,start_ms:(value?.start_ms??sourceBounds()[0])-sourceBounds()[0]});
 const originalView = value => ({...value,start_ms:value.start_ms+sourceBounds()[0]});
 const timelineView = (_,value) => originalView(baseTimelineView(clipDuration(),localView(value)));
@@ -80,7 +88,7 @@ function selectRegion(id, additive = false, seekAt = null) {
 }
 function setSelection(a, b, persist = true) {
     const [low, high] = sourceBounds();
-    plan.selection = [clamp(Math.min(a,b), low, high), clamp(Math.max(a,b), low, high)];
+    plan.selection = [frames.snap(clamp(Math.min(a,b), low, high),true), frames.snap(clamp(Math.max(a,b), low, high),true)];
     if (persist) { dirty = !equal(plan, savedPlan); draft(); }
     renderNavigation(); renderTimelines();
 }
@@ -90,15 +98,16 @@ function seek(ms, stop = true) {
     if (!state) return;
     if (stop) pause();
     const [low, high] = sourceBounds();
-    playhead = clamp(ms, low, Math.max(low, high - Math.min(frameMs() / 2, 1)));
-    const value = mediaTime(playhead);
+    playhead = frames.snap(clamp(ms, low, high));
+    presentedTime = null;
+    const value = mediaTime(frames.seekTime(playhead));
     if (Number.isFinite(value)) video.currentTime = value;
     if ($("follow").checked) view = followView(duration(), view, playhead);
     draw(); renderNavigation(); renderTimelines();
 }
 async function togglePlay() {
     if (!video.paused) { pause(); return; }
-    if (playhead >= sourceBounds()[1] - frameMs()) seek(sourceBounds()[0]);
+    if (frames.containing(playhead) === frames.end-1) seek(sourceBounds()[0]);
     $("referenceMode").value = "review";
     try { await video.play(); $("play").textContent = "Pause"; } catch (error) { fail(error); }
 }
@@ -115,7 +124,7 @@ function prepare(canvas) {
     return [ctx, r.width, r.height];
 }
 function drawSource() {
-    if (!state) return;
+    if (!state || !frames) return;
     const [ctx,w,h] = prepare($("sourceCanvas"));
     const found = selected(), reference = found?.lane === "stabilization" ? found.region.reference : null;
     const zoom = reference && $("cropZoom").checked && $("referenceMode").value !== "crop";
@@ -125,7 +134,7 @@ function drawSource() {
     if (video.readyState >= 2) ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
     const point = p => [ox+(p[0]-crop[0])*scale, oy+(p[1]-crop[1])*scale];
     if (reference) {
-        const firstFrame = Math.abs(playhead-found.region.start_ms) < frameMs()*.75;
+        const firstFrame = frames.containing(playhead) === frames.ceil(found.region.start_ms);
         const [x,y] = point(reference.crop_xywh); ctx.strokeStyle = "#e2b672"; ctx.lineWidth = 1.5;
         ctx.strokeRect(x,y,reference.crop_xywh[2]*scale,reference.crop_xywh[3]*scale);
         if (firstFrame) for (const [i,p] of reference.points.entries()) {
@@ -136,36 +145,41 @@ function drawSource() {
     if (sourceDrag) {const a=point(sourceDrag.start),b=point(sourceDrag.end);ctx.strokeStyle="#9fcaff";ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);}
 }
 function draw() {
-    if (!state) return;
-    drawSource(); $("time").textContent = formatTime(playhead,3,duration() >= 3600000);
-    if (document.activeElement !== $("goTime")) $("goTime").value = (playhead/1000).toFixed(3);
+    if (!state || !frames) return;
+    drawSource(); $("time").textContent = `F ${frames.containing(playhead)} · ${formatTime(playhead,3,duration() >= 3600000)}`;
+    if (document.activeElement !== $("goTime")) $("goTime").value = useFrames()?frames.containing(playhead):(playhead/1000).toFixed(3);
+    $("previous").disabled=frames.containing(playhead)<=frames.first;
+    $("next").disabled=frames.containing(playhead)>=frames.end-1;
 }
 function renderNavigation() {
-    if (!state) return;
+    if (!state || !frames) return;
     view = timelineView(duration(), view);
     $("zoom").value = spanSlider(duration(), view.span_ms);
-    $("pan").min=sourceBounds()[0];$("pan").max = Math.max(sourceBounds()[0],duration()-view.span_ms); $("pan").value = view.start_ms;
+    $("pan").min=useFrames()?frames.first:sourceBounds()[0];$("pan").max = useFrames()?frames.containing(Math.max(sourceBounds()[0],duration()-view.span_ms)):Math.max(sourceBounds()[0],duration()-view.span_ms); $("pan").value = useFrames()?frames.containing(view.start_ms):view.start_ms;
     $("follow").checked = view.follow !== false;
     const thumbKey=`${view.start_ms}:${view.span_ms}`;if(thumbKey!==thumbnailView){thumbnailView=thumbKey;scheduleThumbs();}
-    $("viewLabel").textContent = `${formatTime(view.start_ms,1)} – ${formatTime(view.start_ms+view.span_ms,1)} / ${formatTime(duration(),1)}`;
+    $("viewLabel").textContent = useFrames()?`Frames ${frames.ceil(view.start_ms)} – ${frames.ceil(view.start_ms+view.span_ms)} · ${frames.end-frames.first} frames · ${formatTime(clipDuration(),1)}`:`${formatTime(view.start_ms,1)} – ${formatTime(view.start_ms+view.span_ms,1)} / ${formatTime(duration(),1)}`;
     const [a,b] = selectionRange(plan,state.info);
-    for (const [id,t] of [["selectionIn",a],["selectionOut",b]]) if (document.activeElement !== $(id)) $(id).value = (t/1000).toFixed(3);
-    $("selectionLabel").textContent = b-a>1 ? `${((b-a)/1000).toFixed(3)} s selected` : "No time range selected";
+    for (const [id,t] of [["selectionIn",a],["selectionOut",b]]) if (document.activeElement !== $(id)) $(id).value = positionValue(t);
+    const selectedFrames=frames.ceil(b)-frames.ceil(a);
+    $("selectionLabel").textContent = b-a>1 ? `${selectedFrames} frame${selectedFrames===1?"":"s"} · ${((b-a)/1000).toFixed(3)} s selected` : "No frames selected · I to mark In, O to mark Out";
     $("fitSelection").disabled = b-a<1;
     $("processSelected").disabled = busy || (!(b-a>1) && !(plan.selected_ids||[]).length);
     $("detectCuts").disabled=busy;$("cutSensitivity").disabled=busy;
     $("previousCut").disabled=neighboringCut(cuts(),playhead,-1)===null;
     $("nextCut").disabled=neighboringCut(cuts(),playhead,1)===null;
-    $("selectShot").disabled=!state.scene_cuts||busy;
-    $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":state.scene_cuts?`${cuts().length} cut markers${state.scene_cuts.cache_hit?" · cached":""}`:"No cut scan yet";
+    const hasScan=state.scene_cuts?.source_id===state.info.source_id;
+    $("selectShot").disabled=!hasScan||busy;
+    $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":hasScan?`${cuts().length} cut markers${state.scene_cuts.cache_hit?" · cached":""}`:"No cut scan yet";
 }
 function reportMap() { return new Map((state?.report?.regions || []).map(item => [item.id,item])); }
 function renderTimelines() {
-    if (!state || !plan) return;
-    const [ruler,w,rh] = prepare($("ruler")), ticks = rulerTicks(view.start_ms,view.start_ms+view.span_ms,w,duration());
+    if (!state || !plan || !frames) return;
+    const [ruler,w,rh] = prepare($("ruler")), ticks = useFrames()?frames.ticks(view.start_ms,view.start_ms+view.span_ms,w):rulerTicks(view.start_ms,view.start_ms+view.span_ms,w,duration());
     const x = t => (t-view.start_ms)/view.span_ms*w;
     ruler.font="10px ui-monospace,monospace";ruler.fillStyle="#a9bece";ruler.strokeStyle="#3c5362";
-    for (const tick of ticks) {const xx=x(tick.time);ruler.fillText(tick.label,xx+3,14);ruler.beginPath();ruler.moveTo(xx,20);ruler.lineTo(xx,rh);ruler.stroke();}
+    for (const tick of ticks) {const xx=x(tick.time);if(tick.label)ruler.fillText(tick.label,xx+3,14);ruler.beginPath();ruler.moveTo(xx,tick.label?20:rh-5);ruler.lineTo(xx,rh);ruler.stroke();}
+    $("ruler").setAttribute("aria-label",`${useFrames()?"Source frame":"Original video time"} ruler · current frame ${frames.containing(playhead)} · Arrow keys step frames; I and O mark selection`);
     const guides=$("showCuts").checked?visibleCuts(cuts(),view.start_ms,view.span_ms,w):[];
     ruler.fillStyle="#d1cfa4";
     for(const at of guides){const xx=x(at);ruler.beginPath();ruler.moveTo(xx-3,18);ruler.lineTo(xx+3,18);ruler.lineTo(xx,23);ruler.fill();}
@@ -191,7 +205,7 @@ function renderTimelines() {
             bar.classList.toggle("selected",(plan.selected_ids||[]).includes(region.id));bar.classList.toggle("locked",!!region.locked);bar.classList.toggle("disabled-region",region.enabled===false);
             bar.querySelector(".region-title").textContent=`${region.locked?"🔒 ":""}${region.name}${lane==="tracking"?" · "+region.anchor.replaceAll("_"," ")+(region.additional_anchors?.length?` +${region.additional_anchors.length}`:""):""}`;
             bar.querySelector(".region-state").textContent=states.get(region.id)?.state||"";
-            bar.title=`${region.name} · ${formatTime(region.start_ms,3)} – ${formatTime(region.end_ms,3)}${region.locked?" · Locked":""}`;
+            bar.title=`${region.name} · ${positionLabel(region.start_ms)} – ${positionLabel(region.end_ms)} (exclusive)${region.locked?" · Locked":""}`;
             bar.setAttribute("aria-label",bar.title);bar.setAttribute("aria-pressed",String((plan.selected_ids||[]).includes(region.id)));
         }
         for(const child of existing.values())child.remove();
@@ -214,7 +228,7 @@ function renderInspector() {
     const found=selected();$("regionForm").hidden=!found;$("noRegion").hidden=!!found;$("regionKind").textContent=found?found.lane==="tracking"?"SAM3D tracking":"CoTracker3 stabilization":"";
     if(!found)return;
     const {region,lane}=found, disabled=busy||!!region.locked;
-    const values={regionName:region.name,regionIn:(region.start_ms/1000).toFixed(3),regionOut:(region.end_ms/1000).toFixed(3)};
+    const values={regionName:region.name,regionIn:positionValue(region.start_ms),regionOut:positionValue(region.end_ms)};
     if(lane==="tracking")Object.assign(values,{anchor:region.anchor,person:region.person,smoothing:region.smoothing_ms,rois:JSON.stringify(region.rois),axisSettings:JSON.stringify(region.settings||{},null,2)});
     else {Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh)});$("pointCount").textContent=`${region.reference.points.length} points`;}
     for(const [id,value] of Object.entries(values))if(document.activeElement!==$(id))$(id).value=value;
@@ -262,6 +276,7 @@ function addRegion(lane) {
     const [a,b]=selectionRange(plan,state.info),[low,high]=sourceBounds();
     let start=a,end=b;
     if(end-start<1) {start=clamp(playhead,low,high-1);end=Math.min(high,start+Math.min(10000,view.span_ms));}
+    start=frames.snap(start);end=Math.max(frames.at(frames.containing(start)+1),frames.snap(end,true));
     const region=createRegion(lane,uuid(),start,end,state.info,plan[lane].length);
     validateInterval(plan,lane,region.id,start,end,state.info);
     const next={...plan,[lane]:[...plan[lane],region],selected_ids:[region.id],selection:[start,end]};activeId=region.id;edit(next);
@@ -276,7 +291,7 @@ function sourcePosition(event) {
 function referenceEditable() {
     const found=selected();
     if(!found||found.lane!=="stabilization"||busy||found.region.locked)return false;
-    if(video.seeking||Math.abs(playhead-found.region.start_ms)>=frameMs()*.75){status("Go to this region’s first frame before selecting reference points.");return false;}
+    if(video.seeking||frames.containing(playhead)!==frames.ceil(found.region.start_ms)){status("Go to this region’s first frame before selecting reference points.");return false;}
     return true;
 }
 $("sourceCanvas").onpointerdown=event=>{
@@ -311,31 +326,38 @@ for(const lane of LANES) {
     element.onpointermove=event=>{
         if(!timelineDrag||timelineDrag.lane!==lane)return;const drag=timelineDrag,t=timelineTime(event,element,false),width=element.getBoundingClientRect().width;
         if(drag.kind==="selection"){setSelection(drag.anchor,snapTime(t,width),false);return;}
-        if(drag.kind==="seek")return;
+        if(drag.kind==="seek"){seek(t);return;}
         if(Math.abs(event.clientX-drag.startX)<4&&!drag.changed)return;
-        drag.changed=true;const region=drag.original,delta=t-drag.time,[low,high]=sourceBounds(),minimum=Math.min(frameMs(),region.end_ms-region.start_ms);
+        drag.changed=true;const region=drag.original,delta=t-drag.time,[low,high]=sourceBounds();
         let start=region.start_ms,end=region.end_ms;
         if(drag.kind==="move"){start=clamp(start+delta,low,high-(end-start));end=start+(region.end_ms-region.start_ms);
             const left=snapTime(start,width),right=snapTime(end,width);let shift=left!==start?left-start:right-end;
             shift=clamp(shift,low-start,high-end);start+=shift;end+=shift;
         }
-        else if(drag.kind==="start")start=clamp(snapTime(start+delta,width),low,end-minimum);
-        else end=clamp(snapTime(end+delta,width),start+minimum,high);
-        drag.preview={start_ms:Math.round(start*1000)/1000,end_ms:Math.round(end*1000)/1000};
+        else if(drag.kind==="start")start=clamp(snapTime(start+delta,width),low,end);
+        else end=clamp(snapTime(end+delta,width),start,high);
+        if(drag.kind==="move"){
+            const count=frames.ceil(region.end_ms)-frames.ceil(region.start_ms),first=clamp(frames.nearest(start),frames.first,frames.end-count);
+            start=frames.at(first);end=frames.at(first+count);
+        }else if(drag.kind==="start")start=frames.at(Math.min(frames.nearest(start,true),frames.ceil(end)-1));
+        else end=frames.at(Math.max(frames.nearest(end,true),frames.ceil(start)+1));
+        drag.preview={start_ms:start,end_ms:end};
         const bar=element.querySelector(`[data-id="${CSS.escape(drag.id)}"]`);if(bar){bar.style.left=`${(start-view.start_ms)/view.span_ms*100}%`;bar.style.width=`${(end-start)/view.span_ms*100}%`;}
-        status(`${region.name}: ${formatTime(start,3)} – ${formatTime(end,3)}`);
+        status(`${region.name}: ${positionLabel(start)} – ${positionLabel(end)} (exclusive)`);
     };
     element.onpointerup=event=>{
         const drag=timelineDrag;if(!drag||drag.lane!==lane)return;timelineDrag=null;
-        if(drag.kind==="selection"){setSelection(drag.anchor,timelineTime(event,element));status("Time range selected · add a region or process this interval");}
+        if(drag.kind==="selection"){setSelection(drag.anchor,timelineTime(event,element));status("Frame range selected · add a region or process this interval");}
         else if(drag.changed&&drag.preview)attempt(()=>{activeId=drag.id;updateRegion(drag.preview);});
         else seek(timelineTime(event,element));
         renderTimelines();
     };
     element.onpointercancel=()=>{timelineDrag=null;renderTimelines();};
 }
-$("ruler").onpointerdown=event=>{if(event.button===0)seek(timelineTime(event,$("ruler")));};
-$("ruler").onpointermove=event=>{const at=timelineTime(event,$("ruler"),false),near=snapCut(cuts(),at,view.span_ms/Math.max(1,$("ruler").clientWidth)*7);$("ruler").title=$("showCuts").checked&&cuts().includes(near)?`Hard cut · ${formatTime(near,3)} · click to seek`:"Click to seek";};
+let rulerDrag=false;
+$("ruler").onpointerdown=event=>{if(event.button!==0)return;event.preventDefault();$("ruler").focus();rulerDrag=true;$("ruler").setPointerCapture(event.pointerId);seek(timelineTime(event,$("ruler")));};
+$("ruler").onpointermove=event=>{if(!frames)return;if(rulerDrag)seek(timelineTime(event,$("ruler")));const at=timelineTime(event,$("ruler"),false),near=snapCut(cuts(),at,view.span_ms/Math.max(1,$("ruler").clientWidth)*7);$("ruler").title=`Frame ${frames.nearest(at)}${$("showCuts").checked&&cuts().includes(near)?" · Hard cut":""} · drag to seek · ← / → step · I / O mark selection`;};
+$("ruler").onpointerup=$("ruler").onpointercancel=()=>{rulerDrag=false;};
 $("showCuts").onchange=renderTimelines;
 for(const [id,direction]of [["previousCut",-1],["nextCut",1]])$(id).onclick=()=>{const at=neighboringCut(cuts(),playhead,direction);if(at!==null){seek(at);view=followView(duration(),view,at,true);renderNavigation();renderTimelines();}};
 $("selectShot").onclick=()=>{const [a,b]=shotRange(cuts(),playhead,...sourceBounds());setSelection(a,b);status("Shot selected · add a region or isolate this range in the active region");};
@@ -351,7 +373,7 @@ $("timelineBody").addEventListener("wheel",event=>{
 },{passive:false});
 $("regionForm").onsubmit=event=>event.preventDefault();
 for(const [id,field,convert] of [["regionName","name",String],["anchor","anchor",String],["person","person",Number],["smoothing","smoothing_ms",Number]])$(id).onchange=()=>attempt(()=>updateRegion({[field]:convert($(id).value)}));
-for(const [id,field] of [["regionIn","start_ms"],["regionOut","end_ms"]])$(id).onchange=()=>attempt(()=>updateRegion({[field]:Number($(id).value)*1000}));
+for(const [id,field] of [["regionIn","start_ms"],["regionOut","end_ms"]])$(id).onchange=()=>attempt(()=>updateRegion({[field]:positionTime($(id).value)}));
 $("regionEnabled").onchange=()=>attempt(()=>updateRegion({enabled:$("regionEnabled").checked}));
 $("regionLock").onclick=()=>attempt(()=>updateRegion({locked:!selected().region.locked}));
 $("regionRange").onclick=()=>{const r=selected()?.region;if(r)setSelection(r.start_ms,r.end_ms);};
@@ -362,10 +384,10 @@ $("rois").onchange=()=>attempt(()=>{
 });
 $("axisSettings").onchange=()=>attempt(()=>{const settings=JSON.parse($("axisSettings").value);if(!settings||Array.isArray(settings)||typeof settings!=="object")throw new Error("Axis settings must be a JSON object.");updateRegion({settings});});
 $("crop").onchange=()=>attempt(()=>{const crop=JSON.parse($("crop").value);if(!Array.isArray(crop)||crop.length!==4||crop.some(v=>!Number.isFinite(v))||crop[0]<0||crop[1]<0||crop[2]<2||crop[3]<2||crop[0]+crop[2]>state.info.width||crop[1]+crop[3]>state.info.height)throw new Error("Crop must be [x,y,width,height] inside the source image.");const reference=clone(selected().region.reference);reference.crop_xywh=crop;updateRegion({reference});});
-$("referenceFirst").onclick=()=>seek(selected().region.start_ms);
-$("referenceMode").onchange=()=>{if($("referenceMode").value!=="review")seek(selected().region.start_ms);drawSource();};
+$("referenceFirst").onclick=()=>seek(frames.at(frames.ceil(selected().region.start_ms)));
+$("referenceMode").onchange=()=>{if($("referenceMode").value!=="review")$("referenceFirst").click();drawSource();};
 $("cropZoom").onchange=drawSource;
-$("clearPoints").onclick=()=>attempt(()=>{const reference=clone(selected().region.reference);reference.points=[];updateRegion({reference});seek(selected().region.start_ms);});
+$("clearPoints").onclick=()=>attempt(()=>{const reference=clone(selected().region.reference);reference.points=[];updateRegion({reference});$("referenceFirst").click();});
 $("addTracking").onclick=()=>attempt(()=>addRegion("tracking"));$("addStabilization").onclick=()=>attempt(()=>addRegion("stabilization"));
 $("remove").onclick=()=>attempt(()=>{const found=selected();if(!found)return;if(found.region.locked)throw new Error("Unlock this region before deleting it.");const next={...plan,[found.lane]:plan[found.lane].filter(r=>r.id!==found.region.id),selected_ids:[]};activeId=null;edit(next);});
 $("duplicate").onclick=()=>attempt(()=>{
@@ -384,32 +406,43 @@ $("undo").onclick=()=>attempt(()=>{
 });
 $("editRegions").onchange=()=>document.body.classList.toggle("editing-regions",$("editRegions").checked);
 $("fitAll").onclick=()=>{view=timelineView(duration(),{...view,start_ms:sourceBounds()[0],span_ms:clipDuration()});renderNavigation();renderTimelines();scheduleThumbs();};
+$("frameDetail").onclick=()=>{view=zoomView(duration(),view,Math.max(250,frames.at(Math.min(frames.end,frames.containing(playhead)+10))-playhead),playhead);view=followView(duration(),view,playhead,true);renderNavigation();renderTimelines();scheduleThumbs();};
+function renderUnits(){
+    for(const element of document.querySelectorAll("[data-timeline-unit]"))element.textContent=useFrames()?"frame":"s";
+    for(const id of ["goTime","regionIn","regionOut","selectionIn","selectionOut"]){$(id).step=useFrames()?1:.001;$(id).min=useFrames()?frames.first:sourceBounds()[0]/1000;$(id).max=useFrames()?frames.end-(id==="goTime"?1:0):duration()/1000;}
+    $("goTime").setAttribute("aria-label",useFrames()?"Go to source frame":"Go to source time in seconds");
+    $("rulerLabel").textContent=useFrames()?"Source frame · from 0":"Original video time";
+}
+$("timelineUnit").onchange=()=>{renderUnits();render();scheduleThumbs();};
 $("zoom").oninput=()=>{view=zoomView(duration(),view,sliderSpan(duration(),Number($("zoom").value)));renderNavigation();renderTimelines();scheduleThumbs();};
 for(const [id,factor] of [["zoomIn",.65],["zoomOut",1/.65]])$(id).onclick=()=>{view=zoomView(duration(),view,view.span_ms*factor);renderNavigation();renderTimelines();scheduleThumbs();};
 $("fitSelection").onclick=()=>fitRange(...selectionRange(plan,state.info));
 $("showPlayhead").onclick=()=>{view=followView(duration(),view,playhead,true);renderNavigation();renderTimelines();scheduleThumbs();};
 $("follow").onchange=()=>{view.follow=$("follow").checked;};
-$("pan").oninput=()=>{view=panView(duration(),view,Number($("pan").value));renderNavigation();renderTimelines();scheduleThumbs();};
-$("markIn").onclick=()=>{const [,b]=selectionRange(plan,state.info);setSelection(playhead,Math.max(playhead,b));};
-$("markOut").onclick=()=>{const [a]=selectionRange(plan,state.info);setSelection(Math.min(a,playhead),playhead);};
-for(const id of ["selectionIn","selectionOut"])$(id).onchange=()=>setSelection(Number($("selectionIn").value)*1000,Number($("selectionOut").value)*1000);
+$("pan").oninput=()=>{view=panView(duration(),view,useFrames()?frames.at(Number($("pan").value)):Number($("pan").value));renderNavigation();renderTimelines();scheduleThumbs();};
+$("markIn").onclick=()=>{const at=frames.at(activeFrame()),[,b]=selectionRange(plan,state.info);setSelection(at,Math.max(at,b));};
+$("markOut").onclick=()=>{const f=activeFrame(),[a]=selectionRange(plan,state.info);setSelection(Math.min(a,frames.at(f)),frames.at(f+1));};
+$("selectFrame").onclick=()=>{const f=activeFrame();setSelection(frames.at(f),frames.at(f+1));};
+for(const id of ["selectionIn","selectionOut"])$(id).onchange=()=>setSelection(positionTime($("selectionIn").value),positionTime($("selectionOut").value));
 $("clearSelection").onclick=()=>{setSelection(playhead,playhead);};
-$("play").onclick=togglePlay;$("previous").onclick=()=>seek(playhead-frameMs());$("next").onclick=()=>seek(playhead+frameMs());
-$("seekTime").onclick=()=>seek(Number($("goTime").value)*1000);$("goTime").onkeydown=event=>{if(event.key==="Enter")$("seekTime").click();};$("mute").onchange=()=>{video.muted=$("mute").checked;};
+$("play").onclick=togglePlay;$("previous").onclick=()=>seek(frames.step(frames.at(activeFrame()),-1));$("next").onclick=()=>seek(frames.step(frames.at(activeFrame()),1));
+$("seekTime").onclick=()=>seek(positionTime($("goTime").value));$("goTime").onkeydown=event=>{if(event.key==="Enter"){$("seekTime").click();$("ruler").focus();}};$("mute").onchange=()=>{video.muted=$("mute").checked;};
 for(const [id,field] of [["chunkSeconds","chunk_seconds"],["joinMs","join_ms"],["gapPolicy","gap_policy"]])$(id).onchange=()=>attempt(()=>edit({...plan,[field]:id==="gapPolicy"?$(id).value:Number($(id).value)}));
 window.addEventListener("keydown",event=>{
-    if(!state||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,textarea,select,button,[role=separator],[contenteditable=true]"))return;
-    if(event.code==="Space"){event.preventDefault();togglePlay();}
-    if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();seek(playhead+(event.key==="ArrowLeft"?-1:1)*frameMs()*(event.shiftKey?10:1));}
-    if(event.key.toLowerCase()==="i")$("markIn").click();if(event.key.toLowerCase()==="o")$("markOut").click();
+    if(!state||!frames||document.querySelector("main").inert||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,textarea,select,[role=separator],[contenteditable=true]"))return;
+    if(event.code==="Space"&&!event.target.closest("button")){event.preventDefault();togglePlay();}
+    if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();seek(frames.step(frames.at(activeFrame()),(event.key==="ArrowLeft"?-1:1)*(event.shiftKey?10:1)));}
+    if(event.key==="Home"||event.key==="End"){event.preventDefault();seek(frames.at(event.key==="Home"?frames.first:frames.end-1));}
+    if(event.key.toLowerCase()==="i"){event.preventDefault();$("markIn").click();}if(event.key.toLowerCase()==="o"){event.preventDefault();$("markOut").click();}
 });
 video.onloadeddata=()=>{draw();};video.onseeked=draw;video.onended=()=>{pause();draw();};
 video.onerror=()=>fail(new Error("The source video could not be opened. Requeue the timeline node to refresh its source."));
-video.onloadedmetadata=()=>{if(!state)return;video.currentTime=mediaTime(playhead);layout.refresh();draw();};
+video.onloadedmetadata=()=>{if(!state||!frames)return;video.currentTime=mediaTime(frames.seekTime(playhead));layout.refresh();draw();};
+if(video.requestVideoFrameCallback){const presented=(_,metadata)=>{presentedTime=(metadata.mediaTime-fraction(state?.info?.source_origin))*1000;video.requestVideoFrameCallback(presented);};video.requestVideoFrameCallback(presented);}
 function tick(now) {
-    if(state&&!video.paused&&!video.seeking&&now-lastFrame>30){
-        lastFrame=now;playhead=(video.currentTime-fraction(state.info.source_origin))*1000;
-        if(playhead>=sourceBounds()[1]){pause();playhead=sourceBounds()[1];}
+    if(state&&frames&&!video.paused&&!video.seeking&&now-lastFrame>30){
+        lastFrame=now;playhead=frames.at(activeFrame());
+        if(video.currentTime>=mediaTime(sourceBounds()[1]))pause();
         if(view.follow)view=followView(duration(),view,playhead);
         draw();renderNavigation();renderTimelines();
     }
@@ -473,6 +506,7 @@ function validateProcessing(operation) {
 }
 async function process(operation) {
     if(busy)return;
+    if(operation==="detect_cuts")$("sceneTools").open=true;
     try {validateProcessing(operation);await window.s3fTimelineApply();const target=bridge();if(!target)throw new Error("Open this timeline from its ComfyUI node to process it.");
         busy=true;clearError();$("processingProgress").hidden=false;$("progress").removeAttribute("value");$("progressText").textContent="Submitting timeline processing…";status("Queuing processing…");render();
         const request=uuid();processPending={request,operation,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
@@ -508,17 +542,26 @@ window.addEventListener("message",async event=>{
 async function loadState(next, force = false) {
     const first=!state,changedSource=state&&state.info.source_id!==next.info.source_id;
     if(!first&&dirty&&!force&&(conflictingDraft||!equal(next.plan,savedPlan)||changedSource)){pendingState=next;$("reload").hidden=false;status("A newer plan is available · your current edits are kept");state={...state,report:next.report,project:next.project};renderReport();return;}
+    if(first||changedSource||!frames){
+        pause();document.querySelector("main").inert=true;status("Indexing source frames… · timestamps only; the first scan can take a moment");
+        const response=await fetch(new URL(`${api.pathname}/frames?source_id=${encodeURIComponent(next.info.source_id)}`,location.origin));
+        if(response.status===404)throw new Error("Frame navigation needs the updated backend. Restart ComfyUI, then reopen this timeline.");
+        const data=await jsonResponse(response);
+        if(data.source_id!==next.info.source_id)throw new Error("The source changed while indexing frames. Reload the timeline.");
+        frames=frameClock(data);presentedTime=null;
+    }
     state=next;revision=next.revision;
+    frameCuts=state.scene_cuts?.source_id===state.info.source_id?[...new Set(state.scene_cuts.times_ms.map(t=>frames.snap(t)))]:[];
     if(first||changedSource)layout.refresh();
     if(first||changedSource||force)$("cutSensitivity").value=state.scene_cuts?.settings?.sensitivity||"normal";
     if(first||force||!dirty){plan=clone(next.plan);savedPlan=clone(next.plan);dirty=false;draft();}
     plan.tracking||=[];plan.stabilization||=[];plan.selected_ids||=[];plan.selection||=[bounds(next.info)[0],bounds(next.info)[0]];
-    if(first||changedSource){view=timelineView(duration(),{start_ms:sourceBounds()[0],span_ms:clipDuration(),follow:true});playhead=sourceBounds()[0];video.src=new URL(`${api.pathname}/video?source_id=${encodeURIComponent(state.info.source_id)}`,location.origin);video.load();activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;history=[];}
+    if(first||changedSource){view=timelineView(duration(),{start_ms:sourceBounds()[0],span_ms:clipDuration(),follow:true});playhead=frames.at(frames.first);video.src=new URL(`${api.pathname}/video?source_id=${encodeURIComponent(state.info.source_id)}`,location.origin);video.load();activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;history=[];}
     if(!regionById(plan,activeId))activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;
     if(force){history=[];pendingState=null;conflictingDraft=false;$("reload").hidden=true;}
     const source=next.info.source;$("sourceName").textContent=typeof source==="string"?source.split("/").at(-1):String(source?.path||source?.name||"Source video").split("/").at(-1);
     if(!busy)status(dirty?"Unapplied edits":"Plan loaded · select regions to configure processing");
-    render();scheduleThumbs();
+    renderUnits();render();scheduleThumbs();document.querySelector("main").inert=false;
 }
 window.s3fTimelineLoad=async()=>{
     if(loading)return;loading=true;
@@ -531,11 +574,12 @@ function scheduleThumbs() {clearTimeout(thumbTimer);thumbTimer=setTimeout(drawTh
 function drawThumbnails() {
     // Small cached images are fetched only for the visible range; decoding the source remains browser streaming.
     const target=$("thumbnails");if(!target||!state)return;
-    const width=target.getBoundingClientRect().width,count=thumbnailCount(width,layout.settings.thumbnails,state.info.width/state.info.height),fragment=document.createDocumentFragment();
+    const width=target.getBoundingClientRect().width,count=thumbnailCount(width,layout.settings.thumbnails,state.info.width/state.info.height),fragment=document.createDocumentFragment(),seen=new Set();
     for(let i=0;i<count;i++){
-        const at=clamp(view.start_ms+view.span_ms*(i+.5)/count,...sourceBounds()),image=document.createElement("img"),button=document.createElement("button");
-        button.type="button";button.className="thumbnail";button.title=`Source frame · ${formatTime(at,3)}`;button.setAttribute("aria-label",`Seek to ${formatTime(at,3)}`);button.onclick=()=>seek(at);
-        image.src=new URL(`${api.pathname}/thumbnail?source_id=${encodeURIComponent(state.info.source_id)}&at_ms=${Math.round(at)}`,location.origin);image.alt="";image.loading="lazy";image.decoding="async";image.draggable=false;image.onerror=()=>{image.style.visibility="hidden";};button.append(image);fragment.append(button);
+        const at=frames.snap(clamp(view.start_ms+view.span_ms*(i+.5)/count,...sourceBounds())),image=document.createElement("img"),button=document.createElement("button");
+        if(seen.has(at))continue;seen.add(at);
+        button.type="button";button.className="thumbnail";button.title=`Source frame ${frames.containing(at)} · ${formatTime(at,3)}`;button.setAttribute("aria-label",`Seek to frame ${frames.containing(at)}`);button.onclick=()=>seek(at);
+        image.src=new URL(`${api.pathname}/thumbnail?source_id=${encodeURIComponent(state.info.source_id)}&at_ms=${at}`,location.origin);image.alt="";image.loading="lazy";image.decoding="async";image.draggable=false;image.onerror=()=>{image.style.visibility="hidden";};button.append(image);fragment.append(button);
     }
     target.replaceChildren(fragment);
 }

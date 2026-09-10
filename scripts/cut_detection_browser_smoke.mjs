@@ -52,7 +52,7 @@ try{
  report.scan=scanned.scene_cuts;report.checks.push('Real ComfyUI partial queue detects both hard cuts at exact source frames without pose extraction or plan changes');
  const job=Object.values(await(await fetch(base+'/history?max_items=1')).json())[0];assert.deepEqual(job.prompt[4],['2']);assert.ok(!job.outputs['3']);
  await editor.evaluate("document.querySelector('#nextCut').click();document.querySelector('#selectShot').click()");
- assert.deepEqual(await editor.evaluate("[document.querySelector('#selectionIn').value,document.querySelector('#selectionOut').value]"),['2.000','4.000']);
+ assert.deepEqual(await editor.evaluate("[document.querySelector('#selectionIn').value,document.querySelector('#selectionOut').value]"),['60','120']);
  await editor.evaluate("document.querySelector('#isolateSelection').click();window.s3fTimelineApply()");
  assert.equal((await read()).plan.tracking.length,3);report.checks.push('Cut guides select a shot and isolate its tracking section');
  await editor.evaluate("document.querySelector('#detectCuts').click()");

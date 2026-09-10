@@ -28,6 +28,7 @@ const server=http.createServer(async(req,res)=>{
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
  if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
  if(url.pathname===`/sam3d_funscript/timelines/${session}`){apiRequests++;res.setHeader('Content-Type','application/json');if(req.method==='POST'){let body='';for await(const part of req)body+=part;const sent=JSON.parse(body);if(sent.revision!==state.revision){res.statusCode=409;res.setHeader('Content-Type','text/plain');res.end('stale revision');return;}state={...state,revision:state.revision+1,plan:sent.plan};}res.end(JSON.stringify(state));return;}
+ if(url.pathname.endsWith('/frames')){const rate=state.info.source_id==='portrait'?2:30,first=Math.ceil(Number(state.info.start)*rate),end=Math.ceil(state.info.end_ms/1000*rate);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:state.info.source_id,first_frame:first,end_frame:end,times_ms:Array.from({length:end-first},(_,i)=>(i+first)*1000/rate),end_ms:state.info.end_ms}));return;}
  if(url.pathname.endsWith('/thumbnail')){if(state.info.source_id==='portrait'){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));}else{res.statusCode=404;res.end();}return;}
  let file;if(url.pathname.endsWith('/video'))file=state.info.source_id==='portrait'?portraitClip:clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
  if(!file||!fs.existsSync(file)){res.statusCode=404;res.end();return;}
@@ -48,6 +49,9 @@ try{
  await until(()=>page.evaluate('document.querySelector("#source")?.readyState>=2&&!document.querySelector("#apply").disabled'),'editor loaded');
  await page.evaluate('Object.defineProperty(crypto,"randomUUID",{value:undefined,configurable:true})');
  assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),1);
+ assert.equal(await page.evaluate('document.querySelector("#timelineUnit").value'),'frames');
+ assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/108000 frames/);
+ await page.evaluate('document.querySelector("#timelineUnit").value="time";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"))');
  assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/1:00:00/);
  await page.evaluate('document.querySelector("#regionOut").value=30;document.querySelector("#regionOut").dispatchEvent(new Event("change"));document.querySelector("#anchor").value="mouth";document.querySelector("#anchor").dispatchEvent(new Event("change"))');
  await page.evaluate('document.querySelector("#apply").click()');
@@ -118,6 +122,7 @@ try{
  await until(()=>page.evaluate('document.querySelector("#error")?.textContent.includes("earlier revision")'),'conflicting draft recovery');
  assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Unsaved local edit');
  await page.evaluate('document.querySelector("#reload").click()');await until(()=>page.evaluate('document.querySelector("#reload").hidden'),'load saved revision');
+ await page.evaluate('document.querySelector("#timelineUnit").value="time";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"))');
  // Upstream trims display original timestamps without an unprocessable leading range.
  state={...state,revision:state.revision+1,info:{...state.info,source_id:'trimmed',start:'30',end_ms:3630000},plan:{...state.plan,source_id:'trimmed',tracking:[{...state.plan.tracking[0],id:'trimmed0',start_ms:30000,end_ms:3630000}],stabilization:[],selection:[30000,30000],selected_ids:[]}};
  await page.evaluate('window.s3fTimelineLoad()');
@@ -162,6 +167,35 @@ try{
  fs.writeFileSync('development/timeline-layout-browser/portrait.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
  assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'narrow layout horizontal overflow');
+ // Frame workflow on a real 2 fps clip: keyboard marks include the displayed frame.
+ await page.evaluate('document.querySelector("#timelineUnit").value="frames";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=3;document.querySelector("#goTime").focus()');
+ async function key(key,code=key,modifiers=0){await page.call('Input.dispatchKeyEvent',{type:'keyDown',key,code,modifiers});await page.call('Input.dispatchKeyEvent',{type:'keyUp',key,code,modifiers});}
+ await key('Enter');await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'frame 3 seek');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'3');
+ assert.ok(Math.abs((await page.evaluate('document.querySelector("#source").currentTime'))-1.5)<.001);
+ await key('i','KeyI');await key('ArrowRight');await key('ArrowRight');await key('o','KeyO');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['3','6']);
+ assert.match(await page.evaluate('document.querySelector("#selectionLabel").textContent'),/3 frames/);
+ await page.evaluate('document.querySelector("#apply").click()');await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'frame selection apply');
+ assert.deepEqual(state.plan.selection,[1500,3000],'save original timestamps, not frame indices');
+ await key('End');await key('i','KeyI');await key('o','KeyO');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['19','20']);
+ assert.equal(await page.evaluate('document.querySelector("#next").disabled'),true);
+ await key('Home');assert.equal(await page.evaluate('document.querySelector("#previous").disabled'),true);
+ await key('ArrowRight','ArrowRight',8);assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'10');
+ // Editable text fields keep their normal typing/arrow behavior.
+ await page.evaluate('document.querySelector("#regionName").focus()');await key('ArrowRight');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'10');
+ await page.evaluate('document.querySelector("#frameDetail").click();document.querySelector("#selectFrame").click()');
+ assert.match(await page.evaluate('document.querySelector("#selectionLabel").textContent'),/1 frame/);
+ assert.match(await page.evaluate('document.querySelector("#ruler").getAttribute("aria-label")'),/current frame 10/);
+ // Every live ruler drag lands on a source frame rather than fractional seconds.
+ await page.evaluate('document.querySelector("#ruler").scrollIntoView({block:"center"})');
+ const rulerRect=await rect('#ruler');await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:rulerRect.x+rulerRect.w*.2,y:rulerRect.y+25,button:'left',clickCount:1});
+ await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:rulerRect.x+rulerRect.w*.7,y:rulerRect.y+25,buttons:1});
+ const dragged=await page.evaluate('Number(document.querySelector("#goTime").value)');assert.ok(Number.isInteger(dragged));assert.notEqual(dragged,10);
+ await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:rulerRect.x+rulerRect.w*.7,y:rulerRect.y+25,button:'left',clickCount:1});
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),String(dragged));
  assert.equal(errors.length,0,JSON.stringify(errors));
- console.log(JSON.stringify({checks:['neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message'],apiRequests,errors},null,2));
+ console.log(JSON.stringify({checks:['neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport'],apiRequests,errors},null,2));
 }finally{for(const socket of sockets)socket.close();chrome.kill('SIGTERM');server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(temporary,{recursive:true,force:true});}

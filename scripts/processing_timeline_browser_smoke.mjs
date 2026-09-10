@@ -46,6 +46,7 @@ try{
  await until(()=>editor.evaluate("document.querySelector('#source')?.readyState>=2&&!document.querySelector('#apply').disabled"),"source frame and editor");
  async function field(id,value){await editor.evaluate(`(()=>{const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('change'))})()`)}
  async function click(id){await editor.evaluate(`document.getElementById(${JSON.stringify(id)}).click()`)}
+ await field('timelineUnit','time'); // This backend smoke schedules known seconds; Frames is the UI default.
  await editor.evaluate("Object.defineProperty(crypto,'randomUUID',{value:undefined,configurable:true})");
  await field('goTime',5);await click('seekTime');await click('split');
  assert.equal(await editor.evaluate("document.querySelectorAll('#trackingLane .region-bar').length"),2);

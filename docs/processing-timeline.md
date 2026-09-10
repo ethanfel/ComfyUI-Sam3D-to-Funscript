@@ -157,7 +157,7 @@ One mask identifies one person, exposed as person slot 0.
 
 ## Hard-cut guides
 
-Click **Detect cuts** above the timeline to scan the input video. This is a
+Expand **Scene cuts** above the timeline and click **Detect cuts** to scan the input video. This is a
 separate, cached CPU scan; it does not run SAM3D or stabilization. It follows every
 source frame regardless of the pose **sample_fps** setting, uses small images and
 bounded decoder buffers, and puts each marker on the first frame of the new shot
@@ -193,17 +193,46 @@ processing run supplies a project.
 
 ## Navigate and select
 
-- Click the timeline to seek. **Shift-drag** selects a time interval.
+The toolbar groups **Scale / Zoom**, **Playhead**, and **Selection** separately.
+Mark buttons sit next to their In/Out values; selection actions follow them.
+The **Scene cuts** section expands when needed, keeping detection settings out of
+the main editing row. Its header shows the latest scan status even when collapsed.
+
+- The default **Frames** scale shows original source frame numbers, starting at
+  **0**. **Go to** accepts a frame number; Enter seeks and focuses the ruler so
+  keyboard navigation can continue immediately. **Time** is an optional seconds
+  display. Both modes snap new selections and region boundaries to source frames.
+- **Left/Right** step exactly one source frame; **Shift+Left/Right** step ten.
+  **Home/End** go to the first/last frame of the available clip. These shortcuts
+  do not take over typing in text fields or resizing a focused layout divider.
+- Use **I / Mark In**, step or play to the other end, then **O / Mark Out** to
+  select an interval without dragging. Mark Out **includes the displayed frame**.
+  In/Out fields use an exclusive Out boundary: frames 3, 4 and 5 are **In 3,
+  Out 6**. This also allows the very last frame to be selected. **Select frame**
+  selects only the displayed frame.
+- Click or drag the ruler to scrub; **Shift-drag** a lane to select an interval.
+  **Frame detail** zooms around the playhead for individual frame ticks. At wider
+  zoom levels labels are spaced out to remain readable.
 - Use the zoom slider or **Ctrl/Cmd-wheel** to zoom; use the horizontal scrollbar,
   overview or **Shift-wheel** to move along the video.
 - **Fit selection**, **Show playhead** and **Follow** help navigate long clips.
 - Turn on **Edit region positions** before dragging or resizing regions. With it
-  off, navigation does not accidentally move a region boundary.
-- The region inspector exposes its name, **In/Out** times, enabled state and lock.
+  off, navigation does not accidentally move a region boundary. Moving a region
+  preserves its frame count, including on variable-frame-rate video.
+- The region inspector exposes its name, **In/Out** boundaries, enabled state and lock.
   Duplicate a region into the selection, split it at the playhead, or delete it.
 
 Region positions and time selections serve different purposes. Selecting an
 interval limits a processing request; it does not trim or shift the original video.
+
+Frame navigation uses decoded presentation timestamps, not average FPS or the pose
+sampling rate. On first open, the backend streams the source through bounded CPU
+decoder buffers to build a timestamp index. It retains only numbers, never a full
+video tensor; the first scan can take time on a long video. The completed index is
+cached and shared across sessions and trims of that file. Trims retain original
+source frame numbers. Variable-frame-rate frames retain their actual spacing on
+the timeline. Plans and exported actions still store original-video milliseconds;
+changing display scale does not rewrite existing regions or locked results.
 
 ## Process only the work you need
 

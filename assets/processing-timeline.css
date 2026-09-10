@@ -22,3 +22,25 @@ body.wide-layout main{max-width:none}.layout-tools{font-size:12px}.layout-tools 
 body.resizing-columns,body.resizing-columns *{cursor:col-resize!important;user-select:none!important}body.resizing-rows,body.resizing-rows *{cursor:row-resize!important;user-select:none!important}
 .resize-row{min-height:12px}.thumbnail-row{margin-bottom:0}#thumbnails{height:var(--thumbnails-height);gap:2px}#thumbnails .thumbnail{flex:1;min-width:0;overflow:hidden;border:0;border-radius:0;padding:0;background:#0b141a;height:100%;display:block}#thumbnails .thumbnail:focus-visible{outline-offset:-2px}#thumbnails img{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none}#overview{height:var(--overview-height)}
 @media(max-width:750px){#previewWorkspace{grid-template-columns:minmax(0,1fr);height:auto;gap:10px}#sourcePreview{height:var(--stage-height)!important}#previewWorkspace .inspector{height:var(--stage-height);max-height:var(--stage-height)}.column-divider{display:none}.layout-tools{gap:7px}.layout-tools span{flex-basis:100%}}
+
+#ruler:focus-visible{outline:1px solid var(--blue);outline-offset:-1px}.seek-control{flex-wrap:wrap}#sourcePreview .transport #goTime{width:92px}
+
+/* Keep navigation, range editing and occasional detection tools distinct. */
+.timeline-controls{margin:8px 0 14px;font-size:12px}.timeline-controls button{padding:6px 9px;font-size:12px}
+.timeline-controls .toolbar{margin:0;gap:14px}.control-group{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0}
+.timeline-controls .navigation{padding:0 0 14px;gap:12px 20px}.navigation .group-label{font-size:11px;color:var(--muted)}
+.navigation select{padding:6px 8px}.navigation #zoom{width:138px;margin:0 3px}.navigation #zoomIn,.navigation #zoomOut{width:28px;padding:6px 0}
+.navigation .edit-toggle{font-size:11px;margin-left:auto}.playhead-control{padding-left:16px;border-left:1px solid var(--line)}
+.selection-panel{background:#172630;border:1px solid #314753;border-radius:7px;padding:10px 12px}
+.selection-heading{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:9px}.selection-heading strong{font-size:12px;color:#d4e6f0}
+.selection-heading #selectionLabel{font-size:11px}.timeline-controls .selection{gap:9px 16px;margin:0}
+.boundary-control{display:flex;align-items:stretch;border:1px solid #486171;border-radius:5px;overflow:hidden;background:#1c303e}
+.boundary-control>button{border:0;border-right:1px solid #486171;border-radius:0;background:#284554;color:#d4f5ed;min-width:91px;display:flex;gap:12px;align-items:center;justify-content:space-between}
+.boundary-control>label{padding:0 8px 0 0;gap:2px}.boundary-control input[type=number]{width:91px;border:0;border-radius:0;background:transparent;padding:8px 7px;font:12px ui-monospace,monospace}
+.boundary-control [data-timeline-unit]{color:var(--muted);font-size:10px}.timeline-controls kbd{font:10px ui-monospace,monospace;color:#a2becd;min-width:16px;border:1px solid #627781;border-radius:3px;padding:1px 3px}
+.selection-actions{gap:7px}.selection-hint{margin-left:auto;font-size:10px;line-height:1.5;color:var(--muted)}
+.scene-tools{border-bottom:1px solid var(--line);margin:8px 0 0}.scene-tools>summary{padding:9px 2px;font-size:12px;color:#bbd0dc;cursor:pointer}
+.scene-tools>summary>span:first-child{margin-right:16px}.scene-tools #cutStatus{font-size:10px}.scene-tools .cut-tools{padding:3px 0 13px;gap:12px 24px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media(max-width:1050px){.selection-hint{margin-left:0;flex-basis:100%}.selection-hint br{display:none}.playhead-control{padding-left:0;border-left:0}.navigation .edit-toggle{margin-left:0}}
+@media(max-width:750px){.timeline-controls .navigation{gap:10px 16px}.zoom-control{gap:5px}.navigation #zoom{width:100px}.selection-panel{padding:9px}.timeline-controls .selection{gap:9px}.boundary-control input[type=number]{width:82px}.scene-tools .cut-tools{gap:12px}.scene-tools>summary>span{display:inline}.selection-heading{gap:7px}.selection-heading #selectionLabel{flex-basis:100%}}
