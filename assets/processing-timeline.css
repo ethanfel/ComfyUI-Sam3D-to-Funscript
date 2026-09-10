@@ -6,6 +6,10 @@
 
 .cut-tools{font-size:12px;gap:10px;margin-bottom:12px}.cut-tools select{padding:6px 8px}#cutStatus{font-size:11px;color:var(--muted)}.cut-guides{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}#ruler{cursor:pointer}
 
+/* Recovery stays outside the inert editor so it works even before modules load. */
+#startupRecovery{margin:16px 20px;padding:14px;border:1px solid #a46e50;border-radius:7px;background:#382f29}
+#startupRecovery p{margin:0 0 10px;overflow-wrap:anywhere}#startupRecovery span{margin-left:12px;font-size:12px;color:var(--muted)}
+
 /* Layout geometry belongs to the view, independent of analysis regions. */
 :root{--stage-height:500px;--thumbnails-height:90px;--overview-height:43px}
 body.wide-layout main{max-width:none}.layout-tools{font-size:12px}.layout-tools span{color:var(--muted);font-size:11px}
@@ -44,3 +48,65 @@ body.resizing-columns,body.resizing-columns *{cursor:col-resize!important;user-s
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 @media(max-width:1050px){.selection-hint{margin-left:0;flex-basis:100%}.selection-hint br{display:none}.playhead-control{padding-left:0;border-left:0}.navigation .edit-toggle{margin-left:0}}
 @media(max-width:750px){.timeline-controls .navigation{gap:10px 16px}.zoom-control{gap:5px}.navigation #zoom{width:100px}.selection-panel{padding:9px}.timeline-controls .selection{gap:9px}.boundary-control input[type=number]{width:82px}.scene-tools .cut-tools{gap:12px}.scene-tools>summary>span{display:inline}.selection-heading{gap:7px}.selection-heading #selectionLabel{flex-basis:100%}}
+
+.ruler-track{position:relative;min-width:0}#cutMarkers{position:absolute;inset:0;pointer-events:none;z-index:7}
+#cutMarkers .cut-marker{position:absolute;top:13px;width:17px;height:18px;transform:translateX(-50%);padding:0;border:0;border-radius:3px;background:transparent;pointer-events:auto}
+.cut-marker::after{content:"";display:block;width:7px;height:7px;margin:auto;background:#c4bd8f;transform:rotate(45deg);border:1px solid #e3d9a4}
+#cutMarkers .cut-marker:hover,#cutMarkers .cut-marker:focus-visible,#cutMarkers .cut-marker[aria-pressed=true]{background:#e5cb8226;z-index:1;outline:1px solid #e8c777;outline-offset:0}
+.cut-marker[aria-pressed=true]::after{background:#ffe0a8}.cut-actions{position:absolute;bottom:calc(100% + 8px);width:min(500px,100%);padding:11px;border:1px solid #9c885c;border-radius:7px;background:#20333f;box-shadow:0 5px 20px #0009;z-index:9;font-size:12px}
+.cut-action-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px;color:#f1dca5}.cut-actions button{font-size:12px;padding:6px 8px}.cut-action-heading button{padding:2px 9px;font-size:16px}.cut-actions p{font-size:10px;line-height:1.5;color:var(--muted);margin:8px 0}
+.cut-actions kbd{font:10px ui-monospace,monospace;opacity:.65;margin-left:5px}.cut-create{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:9px}.cut-create select{padding:6px}.cut-create>span{width:100%;color:var(--muted);font-size:10px}
+
+/* Keep the filmstrip next to the preview; tools use the existing side panel. */
+#previewWorkspace .inspector{display:flex;flex-direction:column;overflow:hidden}
+.inspector-tabs{display:flex;flex:none;gap:6px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:10px}
+.inspector-tabs button{font-size:12px}.inspector-tabs [aria-selected=true]{background:#295749;border-color:#66b89b;color:#e1f9ef}
+#timelineToolsPane,#regionSettingsPane{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;padding-right:4px}
+#timelineToolsPane{margin:0}.timeline-controls .navigation{padding-bottom:12px;gap:12px}
+#timelineToolsPane .edit-toggle{margin-left:0}#timelineToolsPane .selection-hint{flex-basis:100%;margin-left:0}
+#timelineToolsPane .playhead-control{padding-left:0;border-left:0}#timelineToolsPane .selection-heading{gap:8px}
+#timelineToolsPane .scene-tools{border-bottom:0}#timelineToolsPane .scene-tools .cut-tools{gap:12px}
+.timeline-panel{margin-top:0}.timeline-heading-tools{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0;flex-wrap:wrap}
+.timeline-heading-tools span{font-size:11px;color:var(--muted)}.timeline-heading-tools button{font-size:11px;padding:4px 8px}
+@media(max-width:750px){
+    main{display:flex;flex-direction:column;gap:0}main>*{flex-shrink:0}
+    #previewWorkspace{display:contents}#sourcePreview{order:1;flex:none}
+    main>[data-resize=stage]{order:2}.timeline-panel{order:3}
+    #previewWorkspace>.inspector{order:4;flex:none;height:var(--stage-height);margin-top:14px}.processing{order:5}
+    .timeline-heading-tools{gap:6px}.timeline-heading-tools span{font-size:10px}
+}
+
+#detailedAnchors{border:1px solid var(--line);border-radius:6px;padding:0 10px}#detailedAnchors>summary{padding:10px 0}
+#detailedAnchorCount{color:var(--muted);font-size:11px;margin-left:7px}.anchor-search{margin:8px 0 12px}.anchor-search input{padding:7px;flex:1;min-width:0;width:100%}
+.detailed-anchor-results{max-height:310px;overflow:auto;margin-bottom:10px}.detailed-anchor-results>section{border:0;border-radius:0;padding:0;background:transparent}
+.detailed-anchor-results h3{font-size:11px;color:var(--muted);margin:12px 0 5px}.detailed-anchor-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #2e424f;font-size:11px;flex-wrap:wrap}
+.detailed-anchor-row>span{flex:1;min-width:120px}.detailed-anchor-row>button{font-size:11px;padding:4px 7px}.detailed-anchor-row>label{font-size:11px;gap:3px}
+.detailed-anchor-row [aria-pressed=true]{color:var(--mint)}.anchor-selected{display:flex;flex-wrap:wrap;gap:6px}.anchor-selected:not(:empty){margin-top:12px}.anchor-selected button{font-size:11px;padding:4px 8px}
+
+/* Preview controls stay above the image, beside its existing heading. */
+.preview-choice{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.preview-choice h2{white-space:nowrap}.preview-choice select{padding:4px 7px;font-size:12px}#sourcePreview>.panel-heading{flex-wrap:wrap}#previewStatus{flex:1;min-width:150px;text-align:right}#stabilizedStatus{flex-basis:100%}#openStabilized{font-size:12px}
+
+#previewStatus[data-held=true],#trackingHealth[data-held=true]{color:#ffc18b}#trackingHealth{line-height:1.6}.region-state[data-held=true]{color:#ffd0a0}
+.reference-keyframe{position:absolute;bottom:3px;transform:translateX(-50%);color:#f5cf81;font-size:15px;line-height:20px;cursor:pointer;z-index:3;padding:0 3px}
+
+/* Keep reference setup and quick iteration together in the region inspector. */
+#stabilizationSettings>div{padding:10px 0;border-bottom:1px solid var(--line)}
+#stabilizationSettings .toolbar{gap:8px;margin:0 0 8px}
+#stabilizationSettings .toolbar:last-child{margin-bottom:0}
+#stabilizationSettings .muted{font-size:11px;line-height:1.5}
+#stabilizationSettings .reference-frames select{flex:1;min-width:150px;max-width:260px}
+#stabilizationSettings #pointCount{margin-left:auto}
+#stabilizationSettings #trackingHealth{font-size:12px;line-height:1.5;margin:0 0 8px}
+#stabilizationSettings #stabilizedStatus{flex-basis:100%}
+#stabilizationSettings details{margin-top:10px}
+#stabilizationSettings details p{font-size:12px;line-height:1.6}
+#stabilizationProgress{flex-basis:100%;align-items:center}
+#stabilizationBar{width:100%;height:7px}
+#stabilizationProgressText{font-size:12px;overflow-wrap:anywhere}
+#trackStabilization[aria-busy=true]::before{content:"";display:inline-block;width:10px;height:10px;border:2px solid #ffffff40;border-top-color:currentColor;border-radius:50%;margin-right:7px;animation:reference-spin 1s linear infinite}
+@keyframes reference-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#trackStabilization[aria-busy=true]::before{animation:none}}
+
+.stabilization-steps{display:flex;gap:5px;margin:12px 0}.stabilization-steps button{flex:1;white-space:normal}.stabilization-steps button[aria-current="step"]{border-color:#7fdabe;background:#2e534b}.stabilization-steps small{display:block;color:#acc0ca;font-weight:normal}#maskStep fieldset{border:1px solid #3c5360;border-radius:6px;margin:12px 0;padding:10px}#maskStep input[type=number]{width:70px}#maskStatus{color:#93deca}#replaceMaskPointsLabel{display:flex;gap:6px;font-size:12px;margin:8px 0}#maskStep p,#anchorsStep p{line-height:1.5}.stabilization-steps button:disabled{opacity:.8}
+
+.stabilization-steps{position:sticky;top:0;z-index:4;background:#1f303a;padding:5px 0}

@@ -7,6 +7,20 @@ reference region is more useful than an inferred partial-body pose.
 Open [the example workflow](../workflows/reference_stabilization.json). Its Motion
 Studio standalone node and embedded preview share the same editing session.
 
+## Optional masks in the Processing Timeline
+
+The [Processing Timeline](processing-timeline.md#stabilization-in-three-stages)
+adds a mask → stabilize → anchors workflow to each stabilization region.
+ComfyUI-SAM2Matting propagates a painted mask in both directions from its seed
+frame. Dense points can be generated inside that mask; CoTracker still follows
+numbered point identities. The propagated mask filters trajectories with an
+adjustable pixel tolerance, rather than deriving translation from a mask center.
+
+The original point-only workflow remains available in both editors. The separate
+Reference editor retains its existing point/keyframe controls; the new mask tools
+are in the Timeline. Neither propagation nor a denser point set guarantees that
+independently deforming surfaces will agree on one translation.
+
 ## Select the reference
 
 1. Choose the source with core **Load Video**, optionally through core **Trim Video**.
@@ -14,12 +28,16 @@ Studio standalone node and embedded preview share the same editing session.
    are selected, this node prepares the editor and blocks dependent extraction.
 3. Choose **Draw tracking crop**. Draw a crop covering the reference throughout its
    motion. This crop is fixed during tracking; a point leaving it cannot be followed.
-4. Choose **Select starting points**. Click at least three points on the same reference
-   surface. This mode returns to the first analyzed frame. Right-click a point to
-   remove it; **Zoom to crop** makes small regions easier to select.
+4. Seek to a clear frame, click **Mark reference frame**, and place at least three
+   numbered points on the same reference surface. The first reference can be in
+   the middle of the clip. **Zoom to crop** makes small regions easier to select.
+   Add other reference frames before or after it; mark the **same physical points
+   in the same numbered order** on every frame. The point selector lets you
+   reposition an existing point. Right-click removes that identity from all keys.
+   **Remove keyframe** removes only the marked frame; Undo restores it.
 5. Click **Track**. It applies your settings and queues the reference stabilizer and
    its upstream inputs in ComfyUI. Progress and execution errors appear in the editor;
-   the preview refreshes when tracking and rendering finish. Starting points, crop and corrections are stored in the node's
+   the preview refreshes when tracking and rendering finish. Reference keyframes, tracking mode, crop and corrections are stored in the node's
    `reference_json` widget and saved with the workflow.
 6. Once the reference looks right, run the workflow in ComfyUI to extract poses and
    update Motion Studio. **Track** runs only up to the stabilizer, so reviewing the
@@ -72,16 +90,30 @@ and exported scripts still come from the stabilized analysis. In an offline expo
 select each view and use **Choose source video** to load its matching local file.
 Both files remain available while the page is open.
 
-- The node decodes all selected source frames in bounded buffers. CoTracker3 uses
-  overlapping 16-frame windows; it does not load the whole decoded video into RAM.
-  Point history and review metadata grow with duration.
+- **Online** is the default. A single reference on frame zero keeps the original
+  streaming path. References later in the section run forward and backward in
+  overlapping 16-frame windows. For reverse reads, resized RGB frames are spooled
+  to a temporary file on the output disk and deleted afterwards. GPU windows and
+  decoded CPU buffers stay bounded; scratch disk and point history grow with length.
+- **Offline** uses the `scaled_offline.pth` companion weights and supplies the whole
+  selected section at model resolution. Memory grows with frames and queries;
+  an estimated memory preflight and a clear OOM error ask for a shorter section
+  or Online mode. It never silently lowers the frame rate. Inference can only be
+  cancelled between model calls, not inside an active offline GPU call.
+- Between adjacent reference keys, endpoint observations correct gradual drift.
+  The two seeded estimates are blended only where they agree. Conflicting points
+  are rejected and flagged; insufficient consensus still holds the last transform.
+  Marked frames count as manual observations. Hidden predictions remain excluded.
+  Translation assumes the chosen points move together; rotation or deformation
+  may still require smaller sections or manual corrections.
 - A separate streaming pass renders inverse translation with fixed black padding.
   Scale and orientation remain fixed. The output is H.264 CRF 16, without audio.
 - Output clips start at zero. Original inter-frame presentation times are preserved
   exactly and verified in the encoded file. The manifest retains the original source
   timestamps and offset; the editor displays source and output times together.
-- GPU tracking is cached by source/trim, crop, starting points and checkpoint. Manual
-  keys and agreement settings do not invalidate it. **Use cache = false** reruns it.
+- GPU tracking is cached by source/trim, crop, numbered reference keyframes, mode
+  and the actual checkpoint. Manual correction sections and agreement settings
+  do not invalidate it. **Use cache = false** reruns it.
 - The second output points to `reference.json`, including all coordinates, flags,
   corrections, source-time mapping and the rendered video location. It resides under
   `output/sam3d_funscript/reference/`.
@@ -110,3 +142,21 @@ its browser page after installing the node or backend.
 CoTracker3's source and checkpoint use CC-BY-NC-4.0. They are optional external
 dependencies and retain that license; this node pack remains GPL-3.0-only. See the
 [comparison probe](stabilization-probe.md) for pinned sources and the initial results.
+
+## Offline checkpoint
+
+Install the companion weights once, using the ComfyUI Python:
+
+```bash
+python scripts/install_reference_tracker.py --comfy-root /path/to/ComfyUI --mode offline --weights-only
+```
+
+For a custom model location, add `--model-dir /your/models/cotracker` (the directory
+containing your online weights). Both modes resolve through ComfyUI's registered
+`cotracker` paths, including `extra_model_paths.yaml`. The installer verifies the
+pinned SHA-256 and leaves existing runtime dependencies unchanged.
+
+Restart ComfyUI after updating this feature, then refresh open editor tabs. Older
+backends are detected before applying keyframe settings; unapplied drafts remain
+available instead of being saved without their new fields. Existing frame-zero
+point selections and manual correction sections remain supported.

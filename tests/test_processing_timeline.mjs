@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
-import {bounds,createRegion,changeRegion,splitRegion,validateInterval,validateReference,selectionRange,regionRows,isolateSelection} from '../assets/processing-timeline-edit.mjs';
+import {execFileSync} from 'node:child_process';
+import {ANCHORS,DETAILED_ANCHOR_GROUPS,bounds,createRegion,changeRegion,splitRegion,validateInterval,validateReference,selectionRange,regionRows,isolateSelection,regionFromSelection} from '../assets/processing-timeline-edit.mjs';
 import {timelineView,zoomView,panView,rulerTicks} from '../assets/viewport.mjs';
+const backendAnchors=JSON.parse(execFileSync('python',['-c','import json,runpy; print(json.dumps(list(runpy.run_path("sam3d_funscript/anchors.py")["ANCHORS"])))'],{encoding:'utf8'}));
+const pickerAnchors=[...ANCHORS,...Object.values(DETAILED_ANCHOR_GROUPS).flat()];
+assert.equal(new Set(pickerAnchors).size,pickerAnchors.length,'general and detailed lists do not duplicate choices');
+assert.deepEqual([...pickerAnchors].sort(),backendAnchors.sort(),'the browser exposes every supported anchor');
 const info={start:'30',end_ms:3630000,width:1920,height:1080,rate:'30000/1001'};
 assert.deepEqual(bounds(info),[30000,3630000]);
 let plan={tracking:[createRegion('tracking','t0',30000,90000,info)],stabilization:[],selected_ids:[],selection:[30000,30000]};
@@ -30,3 +35,16 @@ assert.equal(zoom.span_ms,30000);assert.equal(pan.start_ms,3600000);assert.ok(ru
 console.log('Processing timeline: original-clock trims, locks, nonoverlap, independent lanes, reference resets, splits, and hour navigation passed');
 
 const fullPlan={tracking:[createRegion('tracking','full',30000,120000,info)],stabilization:[],selection:[45000,75000],selected_ids:['full']};let id=0;const isolated=isolateSelection(fullPlan,'full',()=>`piece${id++}`,info);assert.deepEqual(isolated.tracking.map(r=>[r.start_ms,r.end_ms]),[[30000,45000],[45000,75000],[75000,120000]]);assert.equal(isolated.selected_ids[0],isolated.tracking[1].id);assert.deepEqual(isolated.selection,[45000,75000]);assert.equal(fullPlan.tracking.length,1);
+
+// Cut-selected ranges become actual regions without losing anchors or locks.
+const fromCuts=regionFromSelection(fullPlan,'tracking',()=>`cut${id++}`,info);
+assert.deepEqual(fromCuts.tracking.map(r=>[r.start_ms,r.end_ms]),[[30000,45000],[45000,75000],[75000,120000]]);
+assert.equal(fullPlan.tracking.length,1,'making a cut region does not mutate its input');
+const lockedFull=structuredClone(fullPlan);lockedFull.tracking[0].locked=true;
+assert.throws(()=>regionFromSelection(lockedFull,'tracking',()=>`cut${id++}`,info),/Unlock/);
+lockedFull.selection=[30000,120000];assert.equal(regionFromSelection(lockedFull,'tracking',()=>'',info).selected_ids[0],'full');
+assert.throws(()=>regionFromSelection({...fromCuts,selection:[40000,100000]},'tracking',()=>'',info),/crosses existing regions/);
+const added=regionFromSelection(fullPlan,'stabilization',()=>`stable${id++}`,info);
+assert.deepEqual(added.stabilization.map(r=>[r.start_ms,r.end_ms]),[[45000,75000]]);
+assert.deepEqual(added.stabilization[0].reference.points,[]);
+assert.deepEqual(added.tracking,fullPlan.tracking);

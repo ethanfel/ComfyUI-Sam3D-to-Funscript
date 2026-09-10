@@ -45,8 +45,8 @@ function replace(actions, start, end, value, joinMs, stepMs) {
     const boundary = [evaluate(actions, start), evaluate(actions, end)];
     const derivative = t => {const a=Math.max(start,t-.5),b=Math.min(end,t+.5);return (value(b)-value(a))/(b-a);};
     const at = t => {
-        if (t === start) return boundary[0];
-        if (t === end) return boundary[1];
+        if (width && t === start) return boundary[0];
+        if (width && t === end) return boundary[1];
         if (width && t < start + width) return join(boundary[0], value(start + width), slope(actions,start,-1)*width, derivative(start+width)*width, (t-start)/width);
         if (width && t > end - width) return join(value(end-width), boundary[1], derivative(end-width)*width, slope(actions,end,1)*width, (t-end+width)/width);
         return value(t);
@@ -54,7 +54,15 @@ function replace(actions, start, end, value, joinMs, stepMs) {
     const times = new Set([start, end, roundEven(start + width), roundEven(end - width)]);
     for (let i = 1; i < count; i++) times.add(roundEven(start + i * (end-start) / count));
     const inside = [...times].sort((a,b)=>a-b).map(t => ({at:t, pos:roundEven(clamp(at(t),0,100))}));
-    return {actions:[...actions.filter(p=>p.at<start),...inside,...actions.filter(p=>p.at>end)].map(p=>({...p})), inside};
+    const before=actions.filter(p=>p.at<start),after=actions.filter(p=>p.at>end);
+    // With blending disabled, the pattern owns both boundary values. Put the
+    // return to surrounding motion immediately outside, instead of letting a
+    // long interpolation change unselected motion. Funscripts use integer ms.
+    if(!width){
+        if(before.length&&before.at(-1).at<start-1)before.push({at:start-1,pos:roundEven(evaluate(actions,start-1))});
+        if(after.length&&after[0].at>end+1)after.unshift({at:end+1,pos:roundEven(evaluate(actions,end+1))});
+    }
+    return {actions:[...before,...inside,...after].map(p=>({...p})), inside};
 }
 function random(seed, index) {
     let x = (seed ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0;
@@ -63,7 +71,7 @@ function random(seed, index) {
 }
 export function generatePattern(actions, start, end, options = {}) {
     [start,end] = range(actions,start,end);
-    const {shape="Sine Wave", cycleMs=2000, amplitude=40, center=50, fadeInMs=0, fadeOutMs=0, reverse=false, seed=1, stepMs=20, joinMs=200} = options;
+    const {shape="Sine Wave", cycleMs=2000, amplitude=40, center=50, fadeInMs=0, fadeOutMs=0, reverse=false, seed=1, stepMs=20, joinMs=0} = options;
     if (!PATTERNS.includes(shape)) throw new Error("Choose a known pattern.");
     number(cycleMs,"Cycle length (ms)",200,60000); number(amplitude,"Amplitude",0,50); number(center,"Center",0,100);
     number(fadeInMs,"Fade in (ms)",0,60000); number(fadeOutMs,"Fade out (ms)",0,60000); number(seed,"Random seed",0,4294967295);
@@ -94,7 +102,34 @@ export function generatePattern(actions, start, end, options = {}) {
         return clamp(pos,0,100);
     };
     const result=replace(actions,start,end,value,joinMs,spacing);
-    return {...result, summary:`${shape} · ${(cycleMs/1000).toFixed(3)} s cycle control · ${result.inside.length} points${clipped?` · ${(clipped/samples*100).toFixed(1)}% of samples clipped; reduce amplitude or move center`:""}`};
+    const edges=joinMs?`${Math.min(joinMs,duration/2)} ms blends inside selection edges`:"full selection · no edge blend";
+    return {...result, summary:`${shape} · ${(cycleMs/1000).toFixed(3)} s cycle control · ${edges} · ${result.inside.length} points${clipped?` · ${(clipped/samples*100).toFixed(1)}% of samples clipped; reduce amplitude or move center`:""}`};
+}
+
+// Save only the replaced interval, including the possible one-ms cut guards.
+// Keeping original points (rather than evaluated endpoints) makes removal exact
+// even when the old curve had no points at either selection edge.
+export function rememberPattern(patterns, actions, start, end, name) {
+    [start,end]=range(actions,start,end);
+    let n=0;while(patterns.some(p=>p.id===`pattern_${n}`))++n;
+    return [...patterns,{id:`pattern_${n}`,name,start,end,
+        before:actions.filter(p=>p.at>=start-1&&p.at<=end+1).map(p=>({...p}))}];
+}
+export function patternRemovalProblem(patterns, id) {
+    const index=patterns.findIndex(p=>p.id===id);
+    if(index<0)return "Choose an applied pattern on this curve.";
+    const selected=patterns[index];
+    if(patterns.slice(index+1).some(p=>p.start-1<=selected.end+1&&p.end+1>=selected.start-1))
+        return "Remove the newer overlapping pattern first to preserve its original section.";
+    return "";
+}
+export function removePattern(actions, patterns, id) {
+    const problem=patternRemovalProblem(patterns,id);if(problem)throw new Error(problem);
+    const selected=patterns.find(p=>p.id===id);
+    const restored=[...actions.filter(p=>p.at<selected.start-1||p.at>selected.end+1),...selected.before]
+        .map(p=>({...p})).sort((a,b)=>a.at-b.at);
+    validateReference({actions:restored});
+    return {actions:restored,patterns:patterns.filter(p=>p.id!==id),name:selected.name};
 }
 
 function solve(matrix, vector) {

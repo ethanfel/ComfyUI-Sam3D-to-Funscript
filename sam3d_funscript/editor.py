@@ -146,6 +146,7 @@ def merge_projects(previous, incoming):
             track.update(source=new_id, settings=copy.deepcopy(data['config']['axis_settings'][axis]), script=copy.deepcopy(data['scripts'][axis]))
             track.pop('metrics', None)
             track.pop('edited', None)
+            track.pop('patterns', None)
     for track in new['timeline']['tracks']:
         source = next(s for s in new['timeline']['sources'] if s['id'] == track['source'])
         if source.get('input', source['id']) in old_inputs:
@@ -177,6 +178,10 @@ def merge_projects(previous, incoming):
         out['metadata']['duration_ms'] = max(out['metadata']['duration_ms'], new['metadata']['duration_ms'])
     if 'processing_timeline' in new['metadata']:
         out['metadata']['processing_timeline'] = copy.deepcopy(new['metadata']['processing_timeline'])
+        if 'scene_cuts' in new['metadata']:
+            out['metadata']['scene_cuts'] = copy.deepcopy(new['metadata']['scene_cuts'])
+        else:
+            out['metadata'].pop('scene_cuts', None)
     # Keep historical poses only while a track or a copied main section uses them.
     used = set(latest.values()) | {t['source'] for t in timeline['tracks']}
     for main in timeline['main'].values():

@@ -55,7 +55,7 @@ def stream_windows(iterator, step):
         yield list(buffer), new
 
 
-def translations(points, visible, indices, tolerance=12.0, minimum=3, max_step=48.0):
+def translations(points, visible, indices, tolerance=12.0, minimum=3, max_step=48.0, reference=None, marked_frames=()):
     """Robust absolute displacement of the same point identities from frame zero.
 
     Visibility changes never redefine the reference centroid. Outliers vote for a
@@ -71,8 +71,12 @@ def translations(points, visible, indices, tolerance=12.0, minimum=3, max_step=4
         raise ValueError("Need two frames and enough distinct reference points")
     if np.any(indices < 0) or np.any(indices >= points.shape[1]) or tolerance <= 0 or minimum < 2 or max_step <= 0:
         raise ValueError("Invalid translation parameters")
-    reference = points[0, indices]
-    eligible = visible[0, indices] & np.isfinite(reference).all(axis=1)
+    if reference is None:
+        reference = points[0, indices]
+        eligible = visible[0, indices] & np.isfinite(reference).all(axis=1)
+    else:
+        reference = np.asarray(reference, float)[indices]
+        eligible = np.isfinite(reference).all(axis=1)
     shifts = np.zeros((len(points), 2))
     good = np.zeros(len(points), bool)
     counts = np.zeros(len(points), int)
@@ -102,7 +106,7 @@ def translations(points, visible, indices, tolerance=12.0, minimum=3, max_step=4
         # A held interval can accumulate real displacement. Do not compare the
         # entire reacquisition displacement to a one-frame speed allowance.
         elapsed_frames = max(1, frame-last_good)
-        if frame and np.linalg.norm(shift-shifts[frame-1]) > max_step * elapsed_frames:
+        if frame and frame not in marked_frames and np.linalg.norm(shift-shifts[frame-1]) > max_step * elapsed_frames:
             reason.append("large_jump_needs_review")
             continue
         shifts[frame] = shift

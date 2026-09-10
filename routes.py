@@ -119,6 +119,26 @@ def register_routes():
         except (ValueError, OSError) as error:
             raise web.HTTPBadRequest(text=str(error))
 
+    @routes.get("/sam3d_funscript/timelines/{session}/masks/{mask}/{frame}")
+    async def processing_mask_frame(request):
+        from contextlib import closing
+        from .sam3d_funscript.reference_mask import MaskReader
+        state = processing_state(request)
+        identifier = request.match_info["mask"]
+        if not re.fullmatch(r"[a-f0-9]{24}", identifier): raise web.HTTPNotFound()
+        root = processing_store().directory(state["session"]).resolve()
+        path = (root / "masks" / identifier / "mask.json").resolve()
+        if not path.is_relative_to(root) or not path.is_file(): raise web.HTTPNotFound()
+        try:
+            index = int(request.match_info["frame"])
+            with closing(MaskReader(path)) as reader:
+                if reader.manifest["info"]["source"] != state["info"]["source"]: raise web.HTTPNotFound()
+                if not 0 <= index < len(reader.manifest["frames"]): raise web.HTTPNotFound()
+                png = reader.png(index)
+            return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-cache"})
+        except (ValueError, OSError, KeyError):
+            raise web.HTTPNotFound()
+
     @routes.get("/sam3d_funscript/editors/{session}")
     async def editor_get(request):
         try:
@@ -154,10 +174,16 @@ def register_routes():
     async def asset(request):
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
-            return web.Response(text=standalone_html(), content_type="text/html")
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "timeline-layout.mjs", "frame-clock.mjs"):
+            return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
+        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "timeline-layout.mjs", "frame-clock.mjs"):
             raise web.HTTPNotFound()
-        return web.FileResponse(assets / name)
+        # Module entry points and imported helpers must revalidate together after
+        # an update. Heuristic caching can otherwise mix incompatible exports.
+        return web.FileResponse(assets / name, headers={"Cache-Control": "no-cache"})
+
+    @routes.get("/sam3d_funscript/reference-capabilities")
+    async def reference_capabilities(request):
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1}, headers={"Cache-Control": "no-store"})
 
     def reference_path(request):
         identifier = request.match_info["reference"]
@@ -172,6 +198,15 @@ def register_routes():
     @routes.get("/sam3d_funscript/reference/{reference}")
     async def reference_project(request):
         return web.FileResponse(reference_path(request), headers={"Cache-Control": "no-store"})
+
+    @routes.get("/sam3d_funscript/reference/{reference}/frames")
+    async def reference_frames(request):
+        from .sam3d_funscript.frame_index import frame_index
+        path = reference_path(request)
+        info = json.loads(path.read_text())["info"]
+        async with frame_index_slots:
+            result = await asyncio.to_thread(frame_index, info, path.parent.parent / "frame-index")
+        return web.json_response(result)
 
     @routes.get("/sam3d_funscript/reference/{reference}/video/{kind}")
     async def reference_video(request):
@@ -192,7 +227,7 @@ def register_routes():
         name = request.match_info["name"]
         if name not in ("device-wireframes.mjs", "preview.html", "handy2.svg", "sr6.svg", "preview.svg"):
             raise web.HTTPNotFound()
-        return web.FileResponse(assets / "device-previews" / name)
+        return web.FileResponse(assets / "device-previews" / name, headers={"Cache-Control": "no-cache"})
 
     @routes.get("/sam3d_funscript/projects/{project}")
     async def project(request):

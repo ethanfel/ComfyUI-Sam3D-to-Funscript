@@ -111,6 +111,17 @@ class ProcessingStore:
                 state["cut_progress"] = copy.deepcopy(progress)
             return self.write(state)
 
+    def stabilization_progress(self, session, revision, progress, report=None):
+        """Reference-only runs never publish or clear the motion result."""
+        with LOCK:
+            state = self.read(session)
+            if state is None or state["revision"] != revision:
+                raise PlanConflict("The plan changed while tracking. Reload the timeline to review saved clips.")
+            state["stabilization_progress"] = copy.deepcopy(progress)
+            if report is not None:
+                state["stabilization_report"] = copy.deepcopy(report)
+            return self.write(state)
+
     def bind_editor(self, session, editor_session, project_path=None):
         from .editor import EditorStore
         EditorStore(self.root.parent).path(editor_session)  # Validate before persisting the link.

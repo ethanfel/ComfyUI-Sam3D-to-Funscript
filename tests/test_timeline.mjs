@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {evaluate} from "../assets/curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, trackCoverage} from "../assets/timeline.mjs";
+import {generatePattern,rememberPattern} from "../assets/patterns.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, trackCoverage, boundedSelection, sceneCutTimes} from "../assets/timeline.mjs";
 import {syncProjectInputs, migrateProjectInputs} from "../web/projects.mjs";
 
 const main=[{at:0,pos:10},{at:127,pos:91},{at:522,pos:7},{at:1000,pos:62},{at:2000,pos:23}];
@@ -133,6 +134,41 @@ test("A trimmed source includes its final frame but cannot copy unrelated video 
     for(const selection of [[0,1540],[500,1541],[500,2000]]){
         project.timeline.selection=selection;assert.match(selectionProblem(project,track),/within this source/);
     }
+});
+test("Source selection clamps fractional trim edges; main and remembered copy source stay independent",()=>{
+    const project=fixture();project.times_ms=[36145.833333,40000,46125];project.metadata.duration_ms=46145.833333;
+    initializeTimeline(project);project.metadata={...project.metadata,duration_ms:60000};
+    const track=project.timeline.tracks[0];project.timeline.active=track.id;
+    project.timeline.selection=boundedSelection(project,36411,46165);
+    assert.deepEqual(project.timeline.selection,[36411,46146]);assert.equal(selectionProblem(project,track),'');
+    assert.deepEqual(boundedSelection(project,50000,35000),[36146,46146],'Reverse drag clamps both edges');
+    project.timeline.selection=boundedSelection(project,1000,2000);
+    assert.deepEqual(project.timeline.selection,[36146,36146]);assert.match(selectionProblem(project,track),/time range/);
+    track.window=[38000,42000];assert.deepEqual(boundedSelection(project,37000,45000),[38000,42000]);
+    project.timeline.selection_track=track.id;project.timeline.active='main';
+    project.timeline.selection=boundedSelection(project,35000,50000);
+    assert.deepEqual(project.timeline.selection,[35000,50000]);assert.match(selectionProblem(project,track),/within this source/);
+    assert.deepEqual(boundedSelection(project,-20,61000),[0,60000]);
+});
+test("Scene guides preserve source timing and survive saved project reload",()=>{
+    const project=fixture();project.metadata.scene_cuts={times_ms:[1500.25,500.125,500.125,-1,2001,null,'700',NaN]};
+    assert.deepEqual(sceneCutTimes(project),[500.125,1500.25]);
+    assert.deepEqual(sceneCutTimes(JSON.parse(JSON.stringify(project))),[500.125,1500.25]);
+    delete project.metadata.scene_cuts;assert.deepEqual(sceneCutTimes(project),[]);
+});
+test("Whole copies carry removable patterns only for their authored axis; replacement sources discard obsolete records",()=>{
+    const project=fixture();project.scripts.L1=structuredClone(project.scripts.L0);project.config.axis_settings.L1={...project.config.axis_settings.L0};
+    initializeTimeline(project);const track=project.timeline.tracks[0];
+    track.patterns=rememberPattern([],track.script.actions,200,900,"Heartbeat");
+    track.script.actions=generatePattern(track.script.actions,200,900).actions;
+    copyTrackToMain(project,track,{whole:true});
+    assert.deepEqual(project.timeline.main.L0.patterns,track.patterns);
+    assert.equal(project.timeline.main.L1.patterns,undefined);
+    applyTrack(project,track,'L0',{start:1200,end:1600});assert.equal(project.timeline.main.L0.patterns.length,1);
+    applyTrack(project,track,'L0',{start:600,end:1600});assert.deepEqual(project.timeline.main.L0.patterns,[]);
+    const stored=JSON.parse(JSON.stringify(project));initializeTimeline(stored);
+    assert.deepEqual(stored.timeline.tracks[0].patterns,track.patterns);
+    assignTrack(project,track,track.source,track.axis);assert.equal(track.patterns,undefined);
 });
 test("Latest and saved sources are distinguishable after reruns, reverts and legacy reloads",()=>{
     const project=fixture();initializeTimeline(project);

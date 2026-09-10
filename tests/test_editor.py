@@ -48,10 +48,12 @@ class EditorTests(unittest.TestCase):
         track = previous['timeline']['tracks'][0]
         track.update(locked=True, window=[200, 1800])
         track['script']['actions'] = [{'at': 220, 'pos': 17}, {'at': 1780, 'pos': 89}]
+        track['patterns'] = [dict(id='pattern_0', name='Heartbeat', start=300, end=1000, before=[dict(at=400, pos=50)])]
         track['settings'].update(invert=True, center=37, range=.053)
         previous['timeline']['main']['L0'].update(locked=True, assembled=True, regions=[
             dict(source='project_0', axis='L0', start=200, end=1800, window=[200, 1800], settings=copy.deepcopy(track['settings']))])
         previous['scripts']['L0']['actions'] = [{'at': 0, 'pos': 28}, {'at': 2000, 'pos': 66}]
+        previous['timeline']['main']['L0']['patterns'] = copy.deepcopy(track['patterns'])
         before = json.dumps(previous)
         changed = copy.deepcopy(self.mouth)
         changed['points'][0][0][0][0] += 42
@@ -80,10 +82,14 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(merged['timeline']['tracks'][0]['script'], incoming['scripts']['L0'])
         self.initial['timeline']['tracks'][0]['edited'] = True
         self.initial['timeline']['main']['L0']['edited'] = True
+        self.initial['timeline']['tracks'][0]['patterns'] = [dict(id='pattern_0', name='Heartbeat', start=300, end=1000, before=[])]
+        self.initial['timeline']['main']['L0']['patterns'] = copy.deepcopy(self.initial['timeline']['tracks'][0]['patterns'])
         merged = merge_projects(self.initial, incoming)
         self.assertEqual(merged['timeline']['tracks'][0]['script'], incoming['scripts']['L0'])
         self.assertEqual(merged['scripts']['L0'], incoming['scripts']['L0'])
         self.assertFalse(merged['timeline']['tracks'][0].get('edited'))
+        self.assertNotIn('patterns', merged['timeline']['tracks'][0])
+        self.assertNotIn('patterns', merged['timeline']['main']['L0'])
         self.assertEqual(len(merged['timeline']['sources']), 1)
         self.initial['timeline']['tracks'] = []
         self.assertEqual(merge_projects(self.initial, incoming)['timeline']['tracks'], [])

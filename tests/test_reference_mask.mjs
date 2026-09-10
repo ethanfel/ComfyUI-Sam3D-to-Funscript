@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {maskContains,maskPoints,maskGeometry,prefillReferenceKey,agreementText} from '../assets/reference-mask.mjs';
+import {putReferencePoint,removeReferencePoint,validateReferenceKeys} from '../assets/reference-edit.mjs';
+const mask={frame:4,spacing:5,limit:12,strokes:[{erase:false,radius:16,points:[[20,20],[70,20]]},{erase:true,radius:8,points:[[40,20]]}]};
+assert(maskContains(mask,20,20));assert(!maskContains(mask,40,20));assert(!maskContains(mask,20,50));
+const result=maskPoints(mask,[0,0,100,80]);assert.equal(result.points.length,12);assert(result.total>12);assert(result.points.every(p=>maskContains(mask,...p)));assert(result.points.some(p=>p[0]<30));assert(result.points.some(p=>p[0]>65));
+assert.deepEqual(maskGeometry(mask),maskGeometry({...mask,spacing:20,limit:100}));
+assert.throws(()=>maskPoints({...mask,strokes:[]},[0,0,100,80]),/larger area/);
+const ref={crop_xywh:[0,0,100,80],keyframes:[{frame:0,points:[[20,20],[40,20],[60,20]]}]};
+const data={points:[[],[[22,21],[42,21],[200,30]]],visible:[[],[true,false,false]]};
+const key=prefillReferenceKey(ref,ref,data,1);assert.deepEqual(key.unconfirmed,[1,2]);assert.deepEqual(key.points[2],[60,20]);
+let next={...ref,keyframes:[...ref.keyframes,key]};assert.throws(()=>validateReferenceKeys(next),/unconfirmed/);
+next=putReferencePoint(next,1,1,[42,21]);assert.deepEqual(next.keyframes[1].unconfirmed,[2]);
+next=removeReferencePoint(next,0);assert.deepEqual(next.keyframes[1].unconfirmed,[1]);
+assert.equal(prefillReferenceKey({...ref,crop_xywh:[0,0,40,40]},ref,data,1),null);
+assert.equal(prefillReferenceKey({...ref,keyframes:[{frame:0,points:[[21,20],[40,20],[60,20]]}]},ref,data,1),null);
+assert.equal(agreementText({inliers:[3],visible:[[true,true,true,false]]},0),'3 / 3 visible points agree · 4 total');
+console.log('Masks: paint/erase, distributed density cap, reference identity matching, lost-point review and agreement feedback passed');

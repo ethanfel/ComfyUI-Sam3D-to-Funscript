@@ -16,21 +16,32 @@ for(const args of [
  ['-v','error','-i',portraitClip,'-frames:v','1',portraitThumb]
 ]){const result=spawnSync('ffmpeg',args);assert.equal(result.status,0,result.stderr.toString());}
 
+const stabilizedClip=path.join(temporary,'stabilized.mp4');
+const stableEncode=spawnSync('ffmpeg',['-v','error','-i',portraitClip,'-t','2.5','-vf','pad=220:360:20:20:color=black','-an','-c:v','libx264','-preset','ultrafast','-movflags','+faststart',stabilizedClip]);assert.equal(stableEncode.status,0,stableEncode.stderr.toString());
 const session='1234567890abcdef1234567890abcdef';
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
-let seenProcess=null,apiRequests=0;
+let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true;
+const referenceState={id:'neutral-reference',info:{source_id:'neutral-reference-source',width:160,height:120,source_origin:'0',rate:'2'},config:{crop_xywh:[0,0,160,120],points:[],sections:[]},frame_index:{times_ms:Array.from({length:120},(_,i)=>i*500)}};
 const parentHtml=`<!doctype html><button id="open" onclick="window.editor=window.open('/sam3d_funscript/assets/processing-timeline.html?session=${session}&node=1')">Open editor</button><script>
-window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;await fetch('/test/process',{method:'POST',body:JSON.stringify(d)});e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete'},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
+window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-reference-apply'){await fetch('/test/reference-save',{method:'POST',body:JSON.stringify(d.config)});e.source.postMessage({type:'s3f-reference-applied',request:d.request},location.origin);return;}if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;await fetch('/test/process',{method:'POST',body:JSON.stringify(d)});e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete'},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
 </script>`;
 const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.mp4':'video/mp4'};
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0}));return;}
+ if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
+ if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
+ if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='propagate_mask'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id),mask=region.reference.point_mask;renderedState={...renderedState,source_id:state.info.source_id,masks:{[region.id]:{id:'b'.repeat(24),region:structuredClone(region),mask:{frame:mask.frame,strokes:mask.strokes,model:mask.model},frames:5}}};res.end('{}');return;}if(seenProcess.operation==='stabilize'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id);renderedState={...renderedState,source_id:state.info.source_id,stabilization:{[region.id]:{region:structuredClone(region),video_path:`/output/sam3d_funscript/processing/${session}/reference/${'a'.repeat(24)}/stabilized.mp4`}}};res.end('{}');return;}if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
  if(url.pathname===`/sam3d_funscript/timelines/${session}`){apiRequests++;res.setHeader('Content-Type','application/json');if(req.method==='POST'){let body='';for await(const part of req)body+=part;const sent=JSON.parse(body);if(sent.revision!==state.revision){res.statusCode=409;res.setHeader('Content-Type','text/plain');res.end('stale revision');return;}state={...state,revision:state.revision+1,plan:sent.plan};}res.end(JSON.stringify(state));return;}
+ if(url.pathname==='/view'&&url.searchParams.get('filename')==='state.json'){res.setHeader('Content-Type','application/json');if(!renderedState){res.statusCode=404;res.end('{}');}else res.end(JSON.stringify(renderedState));return;}
+ if(url.pathname==='/view'&&url.searchParams.get('filename')==='reference.json'){
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'a'.repeat(24),state:'ready',info:{source:state.info.source},video:{padding_xy:[20,20]},data:{source_times_ms:[2000,2500,3000,3500,4000],quality:['tracked','tracked','held','held','tracked'],shift_xy:[[0,0],[10,0],[10,0],[10,0],[40,0]],points:Array.from({length:5},(_,i)=>[[40+i*10,60],[70+i*10,70],[100+i*10,60]]),visible:[[true,true,true],[true,true,true],[true,true,false],[true,true,false],[true,true,true]],reasons:['consensus','consensus','insufficient_visible_points','insufficient_visible_points','consensus']}}));return;
+ }
  if(url.pathname.endsWith('/frames')){const rate=state.info.source_id==='portrait'?2:30,first=Math.ceil(Number(state.info.start)*rate),end=Math.ceil(state.info.end_ms/1000*rate);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:state.info.source_id,first_frame:first,end_frame:end,times_ms:Array.from({length:end-first},(_,i)=>(i+first)*1000/rate),end_ms:state.info.end_ms}));return;}
+ if(url.pathname.includes('/masks/')){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));return;}
  if(url.pathname.endsWith('/thumbnail')){if(state.info.source_id==='portrait'){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));}else{res.statusCode=404;res.end();}return;}
- let file;if(url.pathname.endsWith('/video'))file=state.info.source_id==='portrait'?portraitClip:clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
+ let file;if(url.pathname.endsWith('/video/source'))file=clip;else if(url.pathname==='/view'&&url.searchParams.get('filename')==='stabilized.mp4')file=stabilizedClip;else if(url.pathname.endsWith('/video'))file=state.info.source_id==='portrait'?portraitClip:clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
  if(!file||!fs.existsSync(file)){res.statusCode=404;res.end();return;}
  const buffer=fs.readFileSync(file);res.setHeader('Content-Type',mime[path.extname(file)]||'application/octet-stream');
  const range=req.headers.range?.match(/bytes=(\d+)-(\d*)/);if(range){const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),buffer.length-1):buffer.length-1;res.writeHead(206,{'Content-Range':`bytes ${start}-${end}/${buffer.length}`,'Accept-Ranges':'bytes','Content-Length':end-start+1});res.end(buffer.subarray(start,end+1));}else res.end(buffer);
@@ -68,7 +79,26 @@ try{
  async function click(x,y){for(const type of ['mousePressed','mouseReleased'])await page.call('Input.dispatchMouseEvent',{type,x,y,button:'left',clickCount:1});}
  for(const[x,y]of[[40,40],[60,40],[80,40]])await click(map.x+x*map.s,map.y+y*map.s);
  assert.match(await page.evaluate('document.querySelector("#pointCount").textContent'),/3 points/);
+ referenceCapabilities=false;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI")'),'older backend rejects keyframe save');
+ assert.equal(await page.evaluate(`localStorage.getItem('s3f-processing-timeline:${session}').includes('keyframes')`),true,'draft survives unsupported backend');
+ referenceCapabilities=true;
  await page.evaluate('document.querySelector("#apply").click()');await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'point apply');assert.equal(state.plan.stabilization[0].reference.points.length,3);
+ // Multiple reference frames preserve point identities and a per-region mode.
+ await page.evaluate('document.querySelector("#goTime").value=10;document.querySelector("#seekTime").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'later reference frame');
+ await page.evaluate('document.querySelector("#markReference").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'marked reference frame');
+ for(const[x,y]of[[44,40],[64,40],[84,40]])await click(map.x+x*map.s,map.y+y*map.s);
+ assert.match(await page.evaluate('document.querySelector("#pointCount").textContent'),/3 points.*2 marked frames/);
+ await page.evaluate('document.querySelector("#trackingMode").value="offline";document.querySelector("#trackingMode").dispatchEvent(new Event("change"));document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'reference keyframes saved');
+ assert.deepEqual(state.plan.stabilization[0].reference.keyframes.map(k=>k.frame),[0,300]);
+ assert.equal(state.plan.stabilization[0].reference.tracking_mode,'offline');
+ assert.equal(state.plan.stabilization[0].reference.keyframes[0].points.length,3);
+ await page.evaluate('document.querySelector("#referenceKeyframes").value="0";document.querySelector("#referenceKeyframes").dispatchEvent(new Event("change"))');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'first marked frame');
  await page.evaluate('document.querySelector("#regionIn").value=1;document.querySelector("#regionIn").dispatchEvent(new Event("change"))');assert.match(await page.evaluate('document.querySelector("#pointCount").textContent'),/0 points/);
  await page.evaluate('document.querySelector("#undo").click()');assert.match(await page.evaluate('document.querySelector("#pointCount").textContent'),/3 points/);
  // Seek mode never moves a region; editable resize requires the explicit toggle.
@@ -184,7 +214,7 @@ try{
  await key('Home');assert.equal(await page.evaluate('document.querySelector("#previous").disabled'),true);
  await key('ArrowRight','ArrowRight',8);assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'10');
  // Editable text fields keep their normal typing/arrow behavior.
- await page.evaluate('document.querySelector("#regionName").focus()');await key('ArrowRight');
+ await page.evaluate('document.querySelector("#regionSettingsTab").click();document.querySelector("#regionName").focus()');await key('ArrowRight');
  assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'10');
  await page.evaluate('document.querySelector("#frameDetail").click();document.querySelector("#selectFrame").click()');
  assert.match(await page.evaluate('document.querySelector("#selectionLabel").textContent'),/1 frame/);
@@ -196,6 +226,278 @@ try{
  const dragged=await page.evaluate('Number(document.querySelector("#goTime").value)');assert.ok(Number.isInteger(dragged));assert.notEqual(dragged,10);
  await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:rulerRect.x+rulerRect.w*.7,y:rulerRect.y+25,button:'left',clickCount:1});
  assert.equal(await page.evaluate('document.querySelector("#goTime").value'),String(dragged));
+ // Select actual cut markers and turn their exact boundaries into zones.
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#fitAll").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'save before cut gestures');
+ state.scene_cuts={source_id:'portrait',times_ms:[2000,4500,7500],settings:{sensitivity:'normal'}};
+ await page.evaluate('window.s3fTimelineLoad()');
+ assert.equal(await page.evaluate('document.querySelectorAll("#cutMarkers button").length'),3);
+ async function marker(at,modifiers=0,count=1){const r=await rect(`#cutMarkers [data-at="${at}"]`);for(const type of ['mousePressed','mouseReleased'])await page.call('Input.dispatchMouseEvent',{type,x:r.x+r.w/2,y:r.y+r.h/2,button:'left',modifiers,clickCount:count});}
+ await marker(2000);assert.equal(await page.evaluate('document.querySelector("#cutActions").hidden'),false);
+ assert.match(await page.evaluate('document.querySelector("#selectedCutLabel").textContent'),/Cut 1.*Frame 4/);
+ await key('i','KeyI');await marker(4500);await key('o','KeyO');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['4','9'],'cut Out excludes the first incoming-shot frame');
+ assert.match(await page.evaluate('document.querySelector("#selectionHint").textContent'),/before this frame/);
+ await key('ArrowRight');await key('o','KeyO');
+ assert.equal(await page.evaluate('document.querySelector("#selectionOut").value'),'11','after frame stepping, normal Out includes the displayed frame');
+ assert.equal(await page.evaluate('document.querySelector("#cutActions").hidden'),true);
+ await marker(2000);await marker(7500,8);
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['4','15']);
+ await marker(2000,8);assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['4','15'],'reverse cut selection is ordered');
+ await page.evaluate('document.querySelector("#cutBefore").click()');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['0','4']);
+ await marker(7500);await page.evaluate('document.querySelector("#cutAfter").click()');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['15','20']);
+ await marker(2000);await marker(2000,0,2);
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['4','9']);
+ // The popup sits above the ruler without shifting the clicked marker.
+ assert.ok(await page.evaluate('(()=>{const p=document.querySelector("#cutActions").getBoundingClientRect();return p.left>=0&&p.right<=innerWidth&&p.top>=0})()'));
+ await page.evaluate('document.querySelector("#cutRegion").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'cut zone apply');
+ assert.deepEqual(state.plan.tracking.map(r=>[r.start_ms,r.end_ms]),[[0,2000],[2000,4500],[4500,10000]]);
+ assert.ok(state.plan.tracking.every(r=>r.anchor==='mouth'),'split zone keeps anchor settings');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#regionLock").click()');
+ await marker(2000);await page.evaluate('document.querySelector("#cutAfter").click();document.querySelector("#cutRegion").click()');
+ assert.match(await page.evaluate('document.querySelector("#error").textContent'),/Unlock/);
+ assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),1);
+ await page.evaluate('document.querySelector("#regionLock").click()');await marker(2000);
+ await page.evaluate('document.querySelector("#cutAfter").click();document.querySelector("#cutRegionLane").value="stabilization";document.querySelector("#cutRegion").click()');
+ assert.equal(await page.evaluate('document.querySelectorAll("#stabilizationLane .region-bar").length'),1);
+ assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),1);
+ assert.equal(await page.evaluate('document.querySelector("#regionIn").value'),'4');assert.equal(await page.evaluate('document.querySelector("#regionOut").value'),'9');
+ assert.match(await page.evaluate('document.querySelector("#pointCount").textContent'),/0 points/);
+ // Show cuts and Escape dismiss the boundary mode without changing the range.
+ await marker(4500);await key('Escape');assert.equal(await page.evaluate('document.querySelector("#cutActions").hidden'),true);
+ await marker(4500);await page.evaluate('document.querySelector("#showCuts").click()');
+ assert.equal(await page.evaluate('document.querySelectorAll("#cutMarkers button").length'),0);assert.equal(await page.evaluate('document.querySelector("#cutActions").hidden'),true);
+ await page.evaluate('document.querySelector("#showCuts").click()');
+ await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1180,deviceScaleFactor:1,mobile:false});await marker(4500);
+ assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+ assert.ok(await page.evaluate('(()=>{const r=document.querySelector("#cutActions").getBoundingClientRect();return r.left>=0&&r.right<=innerWidth})()'));
+ fs.mkdirSync('development/cut-selection-browser',{recursive:true});
+ fs.writeFileSync('development/cut-selection-browser/selected-cut.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ // A refreshed scan cannot leave a removed boundary selected.
+ state.scene_cuts.times_ms=[2000,7500];await page.evaluate('window.s3fTimelineLoad()');
+ assert.equal(await page.evaluate('document.querySelector("#cutActions").hidden'),true);
+ // Tools are beside the preview, never between the preview and the filmstrip.
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1600,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#showTimelineTools").click();window.scrollTo(0,0)');await wait(100);
+ const geometry=()=>page.evaluate('(()=>{const r=s=>{const b=document.querySelector(s).getBoundingClientRect();return {top:b.top,bottom:b.bottom,left:b.left,right:b.right,height:b.height}};return {preview:r("#previewWorkspace"),video:r("#sourceCanvas"),thumbs:r("#thumbnails"),tools:r("#timelineToolsPane"),inspector:r(".inspector"),timeline:r(".timeline-panel")}})()');
+ const toolsBefore=await geometry();assert.ok(toolsBefore.thumbs.top-toolsBefore.preview.bottom<90,'no rows of controls between video and filmstrip');
+ assert.ok(toolsBefore.tools.left>=toolsBefore.video.right,'tools sit beside video');
+ await page.evaluate('document.querySelector("#sceneTools").open=true');await wait(80);
+ assert.equal((await geometry()).thumbs.top,toolsBefore.thumbs.top,'opening cuts does not push down the timeline');
+ assert.equal((await geometry()).thumbs.height,toolsBefore.thumbs.height,'thumbnail sizing is unchanged');
+ // Selecting a region reveals settings; detailed choices do not crowd the short list.
+ await page.evaluate('document.querySelector("#trackingLane .region-bar").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+ assert.equal(await page.evaluate('document.querySelector("#regionSettingsPane").hidden'),false);
+ await page.evaluate('document.querySelector("#browseAnchors").click();document.querySelector("#anchorSearch").value="left index";document.querySelector("#anchorSearch").dispatchEvent(new Event("input"))');
+ assert.equal(await page.evaluate('document.querySelectorAll(".detailed-anchor-row:not([hidden])").length'),4);
+ await page.evaluate('document.querySelector("[data-anchor=left_index_tip] button").click();document.querySelector("#anchorSearch").value="right thumb";document.querySelector("#anchorSearch").dispatchEvent(new Event("input"));document.querySelector("[data-anchor=right_thumb_tip] input").click();document.querySelector("#additionalAnchors input[value=left_hand]").click()');
+ assert.equal(await page.evaluate('document.querySelector("#anchor").value'),'left_index_tip');
+ assert.equal(await page.evaluate('document.querySelectorAll("#anchor option").length'),10,'only current detailed choice joins the general list');
+ assert.equal(await page.evaluate('document.querySelector("[data-anchor=right_thumb_tip] input").checked'),true,'general toggles retain detailed extra tracks');
+ await page.evaluate('document.querySelector("#regionLock").click()');
+ assert.ok(await page.evaluate('[...document.querySelectorAll("#detailedAnchorResults input,#detailedAnchorResults button,#detailedAnchorTracks button")].every(e=>e.disabled)'));
+ await page.evaluate('document.querySelector("#regionLock").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'detailed anchors saved');
+ assert.equal(state.plan.tracking[0].anchor,'left_index_tip');
+ assert.ok(state.plan.tracking[0].additional_anchors.includes('right_thumb_tip'));
+ assert.ok(state.plan.tracking[0].additional_anchors.includes('left_hand'));
+ const savedAt=await page.evaluate('performance.timeOrigin');await page.call('Page.reload');
+ await until(()=>page.evaluate(`performance.timeOrigin!==${savedAt}&&document.querySelector('#source')?.readyState>=2&&!document.querySelector('main').inert`),'detailed anchors reopened');
+ await page.evaluate('document.querySelector("#regionSettingsTab").click()');
+ assert.equal(await page.evaluate('document.querySelector("#anchor").value'),'left_index_tip');
+ assert.match(await page.evaluate('document.querySelector("#detailedAnchorTracks").textContent'),/right thumb tip/);
+ fs.mkdirSync('development/timeline-tools-browser',{recursive:true});
+ await page.evaluate('document.querySelector("#browseAnchors").click();document.querySelector("#anchorSearch").value="left index";document.querySelector("#anchorSearch").dispatchEvent(new Event("input"));window.scrollTo(0,0)');await wait(100);
+ fs.writeFileSync('development/timeline-tools-browser/detailed-anchors.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ // Frame stepping retains the last painted image while seeking, then paints
+ // exactly the latest decoded frame even when several steps arrive together.
+ await page.evaluate('document.querySelector("#timelineUnit").value="frames";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=3;document.querySelector("#seekTime").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'frame preview baseline');
+ await page.evaluate('(()=>{const c=document.querySelector("#sourceCanvas"),ctx=c.getContext("2d"),v=document.querySelector("#source"),clear=ctx.clearRect.bind(ctx);window.earlyClears=0;ctx.clearRect=(...args)=>{if(v.seeking||v.readyState<2)window.earlyClears++;return clear(...args)};window.beforeStep=c.toDataURL();document.querySelector("#next").click();window.heldDuringStep=c.toDataURL()===window.beforeStep;document.querySelector("#previous").click();document.querySelector("#next").click()})()');
+ assert.equal(await page.evaluate('window.heldDuringStep'),true,'preview is retained synchronously when stepping');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'rapid step completion');
+ assert.equal(await page.evaluate('window.earlyClears'),0,'no blank or stale intermediate redraw while seeking');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'4');
+ assert.ok(await page.evaluate('(()=>{const c=document.querySelector("#sourceCanvas"),r=c.getBoundingClientRect(),v=document.querySelector("#source"),expected=document.createElement("canvas");expected.width=c.width;expected.height=c.height;const ctx=expected.getContext("2d"),s=Math.min(r.width/v.videoWidth,r.height/v.videoHeight);ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.drawImage(v,0,0,v.videoWidth,v.videoHeight,(r.width-v.videoWidth*s)/2,(r.height-v.videoHeight*s)/2,v.videoWidth*s,v.videoHeight*s);return expected.toDataURL()===c.toDataURL()})()'),'preview matches latest decoded video frame');
+ await page.evaluate('document.querySelector("#showTimelineTools").click();document.querySelector("#sceneTools").open=true;window.scrollTo(0,0)');await wait(100);
+ fs.mkdirSync('development/timeline-tools-browser',{recursive:true});
+ await until(()=>page.evaluate('document.querySelector("#thumbnails img")?.naturalHeight===320'),'filmstrip ready for wide screenshot');
+ fs.writeFileSync('development/timeline-tools-browser/wide.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1180,deviceScaleFactor:1,mobile:false});await wait(100);
+ const mobile=await geometry();assert.ok(mobile.inspector.top>=mobile.timeline.bottom,'small screens put tools after the timeline');
+ assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+ await until(()=>page.evaluate('document.querySelector("#thumbnails img")?.naturalHeight===320'),'filmstrip ready for narrow screenshot');
+ fs.writeFileSync('development/timeline-tools-browser/narrow.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  assert.equal(errors.length,0,JSON.stringify(errors));
- console.log(JSON.stringify({checks:['neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport'],apiRequests,errors},null,2));
+ // Rendered regions can be reviewed after reload without processing again.
+ const stable={id:'preview-stable',name:'Rendered section',start_ms:2000,end_ms:4500,enabled:true,locked:false,reference:{crop_xywh:[0,0,180,320],points:[[20,20],[30,30],[40,40]],sections:[]},agreement_pixels:12,max_step_pixels:48};
+ state.plan.stabilization=[stable];state.plan.selection=[2000,4500];state.plan.selected_ids=[stable.id];state.revision++;
+ renderedState={source_id:state.info.source_id,stabilization:{[stable.id]:{region:structuredClone(stable),video_path:`/output/sam3d_funscript/processing/${session}/reference/${'a'.repeat(24)}/stabilized.mp4`}}};
+ await page.evaluate('localStorage.removeItem("s3f-processing-timeline:'+session+'");');
+ await page.call('Page.reload');
+ await until(()=>page.evaluate('document.querySelector("#previewStabilized")&&!document.querySelector("#previewStabilized").disabled'),'saved stabilized clip discovered');
+ await page.evaluate('document.querySelector("#regionSettingsTab").click();document.querySelector("#previewStabilized").click()');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking&&document.querySelector("#previewTitle").textContent==="Stabilized source"'),'stabilized preview loaded');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'4','source frame clock stays at 2 seconds');
+ assert.ok(await page.evaluate('document.querySelector("#source").currentTime<.01'),'render starts at zero');
+ await until(()=>page.evaluate('document.querySelector("#trackingHealth").textContent.includes("2 held / 5")'),'tracking quality loaded');
+ assert.match(await page.evaluate('document.querySelector("#stabilizationLane .region-state").textContent'),/40% held/);
+ await page.evaluate('document.querySelector("#nextHeld").click()');
+ await until(()=>page.evaluate('document.querySelector("#previewStatus").textContent.includes("HELD: fewer than 3")'),'gap shows actual failure reason');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'6','gap navigation uses source frames');
+ assert.equal(await page.evaluate('document.querySelector("#previewStatus").dataset.held'),'true');
+ const pointsVisible=await page.evaluate('document.querySelector("#sourceCanvas").toDataURL()');
+ await page.evaluate('document.querySelector("#showTrackedPoints").click()');
+ assert.notEqual(await page.evaluate('document.querySelector("#sourceCanvas").toDataURL()'),pointsVisible,'tracked point overlay toggles independently of held warning');
+ assert.equal(await page.evaluate('document.querySelector("#previewStatus").dataset.held'),'true');
+ await page.evaluate('document.querySelector("#showTrackedPoints").click();document.querySelector("#goTime").value=4;document.querySelector("#seekTime").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'return to first preview frame');
+
+ await page.evaluate('document.querySelector("#next").click()');await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'stabilized next frame');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'5');assert.ok(await page.evaluate('Math.abs(document.querySelector("#source").currentTime-.5)<.01'));
+ await page.evaluate('document.querySelector("#previewVariant").value="original";document.querySelector("#previewVariant").dispatchEvent(new Event("change"))');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking&&Math.abs(document.querySelector("#source").currentTime-2.5)<.01'),'same original frame');
+ await page.evaluate('document.querySelector("#previewVariant").value="stabilized";document.querySelector("#previewVariant").dispatchEvent(new Event("change"))');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking&&Math.abs(document.querySelector("#source").currentTime-.5)<.01'),'same stabilized frame');
+ // Editing points always returns to the original coordinate system.
+ await page.evaluate('document.querySelector("#referenceMode").value="points";document.querySelector("#referenceMode").dispatchEvent(new Event("change"))');
+ assert.equal(await page.evaluate('document.querySelector("#previewVariant").value'),'original');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking'),'reference first frame');
+ await page.evaluate('document.querySelector("#crop").value="[0,0,170,300]";document.querySelector("#crop").dispatchEvent(new Event("change"));document.querySelector("#previewStabilized").click()');
+ await until(()=>page.evaluate('document.querySelector("#previewStatus").textContent.includes("previous render")'),'stale render clearly labeled');
+ // Crossing the output boundary returns to the original clip without changing clocks.
+ await page.evaluate('document.querySelector("#goTime").value=8;document.querySelector("#seekTime").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'last stabilized frame');
+ await page.evaluate('document.querySelector("#play").click()');
+ await until(()=>page.evaluate('document.querySelector("#previewTitle").textContent==="Original source"&&!document.querySelector("#source").paused'),'playback crosses stabilization end');
+ await page.evaluate('document.querySelector("#play").click()');
+ assert.match(await page.evaluate('document.querySelector("#previewStatus").textContent'),/no rendered stabilization/);
+ fs.mkdirSync('development/stabilized-preview-browser',{recursive:true});
+ await page.evaluate('document.querySelector("#previewStabilized").click();window.scrollTo(0,0)');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking&&document.querySelector("#source").readyState>=2'),'review screenshot');
+ fs.writeFileSync('development/stabilized-preview-browser/preview.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ // Quick reference iterations need no SAM3D region and preserve existing motion.
+ state.plan.tracking=[];state.plan.selection=[7000,8000];state.revision++;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('!document.querySelector("#reload").hidden'),'conflicting old browser plan');
+ await page.evaluate('document.querySelector("#reload").click()');
+ await until(()=>page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length===0'),'no pose regions');
+ const motionBefore=structuredClone({project:state.project,report:state.report,editor_session:state.editor_session});
+ trackCapabilities=false;
+ await page.evaluate('document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI")'),'old tracking backend rejected');
+ trackCapabilities=true;
+ await page.evaluate('document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#trackStabilization").textContent==="Tracking…"'),'track button feedback');
+ assert.equal(await page.evaluate('document.querySelector("#cancelStabilization").hidden'),false);
+ assert.equal(await page.evaluate('document.querySelector("#stabilizationProgress").hidden'),false);
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Tracking complete")'),'tracking-only complete');
+ await until(()=>page.evaluate('document.querySelector("#previewTitle").textContent==="Stabilized source"&&!document.querySelector("#source").seeking'),'automatic stabilized preview');
+ assert.equal(seenProcess.operation,'stabilize');assert.equal(seenProcess.stabilization_id,stable.id);
+ assert.deepEqual(seenProcess.plan.selection,[7000,8000],'unrelated marked range stays unchanged');
+ assert.deepEqual({project:state.project,report:state.report,editor_session:state.editor_session},motionBefore);
+ assert.equal(await page.evaluate('document.querySelector("#referenceAdvanced").open'),false);
+ assert.equal(await page.evaluate('document.querySelector("#referenceHelp").open'),false);
+ await page.evaluate('document.querySelector("#regionLock").click()');
+ assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),true);
+ await page.evaluate('document.querySelector("#regionLock").click();document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('!document.querySelector("#cancelStabilization").hidden'),'cancel available');
+ await page.evaluate('document.querySelector("#cancelStabilization").click()');
+ await until(()=>page.evaluate('!document.querySelector("#trackStabilization").disabled'),'cancel restores controls');
+ assert.deepEqual({project:state.project,report:state.report,editor_session:state.editor_session},motionBefore);
+ // Inspect the compact panel at desktop and narrow sizes with neutral imagery.
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#regionSettingsTab").click();document.querySelector(".inspector").scrollTop=0;window.scrollTo(0,0)');await wait(120);
+ fs.mkdirSync('development/track-only-browser',{recursive:true});
+ fs.writeFileSync('development/track-only-browser/desktop.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ assert.equal(await page.evaluate('document.querySelector("#stabilizationSettings").scrollWidth>document.querySelector("#stabilizationSettings").clientWidth'),false,'setup fits inspector');
+ await page.call('Emulation.setDeviceMetricsOverride',{width:680,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#stabilizationSettings").scrollIntoView({block:"start"})');await wait(120);
+ fs.writeFileSync('development/track-only-browser/narrow.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ assert.equal(await page.evaluate('document.querySelector("#stabilizationSettings").scrollWidth>document.querySelector("#stabilizationSettings").clientWidth'),false,'narrow setup fits');
+ // Optional masks leave the manual point workflow intact and keep each stage independent.
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#goTime").value=5;document.querySelector("#seekTime").click();window.scrollTo(0,0)');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking&&document.querySelector("#source").readyState>=2'),'mask seed frame');
+ await page.evaluate('document.querySelector("#maskSeed").click()');
+ const paintMap=await page.evaluate('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/180,r.height/320);return{x:r.x+(r.width-180*s)/2,y:r.y+(r.height-320*s)/2,s}})()');
+ await click(paintMap.x+80*paintMap.s,paintMap.y+150*paintMap.s);
+ await page.evaluate('document.querySelector("#maskTool").value="erase";document.querySelector("#maskRadius").value=3');
+ await click(paintMap.x+80*paintMap.s,paintMap.y+150*paintMap.s);
+ await page.evaluate('document.querySelector("#undoMaskStroke").click();document.querySelector("#maskSpacing").value=6;document.querySelector("#maskSpacing").dispatchEvent(new Event("change"));document.querySelector("#maskLimit").value=24;document.querySelector("#maskLimit").dispatchEvent(new Event("change"));document.querySelector("#generateMaskPoints").click()');
+ assert.match(await page.evaluate('document.querySelector("#error").textContent'),/Replace existing points/);
+ await page.evaluate('document.querySelector("#replaceMaskPoints").checked=true;document.querySelector("#generateMaskPoints").click()');
+ assert.match(await page.evaluate('document.querySelector("#maskPointStatus").textContent'),/24 points/);
+ maskCapabilities=false;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("enable reference masks")'),'mask capability protects unsaved mask');
+ maskCapabilities=true;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'mask saved');
+ const painted=state.plan.stabilization.find(r=>r.id===stable.id);
+ assert.equal(painted.reference.point_mask.strokes.length,1);assert.equal(painted.reference.point_mask.frame,1);assert.equal(painted.reference.points.length,24);assert.deepEqual(painted.reference.keyframes.map(k=>k.frame),[1]);
+ await page.evaluate('document.querySelector("#trackStepTab").click();document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Propagate the updated")'),'stale mask blocks tracking');
+ await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#propagateMask").click()');
+ await until(()=>page.evaluate('!document.querySelector("#cancelMask").hidden'),'mask progress feedback');
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Mask propagation complete")'),'mask complete');
+ assert.equal(seenProcess.operation,'propagate_mask');assert.equal(seenProcess.stabilization_id,stable.id);assert.deepEqual(seenProcess.plan.selection,[7000,8000]);
+ assert.equal(await page.evaluate('document.querySelector("#trackStep").hidden'),false);
+ assert.deepEqual({project:state.project,report:state.report,editor_session:state.editor_session},motionBefore);
+ await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#maskSpacing").value=8;document.querySelector("#maskSpacing").dispatchEvent(new Event("change"))');
+ assert.match(await page.evaluate('document.querySelector("#maskStatus").textContent'),/5 masks ready/,'density does not invalidate mask propagation');
+ fs.mkdirSync('development/mask-browser',{recursive:true});
+ await page.evaluate('document.querySelector(".inspector").scrollTop=0;window.scrollTo(0,0)');await wait(120);
+ fs.writeFileSync('development/mask-browser/desktop.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ assert.equal(await page.evaluate('document.querySelector("#stabilizationSettings").scrollWidth>document.querySelector("#stabilizationSettings").clientWidth'),false);
+ await page.call('Emulation.setDeviceMetricsOverride',{width:680,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#maskStep").scrollIntoView({block:"start"})');await wait(120);
+ fs.writeFileSync('development/mask-browser/narrow.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ assert.equal(await page.evaluate('document.querySelector("#stabilizationSettings").scrollWidth>document.querySelector("#stabilizationSettings").clientWidth'),false);
+ await page.evaluate('document.querySelector("#anchorsStepTab").click();document.querySelector("#addStabilizedAnchors").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'section anchors configured');
+ assert.equal(state.plan.tracking.length,1);assert.equal(state.plan.tracking[0].start_ms,stable.start_ms);assert.equal(state.plan.tracking[0].end_ms,stable.end_ms);assert.deepEqual(state.plan.selection,[7000,8000]);
+ await page.evaluate(`document.querySelector('#stabilizationLane [data-id="${stable.id}"]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:200,pointerId:1}));document.querySelector('#anchorsStepTab').click();document.querySelector('#extractStabilizedAnchors').click()`);
+ await until(()=>seenProcess.operation==='extract_anchors','anchor operation targeted');
+ await until(()=>page.evaluate('!document.querySelector("#apply").disabled'),'anchor processing finished');
+ assert.equal(seenProcess.stabilization_id,stable.id);assert.deepEqual(seenProcess.plan.selection,[7000,8000]);
+ await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#clearMask").click();document.querySelector("#manualPoints").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'manual points kept after clearing mask');
+ assert.equal(state.plan.stabilization[0].reference.point_mask,undefined);assert.equal(state.plan.stabilization[0].reference.points.length,24);
+ // The separate reference editor can choose its first seed in the middle,
+ // add an earlier seed, reposition numbered points, save, and undo removal.
+ await parent.evaluate("window.referenceEditor=window.open('/sam3d_funscript/assets/reference.html?reference=neutral-reference&node=2');void 0");
+ let refTarget;await until(async()=>{refTarget=(await targets()).find(t=>t.url.includes('/reference.html'));return refTarget;},'reference popup');
+ const ref=await connect(refTarget);await ref.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
+ await until(()=>ref.evaluate('document.querySelector("#source")?.readyState>=2&&!document.querySelector("#source").seeking'),'reference source');
+ assert.equal(await ref.evaluate('document.querySelector("#seek").max'),'119','navigation is available before tracking');
+ async function markRef(frame,coords){
+  await ref.evaluate(`document.querySelector('#seek').value=${frame};document.querySelector('#seek').dispatchEvent(new Event('input'))`);
+  await until(()=>ref.evaluate('!document.querySelector("#source").seeking'),'reference frame decoded');
+  await ref.evaluate('document.querySelector("#markReference").click()');
+  const m=await ref.evaluate('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/160,r.height/120);return{x:r.x+(r.width-160*s)/2,y:r.y+(r.height-120*s)/2,s}})()');
+  for(const [x,y]of coords)for(const type of ['mousePressed','mouseReleased'])await ref.call('Input.dispatchMouseEvent',{type,x:m.x+x*m.s,y:m.y+y*m.s,button:'left',clickCount:1});
+ }
+ await markRef(12,[[40,40],[60,40],[80,40]]);
+ await markRef(4,[[36,40],[56,40],[76,40]]);
+ assert.match(await ref.evaluate('document.querySelector("#pointCount").textContent'),/3 points.*2 marked frames/);
+ await ref.evaluate('document.querySelector("#trackingMode").value="offline";document.querySelector("#trackingMode").dispatchEvent(new Event("change"));document.querySelector("#apply").click()');
+ await until(()=>ref.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'reference apply');
+ assert.deepEqual(referenceSaved.keyframes.map(k=>k.frame),[4,12]);assert.equal(referenceSaved.tracking_mode,'offline');
+ assert.deepEqual(referenceSaved.points,referenceSaved.keyframes[0].points);
+ await ref.evaluate('document.querySelector("#removeReferenceKey").click()');
+ assert.match(await ref.evaluate('document.querySelector("#pointCount").textContent'),/1 marked frames/);
+ await ref.evaluate('document.querySelector("#undo").click()');
+ assert.match(await ref.evaluate('document.querySelector("#pointCount").textContent'),/2 marked frames/);
+ await ref.evaluate('document.querySelector("#referenceKeyframes").value="12";document.querySelector("#referenceKeyframes").dispatchEvent(new Event("change"))');
+ await until(()=>ref.evaluate('!document.querySelector("#source").seeking'),'reference keyframe navigation');
+ assert.equal(await ref.evaluate('document.querySelector("#source").currentTime'),6);
+ fs.mkdirSync('development/reference-keyframes-browser',{recursive:true});
+ fs.writeFileSync('development/reference-keyframes-browser/reference.png',Buffer.from((await ref.call('Page.captureScreenshot')).data,'base64'));
+ assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({checks:['tracking-only action without pose regions','progress and cancel beside Track region','automatic stabilized preview','reference-only processing preserves motion and selection','tracking action lock protection and backend capability check','compact desktop and narrow stabilization controls','multiple reference keyframes in both editors','offline mode saved per region','reference navigation before first tracking','numbered point identities and keyframe removal/undo','neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport','clickable cut markers and keyboard boundary marks','Shift-click cut range in both directions','before/after and double-click shot selection','make tracking zone preserves anchors','locked region rejects cut split','make independent stabilization zone','Escape, hidden guides and refreshed scan clear cut selection','cut action panel fits narrow views','tools beside preview without pushing filmstrip','narrow tools below timeline','detailed anchor search and short main list','detailed extra tracks survive general toggles','detailed anchors save reload and lock','frame steps hold image until latest decoded frame','saved stabilized clip discovery without rerun','original/stabilized frame-aligned switching and stepping','point edits use original frame','stale render labeling','playback leaves stabilization at its end','held-frame counts and warnings','gap navigation and tracked-point overlay'],apiRequests,errors},null,2));
 }finally{for(const socket of sockets)socket.close();chrome.kill('SIGTERM');server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(temporary,{recursive:true,force:true});}

@@ -55,22 +55,25 @@ app.registerExtension({
                     if(!response.ok)throw new Error(`Could not cancel this job (${response.status}). Use ComfyUI's queue controls.`);
                     job.reply({state:"running",text:"Cancellation requested · completed regions are kept"});return;
                 }
-                if(!["all","selected","unfinished","detect_cuts"].includes(message.operation))throw new Error("Unknown timeline operation");
+                if(!["all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors"].includes(message.operation))throw new Error("Unknown timeline operation");
                 const cutScan=message.operation==="detect_cuts";
+                const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly;
+                if(targeted&&!message.plan.stabilization.some(r=>r.id===message.stabilization_id&&r.enabled!==false))throw new Error("Select an enabled stabilization region to track");
                 if(cutScan&&!["normal","low","high"].includes(message.cut_sensitivity))throw new Error("Unknown cut sensitivity");
                 if(jobs.has(node))throw new Error("This timeline is already processing.");
                 const job={reply};jobs.set(node,job);
                 try{
-                    setPlan();reply({state:"queued",text:cutScan?"Preparing hard-cut scan…":"Preparing selected processing job…"});
+                    setPlan();reply({state:"queued",text:cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
                     const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(!stateResponse.ok)throw new Error("Could not read the saved timeline before processing.");
                     const state=await stateResponse.json();
                     const motionSessions=prepareNodeSessions(app.graph?._nodes||[]);
                     if(state.editor_session)motionSessions.add(state.editor_session);
-                    if(!cutScan)await prepareEditorSessions(motionSessions);
+                    if(motionRun)await prepareEditorSessions(motionSessions);
                     const prompt=await app.graphToPrompt();assertCurrent();
                     if(!prompt.output[String(node.id)])throw new Error("Enable the timeline node before processing.");
                     prompt.output[String(node.id)].inputs.operation=message.operation;
+                    if(targeted)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,stabilization_ids:[message.stabilization_id]});
                     if(cutScan){
                         prompt.output[String(node.id)].inputs.cut_sensitivity=message.cut_sensitivity;
                         const widget=node.widgets.find(w=>w.name==="cut_sensitivity");if(widget)widget.value=message.cut_sensitivity;
@@ -82,7 +85,7 @@ app.registerExtension({
                     assertCurrent();
                     node.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline processing complete";
                     const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
-                    if(latestResponse.ok&&!cutScan){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
+                    if(latestResponse.ok&&motionRun){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
                     reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0]});
                 }finally{jobs.delete(node)}
             }catch(error){reply({state:"error",error:errorMessage(error)})}
@@ -96,8 +99,8 @@ app.registerExtension({
                         value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
                 }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
-                const text=[data.stage||"Processing",data.region_id,total?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
-                job.reply({state:"running",text,value:done,max:total});
+                const text=[({stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
+                job.reply({state:"running",text,value:data.total_frames?data.frames:done,max:data.total_frames||total});
             }
         });
         const queue=app.queuePrompt;

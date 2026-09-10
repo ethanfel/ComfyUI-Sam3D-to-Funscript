@@ -40,7 +40,15 @@ def motion_editor_session(workflow, node_id, timeline_session):
     return hashlib.sha256(f"{timeline_session}:motion".encode()).hexdigest()[:32]
 
 
-def publish_motion(project, session, output_root):
+def publish_motion(project, session, output_root, timeline_state=None):
+    if timeline_state is not None:
+        metadata = project["metadata"]
+        metadata.setdefault("processing_timeline", {})["session"] = timeline_state["session"]
+        cuts = timeline_state.get("scene_cuts")
+        if cuts and cuts.get("source_id") == timeline_state["info"]["source_id"]:
+            metadata["scene_cuts"] = cuts
+        else:
+            metadata.pop("scene_cuts", None)
     for main in project.get("timeline", {}).get("main", {}).values():
         if not main.get("edited"):
             main["processing_generated"] = True
@@ -55,7 +63,7 @@ def bind_motion_editor(store, state, session, output_root):
         if previous:
             # A newly connected standalone adopts the latest saved edits, which
             # can be newer than the last exported project.json on disk.
-            path = publish_motion(previous["project"], session, output_root)
+            path = publish_motion(previous["project"], session, output_root, state)
             return store.bind_editor(state["session"], session, path)
     return store.bind_editor(state["session"], session)
 
@@ -69,7 +77,7 @@ class S3F_ProcessingTimeline:
             "sample_fps": ("FLOAT", {"default": 0, "min": 0, "max": 120, "step": 1, "tooltip": "0 analyzes every source frame. Original timestamps are retained."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "tracker_model": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
-            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor and passes its latest completed project. Detect cuts only adds timeline guides, without extracting poses."}),
+            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor. Stabilize tracks selected stabilization regions without SAM3D. Detect cuts only adds timeline guides."}),
             "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here with the workflow."}),
             "use_cache": ("BOOLEAN", {"default": True}),
         }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."}),
@@ -94,7 +102,7 @@ class S3F_ProcessingTimeline:
         from server import PromptServer
         from .sam3d_funscript.processing_timeline import run_timeline
 
-        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts"):
+        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors"):
             raise ValueError("Unknown timeline processing operation")
         path, start, duration = video_input_range(video)
         info = source_info(path, start, duration)
@@ -130,9 +138,48 @@ class S3F_ProcessingTimeline:
             return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": [summary],
                            "s3f_timeline_project": [state.get("project")]},
                     "result": (ExecutionBlocker(None), str(store.directory(session) / "timeline.json"))}
+        if operation in ("stabilize", "propagate_mask"):
+            from .sam3d_funscript.processing_timeline import run_stabilization, run_mask_propagation
+            revision = state["revision"]
+            last_marker = None
+
+            def tracking_progress(event):
+                nonlocal last_marker
+                PromptServer.instance.send_sync("s3f_timeline_progress", {"session": session, "revision": revision, **event})
+                marker = (event.get("region_id"), event.get("completed_jobs"))
+                if marker != last_marker:
+                    store.stabilization_progress(session, revision, event)
+                    last_marker = marker
+
+            try:
+                worker = run_mask_propagation if operation == "propagate_mask" else run_stabilization
+                report = worker(info, state["plan"], store.directory(session),
+                    folder_paths.get_full_path("cotracker", tracker_model),
+                    region_ids=submitted.get("stabilization_ids"), use_cache=use_cache,
+                    progress=tracking_progress, interrupt=throw_exception_if_processing_interrupted)
+                state = store.stabilization_progress(session, revision, {"stage": "complete"}, report)
+            except (Exception, InterruptProcessingException) as error:
+                message = str(error) or "Tracking cancelled; completed clips are kept."
+                store.stabilization_progress(session, revision, {"stage": "error", "error": message})
+                raise
+            return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": ["Mask propagation complete" if operation == "propagate_mask" else "Tracking complete · stabilized clip ready"],
+                           "s3f_timeline_project": [state.get("project")]},
+                    "result": (ExecutionBlocker(None), str(store.directory(session) / "timeline.json"))}
         editor_session = motion_editor_session(workflow, unique_id, session)
         state = bind_motion_editor(store, state, editor_session, output_root)
         revision, plan = state["revision"], state["plan"]
+        if operation == "extract_anchors":
+            ids = submitted.get("stabilization_ids", [])
+            if not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str):
+                raise ValueError("Select one enabled stabilization region for anchor extraction")
+            regions = [r for r in plan["stabilization"] if r["id"] in ids and r["enabled"]]
+            if len(regions) != 1:
+                raise ValueError("Select one enabled stabilization region for anchor extraction")
+            region = regions[0]
+            if not any(r["enabled"] and r["start_ms"] < region["end_ms"] and r["end_ms"] > region["start_ms"] for r in plan["tracking"]):
+                raise ValueError("Add a tracking region for this section before extracting anchors")
+            plan = {**plan, "selection": [region["start_ms"], region["end_ms"]]}
+            operation = "selected"
         if operation != "prepare":
             checkpoint = folder_paths.get_full_path("cotracker", tracker_model)
             last_stage = None
@@ -151,7 +198,7 @@ class S3F_ProcessingTimeline:
                     operation=operation, use_cache=use_cache,
                     mask_video_range=video_input_range(mask_video) if mask_video is not None else None,
                     progress=progress, interrupt=throw_exception_if_processing_interrupted)
-                result_path = publish_motion(result, editor_session, output_root) if result is not None else None
+                result_path = publish_motion(result, editor_session, output_root, store.read(session)) if result is not None else None
                 state = store.finish(session, revision, report, result_path)
             except (Exception, InterruptProcessingException) as error:
                 message = str(error) or ("Processing cancelled; completed chunks are kept." if isinstance(error, InterruptProcessingException) else type(error).__name__)
@@ -166,7 +213,7 @@ class S3F_ProcessingTimeline:
         elif state.get("project_path") and Path(state["project_path"]).is_file() and not EditorStore(output_root).read(editor_session):
             # Existing processing results acquire a persistent editor on upgrade
             # or when a newly connected standalone becomes their session owner.
-            result_path = publish_motion(load_project(state["project_path"]), editor_session, output_root)
+            result_path = publish_motion(load_project(state["project_path"]), editor_session, output_root, state)
             state = store.bind_editor(session, editor_session, result_path)
         project = load_project(state["project_path"]) if state.get("project_path") and Path(state["project_path"]).is_file() else ExecutionBlocker(None)
         summary = "Timeline ready · select regions and process in the editor."

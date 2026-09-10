@@ -21,11 +21,13 @@ def standalone_html(project=None):
         # Each module keeps its own scope (both export a different AXES constant).
         return f"const {{{names}}} = (() => {{\n{source}\nreturn {{{names}}};\n}})();"
 
-    script = re.sub(r'import \{([^}]+)\} from "\./(curve\.mjs|curve-edit\.mjs|patterns\.mjs|timeline\.mjs|viewport\.mjs|editor-session\.mjs|device-output\.mjs|video-preview\.mjs|device-previews/device-wireframes\.mjs)";',
+    script = re.sub(r'import \{([^}]+)\} from "\./(curve\.mjs|curve-edit\.mjs|patterns\.mjs|timeline\.mjs|cut-markers\.mjs|viewport\.mjs|editor-session\.mjs|device-output\.mjs|video-preview\.mjs|device-previews/device-wireframes\.mjs)(?:\?[^"\s]*)?";',
                     inline_module, script)
     script = script.replace("</script", "<\\/script")
     data = json.dumps(project, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
-    html = html.replace('<link rel="stylesheet" href="viewer.css">', f"<style>{css}</style>")
-    return html.replace('<script type="module" src="viewer.js"></script>',
-                        f'<script id="s3f-project" type="application/json">{data}</script>\n'
-                        f'<script type="module">{script}</script>')
+    # Online imports use versioned helpers; the offline viewer inlines them.
+    html = re.sub(r'<script type="importmap">.*?</script>', '', html, flags=re.DOTALL)
+    html = re.sub(r'<link rel="stylesheet" href="viewer\.css(?:\?[^"\s]*)?">', lambda _: f"<style>{css}</style>", html)
+    return re.sub(r'<script type="module" src="viewer\.js(?:\?[^"\s]*)?"></script>',
+                  lambda _: f'<script id="s3f-project" type="application/json">{data}</script>\n'
+                            f'<script type="module">{script}</script>', html)

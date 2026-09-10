@@ -30,3 +30,44 @@ export function curveBuckets(times, shifts, quality, start, end, width) {
     }
     return bins;
 }
+// Numbered point identities are shared by all marked frames in one section.
+export function referenceKeys(reference) {
+    return reference.keyframes || [{frame:0,points:reference.points||[]}];
+}
+export async function requireReferenceBackend(base) {
+    const response=await fetch(new URL('../reference-capabilities',base),{cache:'no-store',signal:AbortSignal.timeout(10000)});
+    if(!response.ok||(await response.json()).keyframes!==1)throw new Error('Restart ComfyUI to enable reference keyframes and offline tracking, then retry Apply. Your unapplied edits are kept in this tab.');
+}
+export function withReferenceKeys(reference, keys) {
+    keys=structuredClone(keys).sort((a,b)=>a.frame-b.frame);
+    if(!keys.length)keys=[{frame:0,points:[]}];
+    return {...reference,keyframes:keys,points:structuredClone(keys[0].points)};
+}
+export function validateReferenceKeys(reference, frameCount=Infinity) {
+    const keys=referenceKeys(reference),frames=keys.map(k=>k.frame),count=Math.max(...keys.map(k=>k.points.length));
+    if(frames.some(f=>!Number.isInteger(f)||f<0||f>=frameCount)||new Set(frames).size!==frames.length)throw new Error('Reference keyframes must be distinct frames inside this section.');
+    if(keys.some(k=>k.unconfirmed?.length))throw new Error('Review and reposition unconfirmed points on reference keyframes before tracking.');
+    if(count<3||keys.some(k=>k.points.length!==count))throw new Error('Mark the same numbered points on every reference keyframe (at least three per frame).');
+    const [x,y,w,h]=reference.crop_xywh;
+    if(keys.some(k=>k.points.some(p=>p.length!==2||p.some(v=>!Number.isFinite(v))||p[0]<x||p[1]<y||p[0]>x+w-1||p[1]>y+h-1)))throw new Error('All reference keyframe points must be inside the tracking crop.');
+}
+export function addReferenceKey(reference, frame) {
+    const keys=referenceKeys(reference);
+    if(keys.some(k=>k.frame===frame))return withReferenceKeys(reference,keys);
+    // An empty initial placeholder is moved to the first frame the user marks.
+    return withReferenceKeys(reference,[...keys.filter(k=>k.points.length),{frame,points:[]}]);
+}
+export function putReferencePoint(reference, frame, slot, point) {
+    const keys=structuredClone(referenceKeys(reference)),key=keys.find(k=>k.frame===frame);
+    if(!key)throw new Error('Mark this frame as a reference keyframe first.');
+    const expected=Math.max(...keys.map(k=>k.points.length));
+    if(slot<0||slot>key.points.length||(keys.length>1&&slot>=expected))throw new Error('Place the same numbered points in order on each keyframe.');
+    key.points[slot]=point;
+    key.unconfirmed=(key.unconfirmed||[]).filter(i=>i!==slot);
+    return withReferenceKeys(reference,keys);
+}
+export function removeReferencePoint(reference, slot) {
+    const keys=structuredClone(referenceKeys(reference));
+    for(const key of keys){key.points.splice(slot,1);key.unconfirmed=(key.unconfirmed||[]).filter(i=>i!==slot).map(i=>i>slot?i-1:i);}
+    return withReferenceKeys(reference,keys);
+}

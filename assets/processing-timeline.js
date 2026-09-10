@@ -1,19 +1,31 @@
 import {workflowHost,openWorkspacePage} from "./workflow-host.mjs";
 import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as basePanView, followView as baseFollowView, sliderSpan as baseSliderSpan, spanSlider as baseSpanSlider, formatTime, rulerTicks} from "./viewport.mjs";
-import {LANES, ANCHORS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, validateInterval, validateReference, regionRows, isolateSelection} from "./processing-timeline-edit.mjs";
-import {neighboringCut,snapCut,shotRange,visibleCuts} from "./cut-markers.mjs";
+// These exports were added together. Bypass helper URLs cached by older servers;
+// updated servers revalidate all editor assets on subsequent loads.
+import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection} from "./processing-timeline-edit.mjs?v=reference-masks-1";
+import {cutIndex,neighboringCut,snapCut,shotRange,cutSideRange,visibleCuts} from "./cut-markers.mjs?v=cut-selection-2";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs";
 import {frameClock} from "./frame-clock.mjs";
+import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-masks-1";
+import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason} from "./video-preview.mjs?v=reference-masks-1";
 
+import {stabilizationSteps} from './stabilization-steps.mjs?v=reference-masks-1';
+import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
 const uuid = () => crypto.randomUUID?.() || [...crypto.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2,"0")).join("");
 const equal = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 let state, plan, savedPlan, revision, dirty = false, history = [], view, playhead = 0, busy = false;
-let savePromise = null, applyTask = null, applyPending = null, processPending = null, pendingState = null, activeId = null;
+let savePromise = null, applyTask = null, applyPending = null, processPending = null, startingOperation = null, pendingState = null, activeId = null;
 let timelineDrag = null, sourceDrag = null, sourceMap = null, renderQueued = false, lastFrame = 0;
 let appliedPlan = null, pollTimer = null, loading = false, thumbTimer = null, thumbnailView = "", conflictingDraft = false;
 let frames = null, presentedTime = null, frameCuts = [];
+let requestedSeek = null, decodingSeek = null;
+let selectedCut = null, cutRangeReady = false;
+let propagatedMasks = {};
+let renderedClips = [], previewClip = null, previewURL = '', previewLoading = false, resumePlayback = false;
+let renderRequest = 0, previewFailures = new Set(), catalogError = '';
+const trackingDetails = new Map();
 const draftKey = `s3f-processing-timeline:${session}`;
 const laneElement = lane => $(`${lane}Lane`);
 const selected = () => regionById(plan || {}, activeId);
@@ -23,7 +35,7 @@ const clipDuration = () => sourceBounds()[1]-sourceBounds()[0];
 const cuts = () => frameCuts;
 // requestVideoFrameCallback reports a frame PTS (possibly rounded by the browser),
 // while currentTime is a continuously advancing clock inside a frame.
-const activeFrame = () => !video.paused&&!video.seeking?(presentedTime!==null?frames.nearest(presentedTime):frames.containing((video.currentTime-fraction(state.info.source_origin))*1000)):frames.containing(playhead);
+const activeFrame = () => !video.paused&&!video.seeking?(presentedTime!==null?frames.nearest(presentedTime):frames.containing(sourceTime(video.currentTime))):frames.containing(playhead);
 const snapTime = (time,width) => frames.snap($("showCuts").checked&&$("snapCuts").checked ? snapCut(cuts(),time,Math.min(250,view.span_ms/Math.max(1,width)*7)) : time,true);
 const useFrames = () => $("timelineUnit").value === "frames";
 const positionValue = time => useFrames() ? String(frames.ceil(time)) : (time/1000).toFixed(3);
@@ -40,10 +52,37 @@ const spanSlider = (_,span) => baseSpanSlider(clipDuration(),span);
 const layout=createTimelineLayout({aspect:()=>state?state.info.width/state.info.height:1,
     changed:()=>{if(state&&plan){drawSource();renderTimelines();scheduleThumbs();}}});
 
+const maskSteps=stabilizationSteps({$,context:()=>{
+    const r=selected()?.lane==='stabilization'?selected().region:null;
+    return {region:r,entry:propagatedMasks[r?.id],first:r?frames.ceil(r.start_ms):0,frame:r?activeFrame()-frames.ceil(r.start_ms):0,
+        frameCount:r?frames.ceil(r.end_ms)-frames.ceil(r.start_ms):0,busy:busy||!!startingOperation,operation:processPending?.operation,
+        stabilized:!!previewClip,editable:referenceEditable(),tracking:plan?.tracking||[],api};
+},attempt,updateReference:reference=>updateRegion({reference}),seekOriginal:frame=>{
+    $('referenceMode').value='review';$('previewVariant').value='original';pause();seek(frames.at(frames.ceil(selected().region.start_ms)+frame));
+},process,selectRegion,draw:drawSource,configureAnchors:()=>{
+    const r=selected().region;
+    const next=regionFromSelection({...plan,selection:[r.start_ms,r.end_ms]},'tracking',uuid,state.info);
+    const id=next.selected_ids[0];edit({...next,selection:plan.selection});selectRegion(id);
+}});
 const bridge = workflowHost;
 function status(text) { $("status").textContent = text; }
 function fail(error) { $("error").textContent = error.message || String(error); $("error").hidden = false; }
 function clearError() { $("error").hidden = true; $("error").textContent = ""; }
+function showInspectorTab(kind) {
+    for(const [tab,pane,name] of [["timelineToolsTab","timelineToolsPane","timeline"],["regionSettingsTab","regionSettingsPane","region"]]){
+        const active=kind===name;$(tab).setAttribute("aria-selected",String(active));$(tab).tabIndex=active?0:-1;$(pane).hidden=!active;
+    }
+}
+for(const [id,kind] of [["timelineToolsTab","timeline"],["regionSettingsTab","region"]]){
+    $(id).onclick=()=>showInspectorTab(kind);
+    $(id).onkeydown=event=>{
+        if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+        event.preventDefault();event.stopPropagation();
+        const target=event.key==="Home"?"timelineToolsTab":event.key==="End"?"regionSettingsTab":kind==="timeline"?"regionSettingsTab":"timelineToolsTab";
+        $(target).click();$(target).focus();
+    };
+}
+$("showTimelineTools").onclick=()=>{showInspectorTab("timeline");$("timelineToolsTab").focus({preventScroll:true});$("timelineToolsTab").scrollIntoView({block:"nearest"});};
 function feedback(kind, text) {
     $("apply").dataset.state = kind;
     $("apply").textContent = ({applying:"Applying…", applied:"✓ Applied", error:"Apply failed · Retry"})[kind] || "Apply to node";
@@ -73,10 +112,12 @@ function updateRegion(patch) {
     const before = selected();
     if (!before) return;
     const changedStart = patch.start_ms !== undefined && patch.start_ms !== before.region.start_ms && before.lane === "stabilization";
-    edit(changeRegion(plan, before.region.id, patch, state.info), changedStart ? "Start changed · pick reference points on the new first frame" : undefined);
+    const changedEnd=patch.end_ms!==undefined&&patch.end_ms!==before.region.end_ms&&before.lane==='stabilization'&&before.region.reference.keyframes;
+    edit(changeRegion(plan, before.region.id, patch, state.info), changedStart||changedEnd ? "Bounds changed · mark reference frames again for this section" : undefined);
 }
 function selectRegion(id, additive = false, seekAt = null) {
     activeId = id;
+    showInspectorTab("region");
     for(const control of $("regionForm").querySelectorAll("input,textarea,select"))control.setCustomValidity("");
     const ids = additive ? new Set(plan.selected_ids || []) : new Set();
     if (additive && ids.has(id)) ids.delete(id); else ids.add(id);
@@ -92,23 +133,130 @@ function setSelection(a, b, persist = true) {
     if (persist) { dirty = !equal(plan, savedPlan); draft(); }
     renderNavigation(); renderTimelines();
 }
-function pause() { video.pause(); $("play").textContent = "Play"; }
-function mediaTime(ms) { return fraction(state.info.source_origin) + ms / 1000; }
+function pause() { resumePlayback=false;video.pause(); $("play").textContent = "Play"; }
+function mediaTime(ms) { return previewClip ? (ms-frames.at(frames.ceil(previewClip.region.start_ms)))/1000 : fraction(state.info.source_origin) + ms / 1000; }
+function sourceTime(seconds) { return previewClip ? seconds*1000+frames.at(frames.ceil(previewClip.region.start_ms)) : (seconds-fraction(state.info.source_origin))*1000; }
+function previewForTime(time) {
+    return $("previewVariant").value==='stabilized'?timelineRenderAt(renderedClips.filter(r=>!previewFailures.has(r.url)),plan,time):null;
+}
+function choosePreviewMedia() {
+    const next=previewForTime(playhead),url=next?.url||new URL(`${api.pathname}/video?source_id=${encodeURIComponent(state.info.source_id)}`,location.origin).href;
+    previewClip=next;
+    if(url===previewURL)return false;
+    resumePlayback=resumePlayback||!video.paused;video.pause();presentedTime=null;sourceMap=null;sourceDrag=null;
+    previewURL=url;previewLoading=true;requestedSeek=null;decodingSeek=null;
+    video.src=url;video.load();return true;
+}
+function requestTrackingDetails(entry) {
+    if(!entry||trackingDetails.has(entry.url))return;
+    const pending={health:null,error:null},source=state.info.source;trackingDetails.set(entry.url,pending);
+    fetch(entry.manifestURL,{cache:'no-store',signal:AbortSignal.timeout(10000)}).then(jsonResponse).then(manifest=>{
+        if(trackingDetails.get(entry.url)!==pending)return;
+        pending.health=timelineTrackingHealth(manifest,entry,source);
+    }).catch(error=>{pending.error=error.message;}).finally(()=>{
+        if(trackingDetails.get(entry.url)===pending){renderPreviewControls();renderTimelines();draw();}
+    });
+}
+function selectedRender() {
+    const found=selected();return found?.lane==='stabilization'?renderedClips.find(r=>r.id===found.region.id):null;
+}
+function heldTarget(direction) {
+    const health=trackingDetails.get(selectedRender()?.url)?.health;
+    return direction>0?health?.gaps.find(t=>t>playhead+.001):health?.gaps.findLast(t=>t<playhead-.001);
+}
+for(const [id,direction] of [['previousHeld',-1],['nextHeld',1]])$(id).onclick=()=>{
+    const time=heldTarget(direction);if(time===undefined)return;
+    $("previewVariant").value='stabilized';$("referenceMode").value='review';seek(time);
+};
+$("showTrackedPoints").onchange=drawSource;
+function renderPreviewControls() {
+    if(!plan||!frames)return;
+    const region=selected()?.lane==='stabilization'?selected().region:null;
+    const entry=region&&renderedClips.find(r=>r.id===region.id);
+    const available=entry&&region.enabled!==false&&Math.max(entry.region.start_ms,region.start_ms)<Math.min(entry.region.end_ms,region.end_ms);
+    $("previewStabilized").disabled=!available;
+    $("openStabilized").hidden=!entry;if(entry)$("openStabilized").href=entry.url;
+    $("stabilizedStatus").textContent=catalogError||(!entry?'No preview yet · use Track region.':!timelineRenderCurrent(entry,region)?'Previous render · settings changed. Track region to update.':'Preview ready');
+    $("previewTitle").textContent=previewClip?'Stabilized source':'Original source';
+    requestTrackingDetails(entry);requestTrackingDetails(previewClip);
+    const details=trackingDetails.get(entry?.url),health=details?.health;
+    $("trackingHealth").hidden=!entry;
+    $("trackingHealth").textContent=!entry?'No tracking result yet.':details.error?'Tracking details unavailable · '+details.error:!health?'Loading tracking details…':(!timelineRenderCurrent(entry,region)?'Previous result · ':'')+trackingSummary(health);
+    $("trackingHealth").title='Held frames reuse the last accepted correction. Review gaps and correct reference frames, then track again.';
+    $("trackingHealth").dataset.held=String(!!health?.counts.held);
+    $("showTrackedPoints").disabled=false;
+    $("previousHeld").disabled=heldTarget(-1)===undefined;$("nextHeld").disabled=heldTarget(1)===undefined;
+    maskSteps.render();
+    const trackOnly=processPending?.operation==='stabilize';
+    $("trackStabilization").disabled=busy||!!startingOperation||!region||region.locked||region.enabled===false;
+    $("trackStabilization").textContent=trackOnly?'Tracking…':startingOperation==='stabilize'?'Preparing…':'Track region';
+    $("trackStabilization").setAttribute('aria-busy',String(!!trackOnly||startingOperation==='stabilize'));
+    $("cancelStabilization").hidden=!trackOnly;$("cancelStabilization").disabled=$("cancel").disabled;
+    $("stabilizationProgress").hidden=!trackOnly;
+    if(trackOnly){
+        $("stabilizationProgressText").textContent=$("progressText").textContent;
+        $("stabilizationBar").max=$("progress").max;
+        if($("progress").hasAttribute('value'))$("stabilizationBar").value=$("progress").value;
+        else $("stabilizationBar").removeAttribute('value');
+    }
+}
+async function refreshRenderedClips() {
+    if(!state)return;
+    const generation=++renderRequest,sourceId=state.info.source_id;
+    try {
+        const response=await fetch(timelineOutputURL(session,`results/${sourceId}/state.json`,location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)});
+        const data=response.status===404?null:await jsonResponse(response);
+        if(generation!==renderRequest||sourceId!==state.info.source_id)return;
+        renderedClips=timelineRenderCatalog(data,session,sourceId,location.href);propagatedMasks=data?.source_id===sourceId?data.masks||{}:{};maskSteps.reset();catalogError='';
+        const kept=new Set(renderedClips.map(r=>r.url));for(const key of trackingDetails.keys())if(!kept.has(key))trackingDetails.delete(key);
+        if(choosePreviewMedia())requestSourceSeek(mediaTime(frames.seekTime(playhead)));
+    }catch(error){if(generation!==renderRequest)return;catalogError='Could not refresh rendered clips · '+error.message;}
+    renderPreviewControls();draw();
+}
+$("previewVariant").onchange=()=>{
+    if(!state)return;previewFailures.clear();
+    if($("previewVariant").value==='stabilized')$("referenceMode").value='review';
+    seek(playhead,false);renderPreviewControls();
+};
+$("previewStabilized").onclick=()=>{
+    const region=selected()?.region,entry=renderedClips.find(r=>r.id===region?.id);if(!entry)return;
+    trackingDetails.delete(entry.url);
+    $("previewVariant").value='stabilized';$("referenceMode").value='review';previewFailures.clear();
+    const a=Math.max(region.start_ms,entry.region.start_ms),b=Math.min(region.end_ms,entry.region.end_ms);
+    seek(playhead>=a&&playhead<b?playhead:frames.at(frames.ceil(a)));renderPreviewControls();
+};
+function requestSourceSeek(value) {
+    if(!Number.isFinite(value))return;
+    requestedSeek=value;
+    // Keep at most one decoder seek in flight; repeated step keys replace the
+    // desired destination instead of repeatedly interrupting the same decode.
+    if(!previewLoading&&!video.seeking&&video.readyState>=1){decodingSeek=value;video.currentTime=value;}
+}
+function finishSourceSeek() {
+    if(previewLoading||video.seeking||video.readyState<2)return;
+    if(requestedSeek!==null&&requestedSeek!==decodingSeek){decodingSeek=requestedSeek;video.currentTime=decodingSeek;return;}
+    requestedSeek=null;decodingSeek=null;draw();
+    if(resumePlayback){resumePlayback=false;video.play().then(()=>{$("play").textContent='Pause';}).catch(fail);}
+}
 function seek(ms, stop = true) {
     if (!state) return;
     if (stop) pause();
+    selectedCut=null;cutRangeReady=false;
     const [low, high] = sourceBounds();
     playhead = frames.snap(clamp(ms, low, high));
     presentedTime = null;
+    choosePreviewMedia();renderPreviewControls();if(selected()?.lane==="stabilization")renderReferenceKeys(selected().region);
     const value = mediaTime(frames.seekTime(playhead));
-    if (Number.isFinite(value)) video.currentTime = value;
+    requestSourceSeek(value);
     if ($("follow").checked) view = followView(duration(), view, playhead);
     draw(); renderNavigation(); renderTimelines();
 }
 async function togglePlay() {
-    if (!video.paused) { pause(); return; }
+    if (!video.paused||resumePlayback) { pause(); return; }
+    clearCut();
     if (frames.containing(playhead) === frames.end-1) seek(sourceBounds()[0]);
     $("referenceMode").value = "review";
+    if(previewLoading||requestedSeek!==null){resumePlayback=true;$("play").textContent='Pause';return;}
     try { await video.play(); $("play").textContent = "Pause"; } catch (error) { fail(error); }
 }
 function fitRange(a, b) {
@@ -125,23 +273,47 @@ function prepare(canvas) {
 }
 function drawSource() {
     if (!state || !frames) return;
+    if(previewLoading){$("previewStatus").textContent=previewClip?'Loading stabilized clip…':'Loading original source…';return;}
+    // Keep the last complete image while a seek decodes. Clearing the canvas
+    // first exposes a blank frame (or redraws an older decoded frame) between steps.
+    if(requestedSeek!==null||video.seeking||video.readyState<2)return;
     const [ctx,w,h] = prepare($("sourceCanvas"));
-    const found = selected(), reference = found?.lane === "stabilization" ? found.region.reference : null;
+    const found = selected(), reference = !previewClip&&found?.lane === "stabilization" ? found.region.reference : null;
     const zoom = reference && $("cropZoom").checked && $("referenceMode").value !== "crop";
-    const crop = zoom ? reference.crop_xywh : [0,0,state.info.width,state.info.height];
+    const crop = zoom ? reference.crop_xywh : [0,0,previewClip?video.videoWidth:state.info.width,previewClip?video.videoHeight:state.info.height];
     const scale = Math.min(w / crop[2], h / crop[3]), ox = (w - crop[2] * scale) / 2, oy = (h - crop[3] * scale) / 2;
     sourceMap = {crop,scale,ox,oy};
     if (video.readyState >= 2) ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
+    maskSteps.overlay(ctx,sourceMap,w,h);
     const point = p => [ox+(p[0]-crop[0])*scale, oy+(p[1]-crop[1])*scale];
     if (reference) {
-        const firstFrame = frames.containing(playhead) === frames.ceil(found.region.start_ms);
+        const key = referenceKeys(reference).find(k=>k.frame===frames.containing(playhead)-frames.ceil(found.region.start_ms));
         const [x,y] = point(reference.crop_xywh); ctx.strokeStyle = "#e2b672"; ctx.lineWidth = 1.5;
         ctx.strokeRect(x,y,reference.crop_xywh[2]*scale,reference.crop_xywh[3]*scale);
-        if (firstFrame) for (const [i,p] of reference.points.entries()) {
-            const [px,py]=point(p);ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.strokeStyle="#92efd0";ctx.stroke();ctx.fillStyle="#c8fae8";ctx.font="12px system-ui";ctx.fillText(String(i+1),px+8,py-7);
+        if (key) for (const [i,p] of key.points.entries()) {
+            const [px,py]=point(p);ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.strokeStyle=key.unconfirmed?.includes(i)?"#ffb870":"#92efd0";ctx.stroke();ctx.fillStyle=ctx.strokeStyle;ctx.font="12px system-ui";ctx.fillText(String(i+1),px+8,py-7);
         }
-        $("previewStatus").textContent = firstFrame ? `${reference.points.length} reference points · first frame` : "Starting points shown only on the region’s first frame";
+        $("previewStatus").textContent = key ? `${key.points.length} reference points · marked frame` : "Choose a clear frame and click Mark reference frame";
     } else $("previewStatus").textContent = "One source clock for every region";
+    if(previewClip){const region=plan.stabilization.find(r=>r.id===previewClip.id);$("previewStatus").textContent=`${region.name} · ${timelineRenderCurrent(previewClip,region)?'rendered stabilization':'previous render · settings changed'} · no audio`;}
+    else if($("previewVariant").value==='stabilized')$("previewStatus").textContent=previewFailures.size?'Original · stabilized clip unavailable':catalogError||'Original · no rendered stabilization at this frame';
+    const reviewed=previewClip||selectedRender(),health=trackingDetails.get(reviewed?.url)?.health,index=trackingFrame(health,playhead);
+    const showReview=index!==null&&($("referenceMode").value==='review')&&(previewClip||timelineRenderCurrent(reviewed,found.region));
+    const held=showReview&&health.quality[index]==='held';$("previewStatus").dataset.held=String(held);
+    if(showReview){
+        if(previewClip)$("previewStatus").textContent+=health.quality[index]==='held'?` · HELD: ${trackingReason(health.reasons[index])}`:health.quality[index]==='manual'?' · manual correction':' · tracking';
+        if($("showTrackedPoints").checked){
+            ctx.lineWidth=2;ctx.font='12px system-ui';ctx.strokeStyle=ctx.fillStyle=held?'#ffc18b':'#85e8dd';
+            for(const [i,p] of (health.points?.[index]||[]).entries()){
+                if(!health.visible?.[index]?.[i]||!p.every(Number.isFinite))continue;
+                const mapped=previewClip?p.map((v,axis)=>v+health.padding[axis]-health.shifts[index][axis]):p,[px,py]=point(mapped);
+                ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.stroke();ctx.fillText(String(i+1),px+8,py-7);
+            }
+        }
+        if(held){ctx.font='bold 12px system-ui';ctx.fillStyle='#3b261dec';ctx.fillRect(8,8,Math.min(w-16,252),29);ctx.fillStyle='#ffd0a0';ctx.fillText('HELD · previous correction',16,27,Math.max(1,w-32));}
+    }
+    const agreement=showReview?agreementText(health,index):'';
+    if(agreement)$('previewStatus').textContent+=' · '+agreement;
     if (sourceDrag) {const a=point(sourceDrag.start),b=point(sourceDrag.end);ctx.strokeStyle="#9fcaff";ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);}
 }
 function draw() {
@@ -150,10 +322,12 @@ function draw() {
     if (document.activeElement !== $("goTime")) $("goTime").value = useFrames()?frames.containing(playhead):(playhead/1000).toFixed(3);
     $("previous").disabled=frames.containing(playhead)<=frames.first;
     $("next").disabled=frames.containing(playhead)>=frames.end-1;
+    $("previousHeld").disabled=heldTarget(-1)===undefined;$("nextHeld").disabled=heldTarget(1)===undefined;
 }
 function renderNavigation() {
     if (!state || !frames) return;
     view = timelineView(duration(), view);
+    if(selectedCut!==null&&(!$("showCuts").checked||selectedCut<view.start_ms||selectedCut>view.start_ms+view.span_ms)){selectedCut=null;cutRangeReady=false;}
     $("zoom").value = spanSlider(duration(), view.span_ms);
     $("pan").min=useFrames()?frames.first:sourceBounds()[0];$("pan").max = useFrames()?frames.containing(Math.max(sourceBounds()[0],duration()-view.span_ms)):Math.max(sourceBounds()[0],duration()-view.span_ms); $("pan").value = useFrames()?frames.containing(view.start_ms):view.start_ms;
     $("follow").checked = view.follow !== false;
@@ -171,6 +345,16 @@ function renderNavigation() {
     const hasScan=state.scene_cuts?.source_id===state.info.source_id;
     $("selectShot").disabled=!hasScan||busy;
     $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":hasScan?`${cuts().length} cut markers${state.scene_cuts.cache_hit?" · cached":""}`:"No cut scan yet";
+    $("markOut").title=selectedCut!==null?"End the selection exactly at this cut, before its first frame (O)":"End the selection after the displayed frame, including it (O)";
+    $("selectionHint").textContent=selectedCut!==null?"Cut selected: In / Out use the boundary before this frame.":"Mark Out includes the displayed frame. Out is the boundary after the selection.";
+    $("cutActions").hidden=selectedCut===null;
+    if(selectedCut!==null){
+        $("selectedCutLabel").textContent=`Cut ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}`;
+        for(const [id,direction]of [["cutBefore",-1],["cutAfter",1]]){const range=cutSideRange(cuts(),selectedCut,direction,...sourceBounds());$(id).disabled=!range||range[1]-range[0]<1;}
+        $("cutRegion").disabled=busy||!cutRangeReady||b-a<1;
+        $("cutRegionRange").textContent=cutRangeReady&&b>a?`${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:"Select a shot, set In / Out, or Shift-click another cut";
+        $("cutPrevious").disabled=neighboringCut(cuts(),selectedCut,-1)===null;$("cutNext").disabled=neighboringCut(cuts(),selectedCut,1)===null;
+    }
 }
 function reportMap() { return new Map((state?.report?.regions || []).map(item => [item.id,item])); }
 function renderTimelines() {
@@ -183,6 +367,7 @@ function renderTimelines() {
     const guides=$("showCuts").checked?visibleCuts(cuts(),view.start_ms,view.span_ms,w):[];
     ruler.fillStyle="#d1cfa4";
     for(const at of guides){const xx=x(at);ruler.beginPath();ruler.moveTo(xx-3,18);ruler.lineTo(xx+3,18);ruler.lineTo(xx,23);ruler.fill();}
+    renderCutButtons(w);
     if (playhead>=view.start_ms && playhead<=view.start_ms+view.span_ms) {ruler.fillStyle="#eef6fa";ruler.beginPath();ruler.moveTo(x(playhead)-5,rh-10);ruler.lineTo(x(playhead)+5,rh-10);ruler.lineTo(x(playhead),rh-3);ruler.fill();}
     const [a,b]=selectionRange(plan,state.info), states=reportMap();
     for (const lane of LANES) {
@@ -206,16 +391,63 @@ function renderTimelines() {
             bar.querySelector(".region-title").textContent=`${region.locked?"🔒 ":""}${region.name}${lane==="tracking"?" · "+region.anchor.replaceAll("_"," ")+(region.additional_anchors?.length?` +${region.additional_anchors.length}`:""):""}`;
             bar.querySelector(".region-state").textContent=states.get(region.id)?.state||"";
             bar.title=`${region.name} · ${positionLabel(region.start_ms)} – ${positionLabel(region.end_ms)} (exclusive)${region.locked?" · Locked":""}`;
+            const health=lane==='stabilization'?trackingDetails.get(renderedClips.find(r=>r.id===region.id)?.url)?.health:null;
+            bar.querySelector('.region-state').dataset.held=String(!!health?.counts.held);
+            if(health){bar.querySelector('.region-state').textContent=health.counts.held?`${(health.counts.held/health.total*100).toFixed(0)}% held`:'tracked';bar.title+=' · '+trackingSummary(health);}
             bar.setAttribute("aria-label",bar.title);bar.setAttribute("aria-pressed",String((plan.selected_ids||[]).includes(region.id)));
+            bar.querySelectorAll('.reference-keyframe').forEach(mark=>mark.remove());
+            if(lane==='stabilization')for(const [i,key]of referenceKeys(region.reference).entries()){
+                const frame=frames.ceil(region.start_ms)+key.frame,at=frames.at(frame);
+                if(!key.points.length||at<view.start_ms||at>=Math.min(region.end_ms,view.start_ms+view.span_ms))continue;
+                const mark=document.createElement('span');mark.className='reference-keyframe';mark.textContent='◆';
+                mark.dataset.referenceFrame=frame;mark.title=`Reference ${i+1} · F ${frame} · click to seek`;
+                mark.style.left=`${100*(at-Math.max(region.start_ms,view.start_ms))/(Math.min(region.end_ms,view.start_ms+view.span_ms)-Math.max(region.start_ms,view.start_ms))}%`;
+                bar.append(mark);
+            }
         }
         for(const child of existing.values())child.remove();
         const range=element.querySelector(".range-highlight"), left=clamp((a-view.start_ms)/view.span_ms,0,1)*100,right=clamp((b-view.start_ms)/view.span_ms,0,1)*100;
         range.style.display=b>a&&right>left?"block":"none";range.style.left=`${left}%`;range.style.width=`${right-left}%`;
         const [overlay,ow,oh]=prepare(element.querySelector(".cut-guides"));overlay.strokeStyle="#d9d4a34d";overlay.lineWidth=1;overlay.setLineDash([3,4]);
         for(const at of guides){const xx=(at-view.start_ms)/view.span_ms*ow;overlay.beginPath();overlay.moveTo(xx,0);overlay.lineTo(xx,oh);overlay.stroke();}
+        if(selectedCut!==null){const xx=(selectedCut-view.start_ms)/view.span_ms*ow;overlay.setLineDash([]);overlay.strokeStyle="#ffe0a8";overlay.beginPath();overlay.moveTo(xx,0);overlay.lineTo(xx,oh);overlay.stroke();}
         const head=element.querySelector(".playhead");head.hidden=playhead<view.start_ms||playhead>view.start_ms+view.span_ms;head.style.left=`${(playhead-view.start_ms)/view.span_ms*100}%`;
     }
     drawOverview();
+}
+function renderCutButtons(width){
+    const target=$("cutMarkers"),existing=new Map([...target.children].map(b=>[Number(b.dataset.at),b]));
+    // Bound the number of interactive targets at overview zoom. Finer cuts remain
+    // accessible through Next/Previous or zooming in; faint guides still show all.
+    const visible=$("showCuts").checked?visibleCuts(cuts(),view.start_ms,view.span_ms,width/18):[];
+    if(selectedCut!==null&&!visible.includes(selectedCut))visible.push(selectedCut);
+    for(const at of visible){
+        let button=existing.get(at);existing.delete(at);
+        if(!button){button=document.createElement("button");button.type="button";button.className="cut-marker";button.dataset.at=at;target.append(button);
+            button.onclick=event=>{event.preventDefault();event.stopPropagation();selectCut(at,event.shiftKey);};
+            button.ondblclick=event=>{event.preventDefault();selectCut(at);selectCutSide(1);};
+        }
+        button.style.left=`${(at-view.start_ms)/view.span_ms*100}%`;
+        button.setAttribute("aria-pressed",String(at===selectedCut));
+        button.setAttribute("aria-label",`Cut ${cutIndex(cuts(),at)+1}, frame ${frames.ceil(at)}`);
+        button.title=`${button.getAttribute("aria-label")} · click for In / Out · Shift-click another cut to select between · double-click for the following shot`;
+    }
+    for(const button of existing.values())button.remove();
+    if(selectedCut!==null){const panel=$("cutActions"),x=(selectedCut-view.start_ms)/view.span_ms*width;panel.style.left=`${clamp(x-panel.offsetWidth/2,0,Math.max(0,width-panel.offsetWidth))}px`;}
+}
+function clearCut(){selectedCut=null;cutRangeReady=false;if(frames&&state){renderNavigation();renderTimelines();}}
+function selectCut(at,extend=false){
+    if(!cuts().includes(at))return;
+    const anchor=selectedCut;
+    seek(at);selectedCut=at;
+    view=followView(duration(),view,at);
+    if(extend&&anchor!==null){cutRangeReady=true;setSelection(anchor,at);}
+    renderNavigation();renderTimelines();
+}
+function selectCutSide(direction){
+    const range=cutSideRange(cuts(),selectedCut,direction,...sourceBounds());
+    if(!range||range[1]-range[0]<1)return;
+    cutRangeReady=true;setSelection(...range);
 }
 function drawOverview() {
     const [ctx,w,h]=prepare($("overview")),d=clipDuration(),low=sourceBounds()[0];
@@ -228,25 +460,70 @@ function renderInspector() {
     const found=selected();$("regionForm").hidden=!found;$("noRegion").hidden=!!found;$("regionKind").textContent=found?found.lane==="tracking"?"SAM3D tracking":"CoTracker3 stabilization":"";
     if(!found)return;
     const {region,lane}=found, disabled=busy||!!region.locked;
+    if(lane==="tracking"){
+        $("anchor").querySelector("[data-detailed]")?.remove();
+        if(!ANCHORS.includes(region.anchor)){
+            const option=new Option(`${region.anchor.replaceAll("_"," ")} · detailed`,region.anchor);option.dataset.detailed="true";$("anchor").append(option);
+        }
+    }
     const values={regionName:region.name,regionIn:positionValue(region.start_ms),regionOut:positionValue(region.end_ms)};
     if(lane==="tracking")Object.assign(values,{anchor:region.anchor,person:region.person,smoothing:region.smoothing_ms,rois:JSON.stringify(region.rois),axisSettings:JSON.stringify(region.settings||{},null,2)});
-    else {Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh)});$("pointCount").textContent=`${region.reference.points.length} points`;}
+    else Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh),trackingMode:region.reference.tracking_mode||'online'});
     for(const [id,value] of Object.entries(values))if(document.activeElement!==$(id))$(id).value=value;
     $("regionEnabled").checked=region.enabled!==false;$("regionLock").textContent=region.locked?"Unlock":"Lock";$("lockNotice").hidden=!region.locked;
     $("trackingSettings").hidden=lane!=="tracking";$("stabilizationSettings").hidden=lane!=="stabilization";
     for(const control of $("regionForm").querySelectorAll("input,textarea,select,button"))control.disabled=disabled;
-    for(const id of ["regionLock","regionRange","referenceFirst","cropZoom"])$(id).disabled=busy;
+    for(const id of ["regionLock","regionRange","referenceFirst","cropZoom","referenceKeyframes"])$(id).disabled=busy;
     $("referenceMode").disabled=disabled;
     if(disabled)$("referenceMode").value="review";
+    if(lane==='stabilization'){renderReferenceKeys(region);maskSteps.render();}
     if(lane==="tracking"){
         $("additionalAnchors").replaceChildren(...ANCHORS.filter(anchor=>anchor!==region.anchor).map(anchor=>{
             const label=document.createElement("label"),input=document.createElement("input");
             input.type="checkbox";input.value=anchor;input.checked=(region.additional_anchors||[]).includes(anchor);input.disabled=disabled;
-            input.onchange=()=>attempt(()=>updateRegion({additional_anchors:[...$("additionalAnchors").querySelectorAll("input:checked")].map(el=>el.value)}));
+            input.onchange=()=>attempt(()=>updateRegion({additional_anchors:[...(region.additional_anchors||[]).filter(anchor=>!ANCHORS.includes(anchor)),...[...$("additionalAnchors").querySelectorAll("input:checked")].map(el=>el.value)]}));
             label.append(input,anchor.replaceAll("_"," "));return label;
         }));
+        $("detailedAnchorTracks").replaceChildren(...(region.additional_anchors||[]).filter(anchor=>!ANCHORS.includes(anchor)).map(anchor=>{
+            const button=document.createElement("button");button.type="button";button.textContent=`${anchor.replaceAll("_"," ")} ×`;button.title=`Remove extra ${anchor.replaceAll("_"," ")} track`;button.disabled=disabled;
+            button.onclick=()=>attempt(()=>updateRegion({additional_anchors:region.additional_anchors.filter(a=>a!==anchor)}));return button;
+        }));
+        for(const row of $("detailedAnchorResults").querySelectorAll("[data-anchor]")){
+            const main=row.dataset.anchor===region.anchor,button=row.querySelector("button"),extra=row.querySelector("input");
+            button.textContent=main?"Main anchor":"Use as main";button.disabled=disabled||main;button.setAttribute("aria-pressed",String(main));
+            extra.checked=(region.additional_anchors||[]).includes(row.dataset.anchor);extra.disabled=disabled||main;
+        }
+        filterDetailedAnchors();
     }
 }
+function filterDetailedAnchors(){
+    const terms=$("anchorSearch").value.toLowerCase().replaceAll("_"," ").trim().split(/\s+/).filter(Boolean);let count=0;
+    for(const group of $("detailedAnchorResults").children){
+        let visible=0;
+        for(const row of group.querySelectorAll("[data-anchor]")){
+            row.hidden=!terms.every(term=>row.dataset.anchor.replaceAll("_"," ").includes(term));if(!row.hidden)visible++;
+        }
+        group.hidden=!visible;count+=visible;
+    }
+    $("noAnchorResults").hidden=count>0;$("detailedAnchorCount").textContent=`· ${count} landmarks`;
+}
+for(const [name,anchors] of Object.entries(DETAILED_ANCHOR_GROUPS)){
+    const group=document.createElement("section"),heading=document.createElement("h3");heading.textContent=name;group.append(heading);
+    for(const anchor of anchors){
+        const row=document.createElement("div"),label=document.createElement("span"),button=document.createElement("button"),extraLabel=document.createElement("label"),extra=document.createElement("input");
+        row.dataset.anchor=anchor;row.className="detailed-anchor-row";label.textContent=anchor.replaceAll("_"," ");button.type="button";button.textContent="Use as main";button.setAttribute("aria-label",`Use ${label.textContent} as main anchor`);
+        button.onclick=()=>attempt(()=>updateRegion({anchor}));extra.type="checkbox";extra.setAttribute("aria-label",`Extra ${label.textContent} track`);
+        extra.onchange=()=>attempt(()=>{const region=selected()?.region;if(!region)return;const values=new Set(region.additional_anchors||[]);if(extra.checked)values.add(anchor);else values.delete(anchor);updateRegion({additional_anchors:[...values]});});
+        extraLabel.append(extra,"Extra track");row.append(label,button,extraLabel);group.append(row);
+    }
+    $("detailedAnchorResults").append(group);
+}
+$("anchorSearch").oninput=filterDetailedAnchors;
+$("browseAnchors").onclick=()=>{
+    const panel=$("regionSettingsPane"),picker=$("detailedAnchors");picker.open=true;
+    panel.scrollTop+=picker.getBoundingClientRect().top-panel.getBoundingClientRect().top;
+    $("anchorSearch").focus({preventScroll:true});
+};
 function renderReport() {
     const report=state.report||{},target=$("report");target.replaceChildren();
     for(const item of report.regions||[]) {
@@ -261,11 +538,12 @@ function renderReport() {
     const count=plan.tracking.filter(r=>r.enabled!==false).length,stable=plan.stabilization.filter(r=>r.enabled!==false).length;
     $("regionSummary").textContent=`${count} tracking · ${stable} stabilization regions`;
     const project=state.project||report.project;
-    $("openStudio").hidden=!project;if(project){const url=new URL("viewer.html",location.href);url.searchParams.set("project",typeof project==="string"?project:project.name||project.project);if(state.editor_session)url.searchParams.set("session",state.editor_session);$("openStudio").href=url;}
+    $("openStudio").hidden=!project;if(project){const url=new URL("viewer.html",location.href);url.searchParams.set("timeline",state.session);url.searchParams.set("project",typeof project==="string"?project:project.name||project.project);if(state.editor_session)url.searchParams.set("session",state.editor_session);$("openStudio").href=url;}
 }
 function render() {
     if(!plan)return;
-    renderInspector();renderNavigation();renderTimelines();renderReport();draw();
+    if(choosePreviewMedia())requestSourceSeek(mediaTime(frames.seekTime(playhead)));
+    renderInspector();renderPreviewControls();renderNavigation();renderTimelines();renderReport();draw();
     $("undo").disabled=busy||!history.length;$("download").disabled=false;$("apply").disabled=busy||!!applyPending;
     $("processAll").disabled=busy||!plan.tracking.some(r=>r.enabled!==false);$("processUnfinished").disabled=$("processAll").disabled;
     for(const id of ["addTracking","addStabilization","chunkSeconds","joinMs","gapPolicy"])$(id).disabled=busy;
@@ -280,6 +558,7 @@ function addRegion(lane) {
     const region=createRegion(lane,uuid(),start,end,state.info,plan[lane].length);
     validateInterval(plan,lane,region.id,start,end,state.info);
     const next={...plan,[lane]:[...plan[lane],region],selected_ids:[region.id],selection:[start,end]};activeId=region.id;edit(next);
+    showInspectorTab("region");
     if(lane==="stabilization")seek(start);
 }
 function sourcePosition(event) {
@@ -288,36 +567,77 @@ function sourcePosition(event) {
     if(x<crop[0]||y<crop[1]||x>crop[0]+crop[2]||y>crop[1]+crop[3])return null;
     return [clamp(x,0,state.info.width-1),clamp(y,0,state.info.height-1)];
 }
+function renderReferenceKeys(region) {
+    const keys=referenceKeys(region.reference),first=frames.ceil(region.start_ms),frame=activeFrame()-first;
+    const key=keys.find(k=>k.frame===frame),expected=Math.max(...keys.map(k=>k.points.length));
+    $("referenceKeyframes").replaceChildren(new Option('Reference frames…',''),...keys.map(k=>new Option(`F ${first+k.frame} · ${k.points.length} points${k.unconfirmed?.length?` · ${k.unconfirmed.length} to review`:""}`,String(k.frame))));
+    $("referenceKeyframes").value=key?String(frame):'';
+    $("referencePoint").replaceChildren(...Array.from({length:key?Math.max(key.points.length+(keys.length===1?1:0),expected):expected},(_,i)=>new Option(`Point ${i+1}${i>=(key?.points.length||0)?' · place':''}`,String(i))));
+    $("referencePoint").value=String(key?.unconfirmed?.[0]??(key?Math.min(key.points.length,keys.length===1?key.points.length:Math.max(0,expected-1)):0));
+    const marked=keys.filter(k=>k.points.length).length;
+    $("pointCount").textContent=`${key?.points.length||0} points on this frame · ${marked} marked ${marked===1?'frame':'frames'}`;
+    const disabled=busy||region.locked;
+    $("markReference").disabled=disabled||playhead<region.start_ms||playhead>=region.end_ms;
+    $("removeReferenceKey").disabled=disabled||!key;
+}
+$("trackingMode").onchange=()=>attempt(()=>updateRegion({reference:{...selected().region.reference,tracking_mode:$("trackingMode").value}}));
+$("markReference").onclick=()=>attempt(()=>{
+    maskSteps.setStep("track");
+    const region=selected().region,frame=activeFrame()-frames.ceil(region.start_ms);
+    if(frame<0||activeFrame()>=frames.ceil(region.end_ms))throw new Error('Seek inside this stabilization region first.');
+    $("previewVariant").value='original';pause();
+    const health=trackingDetails.get(selectedRender()?.url)?.health;
+    const predicted=prefillReferenceKey(region.reference,health?.config,health,frame);
+    updateRegion({reference:predicted&&!referenceKeys(region.reference).some(k=>k.frame===frame)
+        ?withReferenceKeys(region.reference,[...referenceKeys(region.reference).filter(k=>k.points.length),predicted]):addReferenceKey(region.reference,frame)});
+    $("referenceMode").value='points';seek(frames.at(frames.ceil(region.start_ms)+frame));
+});
+$("referenceKeyframes").onchange=()=>{
+    if($("referenceKeyframes").value==='')return;
+    $("previewVariant").value='original';seek(frames.at(frames.ceil(selected().region.start_ms)+Number($("referenceKeyframes").value)));
+};
+$("removeReferenceKey").onclick=()=>attempt(()=>{
+    const region=selected().region,frame=activeFrame()-frames.ceil(region.start_ms);
+    updateRegion({reference:withReferenceKeys(region.reference,referenceKeys(region.reference).filter(k=>k.frame!==frame))});
+});
 function referenceEditable() {
     const found=selected();
-    if(!found||found.lane!=="stabilization"||busy||found.region.locked)return false;
-    if(video.seeking||frames.containing(playhead)!==frames.ceil(found.region.start_ms)){status("Go to this region’s first frame before selecting reference points.");return false;}
+    if(!found||found.lane!=="stabilization"||busy||found.region.locked||previewClip||previewLoading||requestedSeek!==null)return false;
+    if(video.seeking||playhead<found.region.start_ms||playhead>=found.region.end_ms)return false;
+    if($("referenceMode").value==='points'&&!referenceKeys(found.region.reference).some(k=>k.frame===activeFrame()-frames.ceil(found.region.start_ms))){status("Click Mark reference frame before placing points here.");return false;}
     return true;
 }
 $("sourceCanvas").onpointerdown=event=>{
     if(event.button!==0||!referenceEditable())return;
     const p=sourcePosition(event);if(!p)return;
+    if(maskSteps.pointerDown(p)){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
     if($("referenceMode").value==="crop"){sourceDrag={start:p,end:p};$("sourceCanvas").setPointerCapture(event.pointerId);}
-    else if($("referenceMode").value==="points")attempt(()=>{const reference=clone(selected().region.reference);reference.points.push(p);updateRegion({reference});});
+    else if($("referenceMode").value==="points")attempt(()=>{
+        const region=selected().region,frame=activeFrame()-frames.ceil(region.start_ms),slot=Number($("referencePoint").value);
+        updateRegion({reference:putReferencePoint(region.reference,frame,slot,p)});
+    });
 };
-$("sourceCanvas").onpointermove=event=>{if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
+$("sourceCanvas").onpointermove=event=>{if(maskSteps.pointerMove(sourcePosition(event)))return;if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
 $("sourceCanvas").onpointerup=()=>{
+    if(maskSteps.pointerUp())return;
     if(!sourceDrag)return;const {start:a,end:b}=sourceDrag;sourceDrag=null;
     const crop=[Math.floor(Math.min(a[0],b[0])),Math.floor(Math.min(a[1],b[1])),Math.round(Math.abs(a[0]-b[0])),Math.round(Math.abs(a[1]-b[1]))];
     if(crop[2]>=2&&crop[3]>=2)attempt(()=>{const reference=clone(selected().region.reference);reference.crop_xywh=crop;updateRegion({reference});});else drawSource();
 };
-$("sourceCanvas").onpointercancel=()=>{sourceDrag=null;drawSource();};
+$("sourceCanvas").onpointercancel=()=>{maskSteps.cancel();sourceDrag=null;drawSource();};
 $("sourceCanvas").oncontextmenu=event=>{
     if($("referenceMode").value!=="points"||!referenceEditable())return;event.preventDefault();const p=sourcePosition(event);if(!p)return;
-    const reference=clone(selected().region.reference);let best=-1,distance=12/sourceMap.scale;
-    reference.points.forEach((point,i)=>{const d=Math.hypot(point[0]-p[0],point[1]-p[1]);if(d<distance){best=i;distance=d;}});
-    if(best>=0)attempt(()=>{reference.points.splice(best,1);updateRegion({reference});});
+    const region=selected().region,reference=region.reference,key=referenceKeys(reference).find(k=>k.frame===activeFrame()-frames.ceil(region.start_ms));let best=-1,distance=12/sourceMap.scale;
+    key.points.forEach((point,i)=>{const d=Math.hypot(point[0]-p[0],point[1]-p[1]);if(d<distance){best=i;distance=d;}});
+    if(best>=0)attempt(()=>updateRegion({reference:removeReferencePoint(reference,best)}));
 };
 function timelineTime(event,element,snap=true) {const r=element.getBoundingClientRect(),time=clamp(view.start_ms+(event.clientX-r.left)/r.width*view.span_ms,...sourceBounds());return snap?snapTime(time,r.width):time;}
 for(const lane of LANES) {
     const element=laneElement(lane);
     element.onpointerdown=event=>{
         if(event.button!==0||!plan)return;event.preventDefault();const t=timelineTime(event,element),bar=event.target.closest(".region-bar"),found=bar?regionById(plan,bar.dataset.id):null;
+        const marked=event.target.closest('.reference-keyframe');
+        if(marked&&found){$("previewVariant").value='original';selectRegion(found.region.id,false,frames.at(Number(marked.dataset.referenceFrame)));return;}
         if(event.shiftKey){timelineDrag={kind:"selection",lane,anchor:t,startX:event.clientX};setSelection(t,t,false);}
         else if(found){selectRegion(found.region.id,event.ctrlKey||event.metaKey);timelineDrag={kind:$("editRegions").checked&&!found.region.locked&&!busy?(event.target.dataset.edge||"move"):"seek",lane,id:found.region.id,original:clone(found.region),time:t,startX:event.clientX,changed:false};}
         else {timelineDrag={kind:"seek",lane,time:t,startX:event.clientX};seek(t);}
@@ -354,13 +674,31 @@ for(const lane of LANES) {
     };
     element.onpointercancel=()=>{timelineDrag=null;renderTimelines();};
 }
-let rulerDrag=false;
-$("ruler").onpointerdown=event=>{if(event.button!==0)return;event.preventDefault();$("ruler").focus();rulerDrag=true;$("ruler").setPointerCapture(event.pointerId);seek(timelineTime(event,$("ruler")));};
-$("ruler").onpointermove=event=>{if(!frames)return;if(rulerDrag)seek(timelineTime(event,$("ruler")));const at=timelineTime(event,$("ruler"),false),near=snapCut(cuts(),at,view.span_ms/Math.max(1,$("ruler").clientWidth)*7);$("ruler").title=`Frame ${frames.nearest(at)}${$("showCuts").checked&&cuts().includes(near)?" · Hard cut":""} · drag to seek · ← / → step · I / O mark selection`;};
-$("ruler").onpointerup=$("ruler").onpointercancel=()=>{rulerDrag=false;};
-$("showCuts").onchange=renderTimelines;
-for(const [id,direction]of [["previousCut",-1],["nextCut",1]])$(id).onclick=()=>{const at=neighboringCut(cuts(),playhead,direction);if(at!==null){seek(at);view=followView(duration(),view,at,true);renderNavigation();renderTimelines();}};
+let rulerDrag=null;
+function cutAtPointer(event){
+    if(!$("showCuts").checked)return null;
+    const time=timelineTime(event,$("ruler"),false),near=snapCut(cuts(),time,view.span_ms/Math.max(1,$("ruler").clientWidth)*8);
+    return cuts()[cutIndex(cuts(),near)]===near?near:null;
+}
+$("ruler").onpointerdown=event=>{if(event.button!==0)return;event.preventDefault();$("ruler").focus();rulerDrag={cut:cutAtPointer(event),x:event.clientX,moved:false,extend:event.shiftKey};$("ruler").setPointerCapture(event.pointerId);if(rulerDrag.cut===null)seek(timelineTime(event,$("ruler")));};
+$("ruler").onpointermove=event=>{if(!frames)return;if(rulerDrag&&Math.abs(event.clientX-rulerDrag.x)>3){rulerDrag.moved=true;seek(timelineTime(event,$("ruler")));}const near=cutAtPointer(event);$("ruler").title=near!==null?`Cut ${cutIndex(cuts(),near)+1} · click for In / Out · Shift-click another cut to select between`:"Drag to seek · ← / → step · I / O mark selection";};
+$("ruler").onpointerup=()=>{const drag=rulerDrag;rulerDrag=null;if(drag?.cut!==null&&drag&&!drag.moved)selectCut(drag.cut,drag.extend);};
+$("ruler").onpointercancel=()=>{rulerDrag=null;};
+$("showCuts").onchange=()=>{$("showCuts").checked?renderTimelines():clearCut();};
+for(const [id,direction]of [["previousCut",-1],["nextCut",1],["cutPrevious",-1],["cutNext",1]])$(id).onclick=()=>{const at=neighboringCut(cuts(),selectedCut??playhead,direction);if(at!==null){selectCut(at);view=followView(duration(),view,at,true);renderNavigation();renderTimelines();}};
 $("selectShot").onclick=()=>{const [a,b]=shotRange(cuts(),playhead,...sourceBounds());setSelection(a,b);status("Shot selected · add a region or isolate this range in the active region");};
+$("clearCut").onclick=()=>{clearCut();$("ruler").focus();};
+$("cutIn").onclick=()=>$("markIn").click();$("cutOut").onclick=()=>$("markOut").click();
+$("cutBefore").onclick=()=>selectCutSide(-1);$("cutAfter").onclick=()=>selectCutSide(1);
+$("cutRegion").onclick=()=>attempt(()=>{
+    if(!cutRangeReady)return;
+    const lane=$("cutRegionLane").value,next=regionFromSelection(plan,lane,uuid,state.info);
+    activeId=next.selected_ids[0];edit(next,"Region ready · choose its anchor or stabilization reference points");
+    showInspectorTab("region");
+    if(lane==="stabilization")seek(regionById(plan,activeId).region.start_ms);
+    clearCut();
+});
+document.addEventListener("pointerdown",event=>{if(selectedCut!==null&&!event.target.closest(".ruler-track,#markIn,#markOut"))clearCut();});
 let overviewDrag=null;
 $("overview").onpointerdown=event=>{if(event.button!==0)return;const r=$("overview").getBoundingClientRect(),time=sourceBounds()[0]+(event.clientX-r.left)/r.width*clipDuration();overviewDrag={x:event.clientX,start:view.start_ms,width:r.width};if(time<view.start_ms||time>view.start_ms+view.span_ms){view=panView(duration(),view,time-view.span_ms/2);overviewDrag.start=view.start_ms;}$("overview").setPointerCapture(event.pointerId);renderNavigation();renderTimelines();};
 $("overview").onpointermove=event=>{if(!overviewDrag)return;view=panView(duration(),view,overviewDrag.start+(event.clientX-overviewDrag.x)/overviewDrag.width*clipDuration());renderNavigation();renderTimelines();};
@@ -384,17 +722,25 @@ $("rois").onchange=()=>attempt(()=>{
 });
 $("axisSettings").onchange=()=>attempt(()=>{const settings=JSON.parse($("axisSettings").value);if(!settings||Array.isArray(settings)||typeof settings!=="object")throw new Error("Axis settings must be a JSON object.");updateRegion({settings});});
 $("crop").onchange=()=>attempt(()=>{const crop=JSON.parse($("crop").value);if(!Array.isArray(crop)||crop.length!==4||crop.some(v=>!Number.isFinite(v))||crop[0]<0||crop[1]<0||crop[2]<2||crop[3]<2||crop[0]+crop[2]>state.info.width||crop[1]+crop[3]>state.info.height)throw new Error("Crop must be [x,y,width,height] inside the source image.");const reference=clone(selected().region.reference);reference.crop_xywh=crop;updateRegion({reference});});
-$("referenceFirst").onclick=()=>seek(frames.at(frames.ceil(selected().region.start_ms)));
-$("referenceMode").onchange=()=>{if($("referenceMode").value!=="review")$("referenceFirst").click();drawSource();};
+$("referenceFirst").onclick=()=>{$("previewVariant").value="original";seek(frames.at(frames.ceil(selected().region.start_ms)));};
+$("referenceMode").onchange=()=>{
+    maskSteps.setStep("track");
+    if($("referenceMode").value!=="review"){
+        $("previewVariant").value="original";
+        const r=selected().region,frame=activeFrame()-frames.ceil(r.start_ms);
+        const key=referenceKeys(r.reference).find(k=>k.frame===frame)||referenceKeys(r.reference)[0];
+        seek(frames.at(frames.ceil(r.start_ms)+key.frame));
+    }drawSource();
+};
 $("cropZoom").onchange=drawSource;
-$("clearPoints").onclick=()=>attempt(()=>{const reference=clone(selected().region.reference);reference.points=[];updateRegion({reference});$("referenceFirst").click();});
+$("clearPoints").onclick=()=>attempt(()=>{const r=selected().region;updateRegion({reference:withReferenceKeys(r.reference,[{frame:Math.max(0,activeFrame()-frames.ceil(r.start_ms)),points:[]}])});});
 $("addTracking").onclick=()=>attempt(()=>addRegion("tracking"));$("addStabilization").onclick=()=>attempt(()=>addRegion("stabilization"));
 $("remove").onclick=()=>attempt(()=>{const found=selected();if(!found)return;if(found.region.locked)throw new Error("Unlock this region before deleting it.");const next={...plan,[found.lane]:plan[found.lane].filter(r=>r.id!==found.region.id),selected_ids:[]};activeId=null;edit(next);});
 $("duplicate").onclick=()=>attempt(()=>{
     const found=selected();if(!found)return;if(found.region.locked)throw new Error("Unlock this region before duplicating it.");
     const [a,b]=selectionRange(plan,state.info);if(b-a<1)throw new Error("Select the destination time range before duplicating.");
     const region={...clone(found.region),id:uuid(),name:`${found.region.name} · copy`,start_ms:a,end_ms:b,locked:false};
-    if(found.lane==="stabilization"){region.reference.points=[];region.reference.sections=[];}
+    if(found.lane==="stabilization"){region.reference.points=[];region.reference.sections=[];delete region.reference.keyframes;delete region.reference.point_mask;}
     validateInterval(plan,found.lane,region.id,a,b,state.info);activeId=region.id;edit({...plan,[found.lane]:[...plan[found.lane],region],selected_ids:[region.id]});
 });
 $("split").onclick=()=>attempt(()=>{const next=splitRegion(plan,activeId,playhead,uuid(),state.info);activeId=next.selected_ids[0];edit(next);});
@@ -402,7 +748,7 @@ $("isolateSelection").onclick=()=>attempt(()=>{const next=isolateSelection(plan,
 $("undo").onclick=()=>attempt(()=>{
     if(!history.length||busy)return;const previous=history.at(-1);
     for(const lane of LANES)for(const region of plan[lane])if(region.locked){const old=regionById(previous,region.id)?.region;if(!old||!equal({...old,locked:true},region))throw new Error("Undo would change a locked region. Unlock it first.");}
-    history.pop();plan=previous;dirty=!equal(plan,savedPlan);draft();if(!regionById(plan,activeId))activeId=plan.selected_ids?.[0]||null;feedback("pending","Unapplied edits");status("Undo restored the previous plan");render();
+    history.pop();plan=previous;dirty=!equal(plan,savedPlan);draft();if(!regionById(plan,activeId))activeId=plan.selected_ids?.[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;feedback("pending","Unapplied edits");status("Undo restored the previous plan");render();
 });
 $("editRegions").onchange=()=>document.body.classList.toggle("editing-regions",$("editRegions").checked);
 $("fitAll").onclick=()=>{view=timelineView(duration(),{...view,start_ms:sourceBounds()[0],span_ms:clipDuration()});renderNavigation();renderTimelines();scheduleThumbs();};
@@ -420,29 +766,39 @@ $("fitSelection").onclick=()=>fitRange(...selectionRange(plan,state.info));
 $("showPlayhead").onclick=()=>{view=followView(duration(),view,playhead,true);renderNavigation();renderTimelines();scheduleThumbs();};
 $("follow").onchange=()=>{view.follow=$("follow").checked;};
 $("pan").oninput=()=>{view=panView(duration(),view,useFrames()?frames.at(Number($("pan").value)):Number($("pan").value));renderNavigation();renderTimelines();scheduleThumbs();};
-$("markIn").onclick=()=>{const at=frames.at(activeFrame()),[,b]=selectionRange(plan,state.info);setSelection(at,Math.max(at,b));};
-$("markOut").onclick=()=>{const f=activeFrame(),[a]=selectionRange(plan,state.info);setSelection(Math.min(a,frames.at(f)),frames.at(f+1));};
-$("selectFrame").onclick=()=>{const f=activeFrame();setSelection(frames.at(f),frames.at(f+1));};
+$("markIn").onclick=()=>{const at=selectedCut??frames.at(activeFrame()),[,b]=selectionRange(plan,state.info);cutRangeReady=selectedCut!==null;setSelection(at,Math.max(at,b));};
+$("markOut").onclick=()=>{const f=activeFrame(),[a]=selectionRange(plan,state.info);cutRangeReady=selectedCut!==null;setSelection(Math.min(a,selectedCut??frames.at(f)),selectedCut??frames.at(f+1));};
+$("selectFrame").onclick=()=>{const f=activeFrame();clearCut();setSelection(frames.at(f),frames.at(f+1));};
 for(const id of ["selectionIn","selectionOut"])$(id).onchange=()=>setSelection(positionTime($("selectionIn").value),positionTime($("selectionOut").value));
 $("clearSelection").onclick=()=>{setSelection(playhead,playhead);};
 $("play").onclick=togglePlay;$("previous").onclick=()=>seek(frames.step(frames.at(activeFrame()),-1));$("next").onclick=()=>seek(frames.step(frames.at(activeFrame()),1));
 $("seekTime").onclick=()=>seek(positionTime($("goTime").value));$("goTime").onkeydown=event=>{if(event.key==="Enter"){$("seekTime").click();$("ruler").focus();}};$("mute").onchange=()=>{video.muted=$("mute").checked;};
 for(const [id,field] of [["chunkSeconds","chunk_seconds"],["joinMs","join_ms"],["gapPolicy","gap_policy"]])$(id).onchange=()=>attempt(()=>edit({...plan,[field]:id==="gapPolicy"?$(id).value:Number($(id).value)}));
 window.addEventListener("keydown",event=>{
+    if(event.key==="Escape"&&selectedCut!==null){event.preventDefault();clearCut();$("ruler").focus();return;}
     if(!state||!frames||document.querySelector("main").inert||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,textarea,select,[role=separator],[contenteditable=true]"))return;
     if(event.code==="Space"&&!event.target.closest("button")){event.preventDefault();togglePlay();}
     if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();seek(frames.step(frames.at(activeFrame()),(event.key==="ArrowLeft"?-1:1)*(event.shiftKey?10:1)));}
     if(event.key==="Home"||event.key==="End"){event.preventDefault();seek(frames.at(event.key==="Home"?frames.first:frames.end-1));}
     if(event.key.toLowerCase()==="i"){event.preventDefault();$("markIn").click();}if(event.key.toLowerCase()==="o"){event.preventDefault();$("markOut").click();}
 });
-video.onloadeddata=()=>{draw();};video.onseeked=draw;video.onended=()=>{pause();draw();};
-video.onerror=()=>fail(new Error("The source video could not be opened. Requeue the timeline node to refresh its source."));
-video.onloadedmetadata=()=>{if(!state||!frames)return;video.currentTime=mediaTime(frames.seekTime(playhead));layout.refresh();draw();};
-if(video.requestVideoFrameCallback){const presented=(_,metadata)=>{presentedTime=(metadata.mediaTime-fraction(state?.info?.source_origin))*1000;video.requestVideoFrameCallback(presented);};video.requestVideoFrameCallback(presented);}
+video.onloadeddata=()=>{finishSourceSeek();draw();};video.onseeked=finishSourceSeek;
+video.onended=()=>{
+    if(previewClip&&previewClip.region.end_ms<sourceBounds()[1]-.001){const end=previewClip.region.end_ms;resumePlayback=true;seek(frames.at(frames.ceil(end)),false);}
+    else {pause();draw();}
+};
+video.onerror=()=>{
+    previewLoading=false;resumePlayback=false;
+    if(previewClip){previewFailures.add(previewClip.url);seek(playhead);renderPreviewControls();return;}
+    fail(new Error("The source video could not be opened. Requeue the timeline node to refresh its source."));
+};
+video.onloadedmetadata=()=>{if(!state||!frames)return;previewLoading=false;requestSourceSeek(mediaTime(frames.seekTime(playhead)));layout.refresh();draw();};
+if(video.requestVideoFrameCallback){const presented=(_,metadata)=>{if(!previewLoading&&requestedSeek===null&&!video.seeking)presentedTime=sourceTime(metadata.mediaTime);video.requestVideoFrameCallback(presented);};video.requestVideoFrameCallback(presented);}
 function tick(now) {
     if(state&&frames&&!video.paused&&!video.seeking&&now-lastFrame>30){
         lastFrame=now;playhead=frames.at(activeFrame());
         if(video.currentTime>=mediaTime(sourceBounds()[1]))pause();
+        if(choosePreviewMedia()){requestSourceSeek(mediaTime(frames.seekTime(playhead)));renderPreviewControls();}
         if(view.follow)view=followView(duration(),view,playhead);
         draw();renderNavigation();renderTimelines();
     }
@@ -462,6 +818,8 @@ async function save() {
     if(!dirty)return;
     const sent=clone(plan),sentRevision=revision;
     savePromise=(async()=>{
+        if(sent.stabilization.some(r=>r.reference.point_mask))await requireMaskBackend();
+        if(sent.stabilization.some(r=>r.reference.keyframes||r.reference.tracking_mode==='offline'))await requireReferenceBackend(location.href);
         const next=await jsonResponse(await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:sentRevision,plan:sent})}));
         revision=next.revision;savedPlan=clone(next.plan||sent);state={...state,...next};
         if(equal(plan,sent))plan=clone(savedPlan);dirty=!equal(plan,savedPlan);draft();
@@ -494,8 +852,19 @@ async function applyWorkflow(){
     } catch(error){feedback("error",error.message);$("apply").disabled=busy;fail(error);throw error;}
 }
 $("apply").onclick=()=>window.s3fTimelineApply().catch(()=>{});
+async function requireMaskBackend(){
+    const data=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+    if(data.reference_masks!==1)throw new Error('Restart ComfyUI to enable reference masks, then refresh its main tab and reopen this timeline. Your edits are kept.');
+}
 function validateProcessing(operation) {
     if(operation==="detect_cuts")return;
+    if(['stabilize','propagate_mask','extract_anchors'].includes(operation)){
+        const found=selected();
+        if(found?.lane!=='stabilization'||found.region.enabled===false)throw new Error('Select an enabled stabilization region to track.');
+        if(found.region.locked&&operation!=='extract_anchors')throw new Error('Unlock this region before tracking again.');
+        if(operation==='propagate_mask')return;
+        validateReference(found.region);maskSteps.validate();return;
+    }
     if(!plan.tracking.some(r=>r.enabled!==false))throw new Error("Add and enable at least one tracking region.");
     const [a,b]=selectionRange(plan,state.info),ids=new Set(plan.selected_ids||[]);
     for(const region of plan.stabilization)if(region.enabled!==false){
@@ -505,24 +874,38 @@ function validateProcessing(operation) {
     }
 }
 async function process(operation) {
-    if(busy)return;
+    if(busy||startingOperation)return;
+    startingOperation=operation;renderPreviewControls();
     if(operation==="detect_cuts")$("sceneTools").open=true;
-    try {validateProcessing(operation);await window.s3fTimelineApply();const target=bridge();if(!target)throw new Error("Open this timeline from its ComfyUI node to process it.");
-        busy=true;clearError();$("processingProgress").hidden=false;$("progress").removeAttribute("value");$("progressText").textContent="Submitting timeline processing…";status("Queuing processing…");render();
-        const request=uuid();processPending={request,operation,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
-        target.postMessage({type:"s3f-timeline-process",session,node,request,operation,plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value},location.origin);
-    }catch(error){fail(error);}
+    try {
+        if(document.activeElement?.matches('input,textarea,select'))document.activeElement.blur();
+        validateProcessing(operation);
+        const stabilizationId=['stabilize','propagate_mask','extract_anchors'].includes(operation)?selected().region.id:null;
+        if(['propagate_mask','extract_anchors'].includes(operation))await requireMaskBackend();
+        if(['stabilize','propagate_mask','extract_anchors'].includes(operation)){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+            if(capabilities.timeline_stabilize!==1)throw new Error('Restart ComfyUI to enable Track region, then refresh the main ComfyUI tab and reopen the timeline. Your edits are kept.');
+        }
+        if(operation!=='detect_cuts'&&plan.stabilization.some(r=>r.enabled!==false&&(r.reference.keyframes||r.reference.tracking_mode==='offline')))await requireReferenceBackend(location.href);
+        await window.s3fTimelineApply();const target=bridge();if(!target)throw new Error("Open this timeline from its ComfyUI node to process it.");
+        busy=true;clearError();$("processingProgress").hidden=false;$("progress").removeAttribute("value");$("progressText").textContent=operation==='stabilize'?'Submitting reference tracking…':"Submitting timeline processing…";status("Queuing processing…");
+        const request=uuid();processPending={request,operation,stabilizationId,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
+        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation,stabilization_id:stabilizationId,plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value},location.origin);
+    }catch(error){fail(error);}finally{startingOperation=null;renderPreviewControls();}
 }
 function finishProcess(error) {
-    const cutScan=processPending?.operation==="detect_cuts";
+    trackingDetails.clear();
+    const cutScan=processPending?.operation==="detect_cuts",trackOnly=processPending?.operation==='stabilize',maskOnly=processPending?.operation==='propagate_mask';
     if(processPending)clearTimeout(processPending.timer);processPending=null;busy=false;
     if(error){fail(error);$("progressText").textContent=error.message;status(cutScan?"Cut scan stopped · previous markers kept":"Processing stopped · completed chunks remain cached");}
-    else{$("progress").max=1;$("progress").value=1;$("progressText").textContent=cutScan?`Cut scan complete · ${cuts().length} markers`:"Processing complete";status(cutScan?"Cut guides ready · jump to a cut or select a shot to plan its tracking":"Processing complete · open Motion Studio to review the curves");}
+    else{$("progress").max=1;$("progress").value=1;$("progressText").textContent=cutScan?`Cut scan complete · ${cuts().length} markers`:trackOnly?'Tracking complete · stabilized preview ready':maskOnly?'Mask propagation complete · ready to track':"Processing complete";status(cutScan?"Cut guides ready · jump to a cut or select a shot to plan its tracking":trackOnly?'Tracking complete · review the stabilized preview':maskOnly?'Mask ready · review it and continue to Stabilize':"Processing complete · open Motion Studio to review the curves");}
     render();
 }
 $("processAll").onclick=()=>process("all");$("processSelected").onclick=()=>process("selected");$("processUnfinished").onclick=()=>process("unfinished");
 $("detectCuts").onclick=()=>process("detect_cuts");
+$("trackStabilization").onclick=()=>process('stabilize');
 $("cancel").onclick=()=>{const target=bridge();if(!target){fail(new Error("The ComfyUI window is no longer connected. Cancel the running job in ComfyUI."));return;}target.postMessage({type:"s3f-timeline-cancel",session,node,request:processPending?.request||uuid()},location.origin);$("cancel").disabled=true;$("progressText").textContent="Cancellation requested…";};
+$("cancelStabilization").onclick=()=>{$("cancel").click();renderPreviewControls();};
 window.addEventListener("message",async event=>{
     if(event.origin!==location.origin||event.source!==bridge())return;const data=event.data;
     if(data?.type==="s3f-timeline-applied"&&data.request===applyPending?.request){finishApply(data.error?new Error(data.error):null);return;}
@@ -530,13 +913,21 @@ window.addEventListener("message",async event=>{
     processPending.acknowledged=true;clearTimeout(processPending.timer);
     if(data.text)$("progressText").textContent=data.text;
     if(data.max>0){$("progress").max=data.max;$("progress").value=data.value||0;}
+    renderPreviewControls();
     if(data.state==="error"||data.error){
-        const error=data.error==="Unknown timeline operation"&&processPending.operation==="detect_cuts"
-            ?"Cut detection needs the updated workflow bridge. Refresh the main ComfyUI tab (Ctrl+Shift+R), then reopen this timeline."
+        const error=data.error==="Unknown timeline operation"&&['detect_cuts','stabilize','propagate_mask','extract_anchors'].includes(processPending.operation)
+            ?"This action needs the updated workflow bridge. Refresh the main ComfyUI tab (Ctrl+Shift+R), then reopen this timeline."
             :data.error||data.text||"Processing failed";
         finishProcess(new Error(error));await window.s3fTimelineLoad().catch(fail);
     }
-    else if(data.state==="complete") {try{await window.s3fTimelineLoad();finishProcess();}catch(error){finishProcess(error);}}
+    else if(data.state==="complete") {try{
+        const stabilizationId=processPending.stabilizationId,operation=processPending.operation;
+        await window.s3fTimelineLoad();await refreshRenderedClips();finishProcess();
+        if(stabilizationId&&selected()?.region.id===stabilizationId){
+            if(operation==='stabilize')$('previewStabilized').click();
+            else if(operation==='propagate_mask')maskSteps.setStep('track');
+        }
+    }catch(error){finishProcess(error);}}
     else status(data.state==="queued"?"Processing queued in ComfyUI":processPending.operation==="detect_cuts"?"Scanning hard cuts…":"Processing regions…");
 });
 async function loadState(next, force = false) {
@@ -552,16 +943,17 @@ async function loadState(next, force = false) {
     }
     state=next;revision=next.revision;
     frameCuts=state.scene_cuts?.source_id===state.info.source_id?[...new Set(state.scene_cuts.times_ms.map(t=>frames.snap(t)))]:[];
+    if(changedSource||!frameCuts.includes(selectedCut)){selectedCut=null;cutRangeReady=false;}
     if(first||changedSource)layout.refresh();
     if(first||changedSource||force)$("cutSensitivity").value=state.scene_cuts?.settings?.sensitivity||"normal";
     if(first||force||!dirty){plan=clone(next.plan);savedPlan=clone(next.plan);dirty=false;draft();}
     plan.tracking||=[];plan.stabilization||=[];plan.selected_ids||=[];plan.selection||=[bounds(next.info)[0],bounds(next.info)[0]];
-    if(first||changedSource){view=timelineView(duration(),{start_ms:sourceBounds()[0],span_ms:clipDuration(),follow:true});playhead=frames.at(frames.first);video.src=new URL(`${api.pathname}/video?source_id=${encodeURIComponent(state.info.source_id)}`,location.origin);video.load();activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;history=[];}
+    if(first||changedSource){renderRequest++;trackingDetails.clear();renderedClips=[];previewFailures.clear();previewClip=null;previewURL="";previewLoading=false;$("previewVariant").value="original";view=timelineView(duration(),{start_ms:sourceBounds()[0],span_ms:clipDuration(),follow:true});playhead=frames.at(frames.first);prepare($("sourceCanvas"));sourceMap=null;requestedSeek=null;decodingSeek=null;choosePreviewMedia();activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;history=[];}
     if(!regionById(plan,activeId))activeId=plan.selected_ids[0]||plan.tracking[0]?.id||plan.stabilization[0]?.id||null;
     if(force){history=[];pendingState=null;conflictingDraft=false;$("reload").hidden=true;}
     const source=next.info.source;$("sourceName").textContent=typeof source==="string"?source.split("/").at(-1):String(source?.path||source?.name||"Source video").split("/").at(-1);
     if(!busy)status(dirty?"Unapplied edits":"Plan loaded · select regions to configure processing");
-    renderUnits();render();scheduleThumbs();document.querySelector("main").inert=false;
+    renderUnits();render();scheduleThumbs();document.querySelector("main").inert=false;void refreshRenderedClips();
 }
 window.s3fTimelineLoad=async()=>{
     if(loading)return;loading=true;
@@ -594,9 +986,9 @@ async function initialize() {
         if(!regionById(plan,activeId))activeId=plan.selected_ids?.[0]||plan.tracking[0]?.id||null;
         draft();status(conflictingDraft?"Recovered older draft · download it before loading the latest plan":"Recovered unsaved edits from this browser · Apply to node to keep them");feedback("pending","Recovered unapplied edits");render();
     }
-    pollTimer=setInterval(async()=>{if(document.hidden||savePromise||applyPending||loading)return;try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));if(next.revision!==revision||!equal(next.report,state.report)||next.project!==state.project||!equal(next.scene_cuts,state.scene_cuts))await loadState(next);}catch(_){/* Explicit Apply/Process surfaces connection failures without interrupting edits. */}},4000);
+    pollTimer=setInterval(async()=>{if(document.hidden||savePromise||applyPending||loading)return;try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));if(next.revision!==revision||!equal(next.report,state.report)||next.project!==state.project||!equal(next.scene_cuts,state.scene_cuts))await loadState(next);else await refreshRenderedClips();}catch(_){/* Explicit Apply/Process surfaces connection failures without interrupting edits. */}},4000);
 }
-initialize().catch(error=>{fail(error);status("Timeline could not load");});
+initialize().catch(error=>{fail(error);status("Timeline could not load");window.s3fTimelineStartupFailed?.(error);});
 
 $("openStudio").addEventListener("click",event=>{if(openWorkspacePage($("openStudio").href))event.preventDefault();});
 window.s3fHasUnsavedEdits=()=>dirty||!!applyPending;

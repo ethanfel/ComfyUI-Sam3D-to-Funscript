@@ -13,7 +13,8 @@ import numpy as np
 
 from .anchors import ANCHORS
 from .core import AXES, PoseSequence, build_project, default_config, validate_actions
-from .reference import atomic_json, config_for_source, digest, run_reference
+from .reference import atomic_json, config_for_source, digest, run_reference, source_info
+from .reference_tracker import resolve_checkpoint
 from .timeline import combine_projects, GEOMETRY
 from .video import extract_video, fingerprint, parse_rois
 
@@ -102,7 +103,7 @@ def normalize_plan(raw, info):
                 reference = deepcopy(source.get("reference", {}))
                 if not isinstance(reference, dict):
                     raise ValueError("Reference settings must be an object")
-                # Point coordinates belong to this region's first frame. The
+                # Point frame numbers are relative to this region. The
                 # enclosing timeline validates source identity, not a stale trim ID.
                 reference.pop("source_id", None)
                 reference, _ = config_for_source(reference, info)
@@ -169,7 +170,11 @@ def _region_settings(region, anchor=None):
 
 
 def _stable(value):
-    return {k: v for k, v in value.items() if k not in ("name", "locked", "enabled")}
+    result = {k: deepcopy(v) for k, v in value.items() if k not in ("name", "locked", "enabled")}
+    mask = result.get("reference", {}).get("point_mask")
+    if mask:
+        mask.pop("spacing", None); mask.pop("limit", None)
+    return result
 
 
 def _stabilized_rois(rois, info, manifest, start, end):
@@ -367,6 +372,112 @@ def assemble_projects(region_projects, plan, info):
     return project
 
 
+def current_reference_mask(region, state):
+    from .reference_mask import mask_geometry
+    mask = region["reference"].get("point_mask")
+    if not mask or not mask.get("strokes"):
+        return None
+    entry = state.get("masks", {}).get(region["id"])
+    if not entry or any(entry["region"][k] != region[k] for k in ("start_ms", "end_ms")) or entry["mask"] != mask_geometry(mask) or not Path(entry["manifest_path"]).is_file():
+        raise ValueError(f"Propagate the updated reference mask in {region['name']} before tracking")
+    return {"id": entry["id"], "manifest_path": entry["manifest_path"]}
+
+
+def run_mask_propagation(info, plan, root, checkpoint=None, region_ids=None, use_cache=True, progress=None, interrupt=None):
+    """Propagate selected masks without loading CoTracker or SAM3D."""
+    from .reference_mask import propagate_mask, mask_geometry
+    plan = normalize_plan(plan, info)
+    ids = plan["selected_ids"] if region_ids is None else region_ids
+    regions = {r["id"]: r for r in plan["stabilization"] if r["enabled"]}
+    if not isinstance(ids, list) or not ids or any(not isinstance(sid, str) or sid not in regions for sid in ids):
+        raise ValueError("Select an enabled stabilization region for mask propagation")
+    root = Path(root)
+    directory = root / "results" / info["source_id"]
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "state.json"
+    state = json.loads(path.read_text()) if path.exists() else {"version": VERSION, "source_id": info["source_id"], "regions": {}}
+    report = {"source_id": info["source_id"], "regions": [], "completed_jobs": 0, "total_jobs": len(set(ids))}
+    for sid in dict.fromkeys(ids):
+        region = regions[sid]
+        if interrupt: interrupt()
+        if region["locked"]:
+            saved = current_reference_mask(region, state)
+            if not saved: raise ValueError("Unlock this region to create a reference mask")
+        else:
+            mask = region["reference"].get("point_mask")
+            if not mask or not mask.get("strokes"): raise ValueError("Paint a reference mask first")
+            clip = source_info(info["source"]["path"], Fraction(str(region["start_ms"]))/1000,
+                               Fraction(str(region["end_ms"]-region["start_ms"]))/1000)
+            def emit(event):
+                if progress: progress({**event, "region_id": sid, "region_name": region["name"], "completed_jobs": report["completed_jobs"], "total_jobs": report["total_jobs"]})
+            emit({"stage": "mask_propagation", "frames": 0})
+            manifest_path = propagate_mask(clip, mask, root / "masks", use_cache, emit, interrupt)
+            manifest = json.loads(manifest_path.read_text())
+            state.setdefault("masks", {})[sid] = {"id": manifest["id"], "manifest_path": str(manifest_path),
+                "region": {k: region[k] for k in ("id", "start_ms", "end_ms")}, "mask": mask_geometry(mask), "frames": len(manifest["frames"])}
+            atomic_json(path, state)
+        report["regions"].append({"id": sid, "mask_id": state["masks"][sid]["id"]})
+        report["completed_jobs"] += 1
+    return report
+
+
+def _stabilize_region(info, region, root, state, checkpoint, use_cache, progress, interrupt):
+    """Share the rendered reference between quick tracking and pose extraction."""
+    sid = region["id"]
+    stored = state.setdefault("stabilization", {}).get(sid)
+    if region["locked"] and stored and Path(stored["manifest_path"]).is_file() and Path(stored["video_path"]).is_file():
+        return json.loads(Path(stored["manifest_path"]).read_text()), Path(stored["video_path"])
+    if not region["reference"]["points"]:
+        raise ValueError(f"Mark reference points in stabilization region {region['name']}")
+    masks = current_reference_mask(region, state)
+    tracked, rendered = run_reference(info["source"]["path"], Fraction(str(region["start_ms"]))/1000,
+        Fraction(str(region["end_ms"]-region["start_ms"]))/1000,
+        region["reference"], checkpoint, root / "reference", tolerance=region["agreement_pixels"],
+        max_step=region["max_step_pixels"], use_cache=use_cache, progress=progress, interrupt=interrupt, reference_masks=masks)
+    if rendered is None:
+        raise ValueError("Stabilization reference points are missing")
+    directory = root / "results" / info["source_id"]
+    manifest_path = directory / (digest([sid, tracked["id"]])+".reference.json")
+    atomic_json(manifest_path, tracked)
+    state["stabilization"][sid] = {"region": deepcopy(region), "manifest_path": str(manifest_path), "video_path": str(rendered)}
+    atomic_json(directory / "state.json", state)
+    return tracked, rendered
+
+
+def run_stabilization(info, plan, root, checkpoint, region_ids=None, use_cache=True, progress=None, interrupt=None):
+    """Track complete selected stabilization regions without reading pose models or results."""
+    plan = normalize_plan(plan, info)
+    ids = plan["selected_ids"] if region_ids is None else region_ids
+    if not isinstance(ids, list) or not ids or any(not isinstance(sid, str) for sid in ids):
+        raise ValueError("Select a stabilization region to track")
+    regions = {r["id"]: r for r in plan["stabilization"] if r["enabled"]}
+    if any(sid not in regions for sid in ids):
+        raise ValueError("Select an enabled stabilization region to track")
+    selected = [regions[sid] for sid in dict.fromkeys(ids)]
+    root = Path(root)
+    directory = root / "results" / info["source_id"]
+    directory.mkdir(parents=True, exist_ok=True)
+    state_path = directory / "state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"version": VERSION, "source_id": info["source_id"], "regions": {}}
+    report = {"source_id": info["source_id"], "regions": [], "completed_jobs": 0, "total_jobs": len(selected)}
+
+    def emit(region, frames=0):
+        if interrupt:
+            interrupt()
+        if progress:
+            progress({"stage": "stabilization", "region_id": region["id"], "region_name": region["name"],
+                      "frames": frames, "completed_jobs": report["completed_jobs"], "total_jobs": report["total_jobs"]})
+
+    for region in selected:
+        emit(region)
+        manifest, _ = _stabilize_region(info, region, root, state, checkpoint, use_cache,
+                                       lambda frames: emit(region, frames), interrupt)
+        report["regions"].append({"id": region["id"], "reference_id": manifest["id"]})
+        report["completed_jobs"] += 1
+        emit(region)
+    return report
+
+
 def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, checkpoint=None,
                  operation="all", use_cache=True, mask_video_range=None, progress=None, interrupt=None):
     """Process selected work and atomically checkpoint each completed chunk."""
@@ -419,13 +530,24 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             continue
         region_jobs = [deepcopy(j) for j in jobs if j["region_id"] == region["id"]]
         dependencies = {j["stabilization_id"] for j in region_jobs} - {None}
+        tracker_identity = {k: fingerprint(p) if (p := resolve_checkpoint(checkpoint, stabilizers[k]["reference"].get("tracking_mode", "online"))) else None for k in sorted(dependencies)}
+        # Preserve the existing signature for unchanged, online-only plans.
+        if not dependencies:
+            tracker_identity = None
+        elif all(stabilizers[k]["reference"].get("tracking_mode", "online") == "online" for k in dependencies):
+            tracker_identity = next(iter(tracker_identity.values()))
         signature = digest({"version": VERSION, "region": _stable(region), "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)],
-                            "model": model, "checkpoint": fingerprint(checkpoint) if checkpoint and dependencies else None,
+                            "model": model, "checkpoint": tracker_identity,
                             "sample_fps": sample_fps, "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
         pose_signature = digest({"region": {k: v for k, v in _stable(region).items() if k not in ("anchor", "additional_anchors", "settings")},
             "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)], "model": model,
-            "checkpoint": fingerprint(checkpoint) if checkpoint and dependencies else None, "sample_fps": sample_fps,
+            "checkpoint": tracker_identity, "sample_fps": sample_fps,
             "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
+        mask_dependencies = {k: state.get("masks", {}).get(k, {}).get("id") for k in sorted(dependencies)
+                             if stabilizers[k]["reference"].get("point_mask", {}).get("strokes")}
+        if mask_dependencies:
+            signature = digest([signature, mask_dependencies])
+            pose_signature = digest([pose_signature, mask_dependencies])
         entry = state["regions"].get(region["id"])
         row = {"id": region["id"], "start_ms": region["start_ms"], "end_ms": region["end_ms"], "state": "pending"}
         report["regions"].append(row)
@@ -487,24 +609,9 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                 if sid:
                     stabilization = stabilizers[sid]
                     if sid not in manifests:
-                        if not stabilization["reference"]["points"]:
-                            raise ValueError(f"Select reference points on the first frame of stabilization region {stabilization['name']}")
                         emit("stabilization", region["id"], stabilization_id=sid)
-                        stored = state["stabilization"].get(sid)
-                        if stabilization["locked"] and stored and Path(stored["manifest_path"]).is_file() and Path(stored["video_path"]).is_file():
-                            manifests[sid] = json.loads(Path(stored["manifest_path"]).read_text()), Path(stored["video_path"])
-                        else:
-                            manifests[sid] = run_reference(source, Fraction(str(stabilization["start_ms"]))/1000,
-                                Fraction(str(stabilization["end_ms"]-stabilization["start_ms"]))/1000,
-                                stabilization["reference"], checkpoint, root / "reference", tolerance=stabilization["agreement_pixels"],
-                                max_step=stabilization["max_step_pixels"], use_cache=use_cache,
-                                progress=lambda frames: emit("stabilization", region["id"], stabilization_id=sid, frames=frames), interrupt=interrupt)
-                            tracked, rendered = manifests[sid]
-                            if rendered is not None:
-                                manifest_path = directory / (digest([sid, tracked["id"]])+".reference.json")
-                                atomic_json(manifest_path, tracked)
-                                state["stabilization"][sid] = {"region": deepcopy(stabilization), "manifest_path": str(manifest_path), "video_path": str(rendered)}
-                                atomic_json(state_path, state)
+                        manifests[sid] = _stabilize_region(info, stabilization, root, state, checkpoint, use_cache,
+                            lambda frames: emit("stabilization", region["id"], stabilization_id=sid, frames=frames), interrupt)
                     manifest, source = manifests[sid]
                     if source is None:
                         raise ValueError("Stabilization reference points are missing")

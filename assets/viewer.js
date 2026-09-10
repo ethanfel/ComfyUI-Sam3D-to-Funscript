@@ -1,8 +1,8 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue} from "./curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem} from "./timeline.mjs";
+import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {smoothActions} from "./curve-edit.mjs";
-import {PATTERNS, generatePattern, continuePattern} from "./patterns.mjs";
+import {PATTERNS, generatePattern, continuePattern, rememberPattern, patternRemovalProblem, removePattern} from "./patterns.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
@@ -18,10 +18,11 @@ const localVideos={stabilized:null,original:null};
 let comparisonRevision=0, comparisonCache=null;
 let deviceOutputCache=null;
 let patternDraft=null, patternTimer=null;
+let sceneCuts=[],cutLoading=false;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
-function previewState() {return {...project.preview,device:$("device").value,timeline_view:{...view}};}
+function previewState() {return {...project.preview,device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
 $("outputProfile").replaceChildren(new Option("Off · authored only","none"),...DEVICE_PROFILES.map(p=>new Option(p.label,p.id)));
 function deviceOutputControls() {
     const settings=project.device_output??deviceSettings();
@@ -118,6 +119,108 @@ let standaloneTemplate = document.getElementById("s3f-project") ? document.docum
 const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status});
+const layoutKey="s3f-motion-wide-layout:1";
+function restoreWideLayout(data) {
+    let wide=data?.preview?.wide_layout;
+    // Online layout follows this browser's preference; offline exports retain
+    // the layout saved in that project without needing browser storage.
+    if(!document.getElementById("s3f-project")||typeof wide!=="boolean"){
+        try{const saved=JSON.parse(localStorage.getItem(layoutKey));if(typeof saved==="boolean")wide=saved;}catch{/* Storage is optional. */}
+    }
+    applyWideLayout(wide!==false);
+}
+function applyWideLayout(wide) {
+    document.body.classList.toggle("wide-layout",wide);$("wideLayout").checked=wide;render();
+}
+$("wideLayout").onchange=()=>{
+    const wide=$("wideLayout").checked;applyWideLayout(wide);
+    try{localStorage.setItem(layoutKey,JSON.stringify(wide));}catch{/* Keep the working layout without storage. */}
+    if(project)session?.changed();
+};
+restoreWideLayout();
+let fullscreenDocument=document;
+try{if(window.parent!==window&&window.parent.location.origin===location.origin&&window.parent.location.pathname.endsWith("/workspace.html"))fullscreenDocument=window.parent.document;}catch{/* Other frames use their own document. */}
+const fullscreenLabel=()=>{const active=!!fullscreenDocument.fullscreenElement;$("fullscreenLayout").textContent=active?"Exit full screen":"Full screen";$("fullscreenLayout").setAttribute("aria-pressed",String(active));render();};
+$("fullscreenLayout").disabled=!fullscreenDocument.fullscreenEnabled;
+$("fullscreenLayout").onclick=async()=>{
+    try{if(fullscreenDocument.fullscreenElement)await fullscreenDocument.exitFullscreen();else await fullscreenDocument.documentElement.requestFullscreen();}
+    catch{status("The browser declined full screen. Wide layout is still available.");}
+};
+fullscreenDocument.addEventListener("fullscreenchange",fullscreenLabel);
+
+const floatingPanel=$("videoPanel");
+let floatingRect=null, floatingDrag=null;
+function placeFloatingVideo() {
+    if(!floatingRect)return;
+    const clamp=(value,low,high)=>Math.max(low,Math.min(high,value));
+    const r=floatingRect;
+    r.width=clamp(r.width,Math.min(260,innerWidth-16),innerWidth-16);
+    r.height=clamp(r.height,Math.min(200,innerHeight-16),innerHeight-16);
+    r.left=clamp(r.left,8,Math.max(8,innerWidth-r.width-8));r.top=clamp(r.top,8,Math.max(8,innerHeight-r.height-8));
+    Object.assign(floatingPanel.style,Object.fromEntries(Object.entries(r).map(([key,value])=>[key,`${value}px`])));render();
+}
+$("floatVideo").onclick=()=>{
+    const floating=!floatingPanel.classList.contains('floating');
+    document.body.classList.toggle('video-floating',floating);floatingPanel.classList.toggle('floating',floating);
+    $("floatVideo").textContent=floating?'Dock video':'Float video';$("floatVideo").setAttribute('aria-pressed',String(floating));$("videoResize").hidden=!floating;
+    if(floating){floatingRect||={left:18,top:innerHeight-360,width:420,height:330};placeFloatingVideo();}
+    else{floatingPanel.removeAttribute('style');render();}
+};
+for(const [id,resizePanel] of [['videoGrip',false],['videoResize',true]]){
+    const handle=$(id);
+    handle.addEventListener('pointerdown',event=>{
+        if(event.button!==0||!floatingPanel.classList.contains('floating')||(!resizePanel&&event.target.closest('button,input,select,label')))return;
+        event.preventDefault();floatingDrag={x:event.clientX,y:event.clientY,rect:{...floatingRect}};handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove',event=>{
+        if(!floatingDrag)return;const {rect,x,y}=floatingDrag;
+        floatingRect=resizePanel?{...rect,width:rect.width+event.clientX-x,height:rect.height+event.clientY-y}:{...rect,left:rect.left+event.clientX-x,top:rect.top+event.clientY-y};placeFloatingVideo();
+    });
+    for(const type of ['pointerup','pointercancel','lostpointercapture'])handle.addEventListener(type,()=>{floatingDrag=null;});
+    handle.addEventListener('keydown',event=>{
+        if(!floatingPanel.classList.contains('floating')||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)||(!resizePanel&&event.target.tagName!=='H2'))return;
+        event.preventDefault();event.stopPropagation();
+        const horizontal=event.key==='ArrowLeft'||event.key==='ArrowRight',key=resizePanel?(horizontal?'width':'height'):(horizontal?'left':'top');
+        floatingRect[key]+=(event.key==='ArrowLeft'||event.key==='ArrowUp'?-1:1)*(event.shiftKey?40:10);placeFloatingVideo();
+    });
+}
+window.addEventListener('resize',()=>{if(floatingPanel.classList.contains('floating'))placeFloatingVideo();});
+
+let playingSelection=false;
+function playbackRange() {
+    if(!project)return null;
+    const [a,b]=project.timeline.selection||[],start=Math.max(0,a),end=Math.min(project.metadata.duration_ms,b);
+    return Number.isFinite(start)&&Number.isFinite(end)&&end-start>=1?[start,end]:null;
+}
+function playbackControls() {
+    const range=playbackRange();$("playSelection").disabled=!range||!video.getAttribute('src')||mediaLoading;
+    $("loopSelection").disabled=!range;
+    $("loopSelection").parentElement.title=range?`Repeat ${formatTime(range[0],3)} – ${formatTime(range[1],3)}`:'Mark In and Out to loop a selection';
+}
+function enforcePlaybackRange(seconds, ended=false) {
+    const range=playbackRange();
+    if(!range||mediaLoading||video.seeking||(!$("loopSelection").checked&&!playingSelection)||(!ended&&video.paused))return false;
+    const t=previewTimelineTime(seconds,videoVariant,videoMapping,project.metadata.source_origin_ms||0),[a,b]=range;
+    if(!ended&&t>=a-.5&&t<b-.5)return false;
+    const repeat=$("loopSelection").checked||t<a;
+    if(!repeat){video.pause();playingSelection=false;}
+    currentMs=repeat?a:b;video.currentTime=previewMediaTime(currentMs,videoVariant,videoMapping,project.metadata.source_origin_ms||0);
+    if(repeat&&ended)video.play().catch(error=>status(error.message));
+    render();return true;
+}
+$("playSelection").onclick=()=>{
+    const range=playbackRange();if(!range)return;
+    playingSelection=true;seek(range[0]);video.play().catch(error=>{playingSelection=false;status(error.message);});
+};
+$("loopSelection").onchange=()=>{if(project)session?.changed();enforcePlaybackRange(video.currentTime);};
+// Frame callbacks drive the curves; a lightweight animation clock also checks
+// the exact selection edge between video frames and at reduced playback rates.
+let loopFrame=null;
+function watchPlayback(){loopFrame=null;if(video.paused)return;enforcePlaybackRange(video.currentTime);loopFrame=requestAnimationFrame(watchPlayback);}
+video.addEventListener('play',()=>{if(loopFrame===null)loopFrame=requestAnimationFrame(watchPlayback);});
+video.addEventListener('pause',()=>{if(loopFrame!==null)cancelAnimationFrame(loopFrame);loopFrame=null;if(!video.ended)playingSelection=false;});
+video.addEventListener('ended',()=>enforcePlaybackRange(video.currentTime,true));
+fullscreenLabel();
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
 function videoChoices(){
     $("videoVariantLabel").hidden=!videoMapping;$("videoVariant").value=videoVariant;
@@ -162,9 +265,63 @@ function install(data, keepPlayback=false, output=null) {
     if(keepPlayback&&data.scripts[oldAxis])$("axis").value=oldAxis;
     videoOutput=output;videoMapping=data.metadata.reference_stabilization||videoMapping;
     if(videoMapping)data.metadata.reference_stabilization=videoMapping;videoChoices();
+    sceneCuts=sceneCutTimes(data);$("showSceneCuts").checked=data.preview?.show_cuts!==false;
+    $("loopSelection").checked=data.preview?.loop_selection===true;if(!keepPlayback)playingSelection=false;
+    collapseLane($("mainLane"),!!data.preview?.main_collapsed);
     currentMs=keepPlayback?previousMs:data.times_ms[0]; buildTracks(); selectionControls(); controls(); deviceOutputControls(); render(); status("Project loaded · choose the matching source video");
+    restoreWideLayout(data);
     if(output&&(!keepPlayback||!hadVideo))loadPreviewVideo();
     loadVideoComparison(data,output);
+    refreshSceneCuts();
+}
+function cutTimelineSessions() {
+    const candidates=[new URLSearchParams(location.search).get("timeline"),project?.metadata.processing_timeline?.session];
+    // Existing workspace tabs predate the explicit timeline link. Read only
+    // same-origin connected pages; verify the source and editor owner below.
+    try {
+        for(const page of window.parent.s3fWorkspaceFrames?.()||[])
+            if(page.key.startsWith("timeline:"))candidates.push(new URL(page.window.location.href).searchParams.get("session"));
+        if(window.opener?.location.pathname.endsWith("/processing-timeline.html"))
+            candidates.push(new URL(window.opener.location.href).searchParams.get("session"));
+    }catch{/* Separate or closed workflow windows have no timeline link. */}
+    return [...new Set(candidates.filter(id=>typeof id==="string"&&/^[a-f0-9]{32}$/.test(id)))];
+}
+async function refreshSceneCuts() {
+    if(!project||cutLoading||document.getElementById("s3f-project"))return;
+    const data=project,owner=new URLSearchParams(location.search).get("session");cutLoading=true;
+    try {
+        for(const id of cutTimelineSessions()){
+            const response=await fetch(`../timelines/${encodeURIComponent(id)}`,{cache:"no-store",signal:AbortSignal.timeout(8000)});
+            if(!response.ok)continue;
+            const state=await response.json();
+            if(project!==data)return;
+            if(!sameVideoSource(data.metadata.source,state.info?.source))continue;
+            if(owner?state.editor_session!==owner:state.project!==videoOutput)continue;
+            const scan=state.scene_cuts?.source_id===state.info.source_id?state.scene_cuts:null;
+            const changed=JSON.stringify(data.metadata.scene_cuts??null)!==JSON.stringify(scan);
+            data.metadata.processing_timeline={...data.metadata.processing_timeline,session:id};
+            if(changed){
+                if(scan)data.metadata.scene_cuts=scan;else delete data.metadata.scene_cuts;
+                sceneCuts=sceneCutTimes(data);session?.changed();render();
+            }
+            break;
+        }
+    }catch{/* Keep the saved markers available while ComfyUI is disconnected. */}
+    finally{cutLoading=false;}
+}
+setInterval(()=>{if(!document.hidden)refreshSceneCuts();},4000);
+window.addEventListener("focus",refreshSceneCuts);
+$("showSceneCuts").onchange=()=>{if(project){session?.changed();render();}};
+$("collapseMain").onclick=()=>{if(project){collapseLane($("mainLane"),!$("mainLane").classList.contains("collapsed"));session?.changed();render();}};
+function visibleSceneCuts(start,end,width) {
+    const [first,stop]=visibleRange(sceneCuts.length,i=>sceneCuts[i],start,end),result=[];
+    let lastPixel=-Infinity;
+    for(let i=first;i<stop;i++){
+        const at=sceneCuts[i];if(at<start||at>end)continue;
+        const pixel=Math.round((at-start)/Math.max(1,end-start)*width);
+        if(pixel!==lastPixel){result.push(at);lastPixel=pixel;}
+    }
+    return result;
 }
 function selected() { return editProject(project,$("axis").value); }
 function commitSelected(data,axis,track) {
@@ -205,6 +362,18 @@ function selectLane(id) {
     if(id!==project.timeline.active)discardPattern("Track changed. Preview on this curve before applying.");
     project.timeline.active=id;controls();render();
 }
+function collapseLane(row, collapsed) {
+    row.classList.toggle("collapsed",collapsed);
+    const button=row.querySelector(".collapse-track");
+    button.textContent=collapsed?"▸":"▾";button.setAttribute("aria-expanded",String(!collapsed));
+    button.title=collapsed?"Expand track":"Collapse track";
+    button.setAttribute("aria-label",button.title);
+    if(project){
+        const track=project.timeline.tracks.find(t=>t.id===row.dataset.track);
+        if(track)track.collapsed=collapsed;
+        else project.preview={...project.preview,main_collapsed:collapsed};
+    }
+}
 function selectionControls() {
     [$("selectionStart").value,$("selectionEnd").value]=project.timeline.selection.map(t=>(t/1000).toFixed(3));
     const track=selectionTrack(project),problem=selectionProblem(project,track);
@@ -232,9 +401,8 @@ function selectionControls() {
 }
 function setSelection(start,end) {
     discardPattern("Range changed. Preview before applying.");
-    const duration=roundEven(project.metadata.duration_ms);
     project.timeline.selection_lane=project.timeline.active;
-    project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,roundEven(t)))).sort((a,b)=>a-b);
+    project.timeline.selection=boundedSelection(project,start,end);
     selectionControls();render();
 }
 function buildTracks() {
@@ -242,6 +410,8 @@ function buildTracks() {
     for(const track of project.timeline.tracks){
         const row=document.createElement("div");row.className="track";row.dataset.track=track.id;
         const head=document.createElement("div");head.className="track-head";
+        const collapse=document.createElement("button");collapse.className="collapse-track";
+        collapse.onclick=()=>{collapseLane(row,!track.collapsed);session?.changed();render();};
         const select=document.createElement("button");select.className="track-select";select.textContent="Edit";select.onclick=()=>selectLane(track.id);
         const name=document.createElement("input");name.type="text";name.className="track-name";name.value=track.name;name.setAttribute("aria-label","Track name");
         name.onchange=()=>{if(track.locked)return;record();track.custom_name=true;track.name=name.value.trim()||"Source track";dirty(false);controls();render();};
@@ -263,12 +433,15 @@ function buildTracks() {
         const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
         const lock=document.createElement("button");lock.className="track-lock";lock.title="Protect this curve and calibration across edits and reruns. Unlock explicitly to edit.";lock.textContent=track.locked?"Unlock":"Lock";lock.setAttribute("aria-pressed",String(!!track.locked));lock.onclick=()=>toggleLock(track);
         const copy=document.createElement("button");copy.className="copy-selection";copy.onclick=()=>{selectLane(track.id);applySelection(false);};
+        const range=document.createElement("button");range.className="select-track-range";range.textContent="Select range";
+        range.title="Select exactly this source's available range";
+        range.onclick=()=>{selectLane(track.id);setSelection(...trackCoverage(project,track));};
         const badge=document.createElement("span");badge.className="copy-source-badge";badge.textContent="Copy source";
         for(const input of [name,source,axis,remove])input.disabled=!!track.locked;
-        head.append(select,lock,name,sourceLabel,axisLabel,copy,badge,remove);
+        head.append(collapse,select,lock,name,sourceLabel,axisLabel,range,copy,badge,remove);
         if(track.window){const scope=document.createElement("span");scope.className="track-scope";scope.textContent=`${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s · local fit`;head.append(scope);}
         const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${track.name} motion timeline`);
-        row.append(head,canvas);$("tracks").append(row);bindCurve(canvas,track.id);
+        row.append(head,canvas);$("tracks").append(row);collapseLane(row,!!track.collapsed);bindCurve(canvas,track.id);
     }
 }
 function resize(canvas) {
@@ -428,6 +601,14 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
         layer={key,data,actions,surface,source,clipped:count?clipped/count*100:0,referenceLabel};curveLayers.set(canvas,layer);
     }
     ctx.drawImage(layer.surface,0,0,layer.surface.width,layer.surface.height,0,0,w,h);
+    if($("showSceneCuts").checked){
+        ctx.save();ctx.beginPath();ctx.rect(42,0,w-54,h-25);ctx.clip();
+        for(const t of visibleSceneCuts(...bounds,(w-54)/8)){
+            const px=x(t);ctx.setLineDash([2,5]);line(ctx,[px,10],[px,h-25],"#d9c57e66",1);ctx.setLineDash([]);
+            ctx.fillStyle="#d9c57e";ctx.beginPath();ctx.moveTo(px,1);ctx.lineTo(px+4,5);ctx.lineTo(px,9);ctx.lineTo(px-4,5);ctx.closePath();ctx.fill();
+        }
+        ctx.restore();
+    }
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
     if(patternDraft && patternDraft.key===patternKey() && (canvas.dataset.track||"main")===project.timeline.active){
         const points=patternDraft.inside, indices=displayIndices(points.length,i=>points[i].at,i=>points[i].pos,...bounds,w-54);
@@ -454,6 +635,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
 }
 function render() {
     if(!project)return;
+    playbackControls();
     patternControls();
     $("time").textContent=project.metadata.duration_ms>=60000?formatTime(currentMs,3,project.metadata.duration_ms>=3600000):(currentMs/1000).toFixed(3)+" s";
     $("time").dataset.ms=String(currentMs);
@@ -464,17 +646,21 @@ function render() {
     else for(const name of ["overlay","skeleton"]){const[ctx,w,h]=resize($(name));ctx.fillStyle="#eabf71";ctx.font="13px system-ui";ctx.fillText("No analysed pose at this time",12,h/2);}
     if(!video.paused&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);
     navigationControls();
+    $("sceneCutCount").textContent=sceneCuts.length?`${sceneCuts.length} cuts`:"";
+    $("showSceneCuts").parentElement.title=sceneCuts.length?"Detected scene cuts · click a diamond above a curve to seek":"Detect cuts in the connected processing timeline to show them here";
     drawRobot();
     const mainContext=editProject(project,outputAxis,"main");
-    drawCurve($("curve"),mainContext.data,outputAxis,true,project.timeline.active==="main");
+    if(!$("mainLane").classList.contains("collapsed"))drawCurve($("curve"),mainContext.data,outputAxis,true,project.timeline.active==="main");
     const listRect=$("tracks").getBoundingClientRect();
     for(const track of project.timeline.tracks){
+        if(track.collapsed)continue;
         const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
         if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);else curveLayers.delete(canvas);
     }
 }
 function updateVideoTime(seconds){
     if(mediaLoading||!project||!video.getAttribute("src")||!video.readyState)return;
+    if(enforcePlaybackRange(seconds))return;
     const time=previewTimelineTime(seconds,videoVariant,videoMapping,project.metadata.source_origin_ms||0),end=project.metadata.duration_ms;
     if(videoVariant==="original"&&(time<-.5||time>end+.5)){
         if(time>end)video.pause();
@@ -510,12 +696,15 @@ $("invert").addEventListener("change",()=>{
     if($("invert").checked===data.config.axis_settings[axis].invert)return;
     const mirrored=invertAxis(data,axis),pendingCenter=$("center").valueAsNumber;
     record();data.config.axis_settings[axis]=mirrored.settings;data.scripts[axis]=mirrored.script;commitSelected(data,axis,track);
+    const target=track||project.timeline.main[axis];
+    if(target.patterns)target.patterns=target.patterns.map(p=>({...p,before:p.before.map(a=>({...a,pos:100-a.pos}))}));
     if(!track)for(const region of project.timeline.main[axis].regions){region.settings={...region.settings,center:100-region.settings.center,invert:!region.settings.invert};}
     if(Number.isFinite(pendingCenter)&&pendingCenter>=0&&pendingCenter<=100)$("center").value=100-pendingCenter;
     dirty();render();
 });
 function regenerate(data,axis,track) {
     data.scripts[axis]=rebuildAxis(data,axis);
+    delete (track||project.timeline.main[axis]).patterns;
     const source=motionForAxis(data,axis),s=data.config.axis_settings[axis];
     const mapped=source.processed.map((v,i)=>axisValue(source,s,i)).filter(Number.isFinite);
     const raw=source.raw.filter(Number.isFinite);
@@ -566,6 +755,11 @@ function bindCurve(canvas,id){
     canvas.addEventListener("pointerdown",event=>{
         if(!project||event.button!==0)return;selectLane(id);canvas.focus({preventScroll:true});
         const p=pointer(event,canvas);
+        if($("showSceneCuts").checked&&event.clientY-canvas.getBoundingClientRect().top<=12){
+            const tolerance=(bounds[1]-bounds[0])/Math.max(1,canvas.clientWidth-54)*7;
+            const near=visibleSceneCuts(...bounds,(canvas.clientWidth-54)/8).filter(t=>Math.abs(t-p.at)<=tolerance).sort((a,b)=>Math.abs(a-p.at)-Math.abs(b-p.at))[0];
+            if(near!==undefined){seek(near);return;}
+        }
         if(event.shiftKey){dragging={canvas,start:p.at,selection:true};setSelection(p.at,p.at);if(event.isTrusted)canvas.setPointerCapture(event.pointerId);return;}
         const index=$("editPoints").checked?nearest(event,canvas,actions()):-1;
         if(index>=0&&!locked(id)){dragging={canvas,index,startX:event.clientX,startY:event.clientY};}
@@ -604,13 +798,16 @@ $("smoothSelection").onclick=()=>{
 };
 $("patternShape").replaceChildren(...PATTERNS.map(name=>new Option(name,name)));
 $("patternShape").value="Sine Wave";
+const patternEdgeSettings={continue:{blend:true,ms:150},generate:{blend:false,ms:150}};
+let patternMode=$("patternMode").value;
+let patternListKey="";
 function patternOptions() {
     const n=id=>$(id).valueAsNumber, ms=id=>n(id)*1000;
     return {mode:$("patternMode").value, side:$("patternSide").value, contextMs:ms("patternContext"),
         cycleMs:ms($("patternMode").value==="continue"?"patternCycleOverride":"patternCycle"),
         shape:$("patternShape").value, amplitude:n("patternAmplitude"), center:n("patternCenter"),
         fadeInMs:ms("patternFadeIn"),fadeOutMs:ms("patternFadeOut"),reverse:$("patternReverse").checked,seed:n("patternSeed"),
-        joinMs:n("patternJoin"),stepMs:n("patternStep")};
+        joinMs:$("patternBlendEdges").checked?n("patternJoin"):0,stepMs:n("patternStep")};
 }
 function patternKey() {
     return project?JSON.stringify([comparisonRevision,project.timeline.active,selected().axis,project.timeline.selection,patternOptions()]):null;
@@ -634,6 +831,20 @@ function patternControls() {
     $("continueOptions").hidden=$("patternMode").value!=="continue";
     $("generateOptions").hidden=$("patternMode").value!=="generate";
     $("patternSeedLabel").hidden=$("patternShape").value!=="Random";
+    $("patternJoin").disabled=!$("patternBlendEdges").checked;
+    $("patternJoinHint").textContent=$("patternBlendEdges").checked
+        ?"Blending replaces the first and last part of the pattern inside the selection to meet the surrounding curve."
+        :"The pattern fills the selection through both edges. The surrounding curve resumes with a cut outside the selection.";
+    const patterns=(track||project.timeline.main[axis]).patterns||[];
+    const listKey=JSON.stringify([project.timeline.active,axis,patterns.map(p=>[p.id,p.name,p.start,p.end])]);
+    if(listKey!==patternListKey){
+        patternListKey=listKey;
+        $("appliedPattern").replaceChildren(...(patterns.length?patterns.map(p=>new Option(`${p.name} · ${(p.start/1000).toFixed(3)}–${(p.end/1000).toFixed(3)} s`,p.id)):[new Option("No saved patterns on this curve","")]));
+        if(patterns.length)$("appliedPattern").value=patterns.at(-1).id;
+    }
+    $("appliedPattern").disabled=!patterns.length;
+    const problem=locked()?"Unlock this curve before removing a pattern.":patternRemovalProblem(patterns,$("appliedPattern").value);
+    $("removePattern").disabled=!!problem;$("removePattern").title=problem||"Restore this section to its curve before the pattern was applied, including any later point edits within the section.";
 }
 function previewPattern() {
     if(!project)return;patternControls();if($("previewPattern").disabled)return;
@@ -651,10 +862,27 @@ $("cancelPattern").onclick=()=>{discardPattern("Preview discarded. The curve is 
 $("applyPattern").onclick=()=>{
     if(!project)return;patternControls();if($("applyPattern").disabled)return;
     const {data,axis,track}=selected(),draft=patternDraft;
-    record();data.scripts[axis]={...data.scripts[axis],actions:draft.actions};delete data.metrics?.[axis];
+    record();const target=track||project.timeline.main[axis];
+    target.patterns=rememberPattern(target.patterns||[],data.scripts[axis].actions,...project.timeline.selection,$("patternMode").value==="generate"?$("patternShape").value:"Continued motion");
+    data.scripts[axis]={...data.scripts[axis],actions:draft.actions};delete data.metrics?.[axis];
     commitSelected(data,axis,track);discardPattern();dirty();controls();render();
     const message=`Applied to ${track?.name||"Main"} · ${axis}. ${draft.summary} Undo restores the previous curve.`;
     $("patternStatus").textContent=message;status(message);
+};
+$("appliedPattern").onchange=()=>{
+    if(!project)return;const {axis,track}=selected(),patterns=(track||project.timeline.main[axis]).patterns||[];
+    const entry=patterns.find(p=>p.id===$("appliedPattern").value);if(entry)setSelection(entry.start,entry.end);
+};
+$("removePattern").onclick=()=>{
+    if(!project)return;patternControls();if($("removePattern").disabled)return;
+    try{
+        const {data,axis,track}=selected(),target=track||project.timeline.main[axis];
+        const result=removePattern(data.scripts[axis].actions,target.patterns||[],$("appliedPattern").value);
+        record();target.patterns=result.patterns;data.scripts[axis]={...data.scripts[axis],actions:result.actions};delete data.metrics?.[axis];
+        commitSelected(data,axis,track);discardPattern();dirty();controls();render();
+        const message=`Removed ${result.name} · restored the previous section on ${track?.name||"Main"} · ${axis}. Undo restores the pattern.`;
+        $("patternStatus").textContent=message;status(message);
+    }catch(error){$("patternStatus").textContent=error.message;}
 };
 $("patternRange").onclick=()=>{
     if(!project)return;const duration=$("patternDuration").valueAsNumber*1000;
@@ -662,8 +890,14 @@ $("patternRange").onclick=()=>{
     setSelection(currentMs,Math.min(project.metadata.duration_ms,currentMs+duration));
 };
 for(const input of $("patternPanel").querySelectorAll("input,select")){
+    if(input.id==="appliedPattern")continue;
     const changed=()=>{
         const live=!!patternDraft||!!patternTimer;
+        if(input.id==="patternMode"&&input.value!==patternMode){
+            patternEdgeSettings[patternMode]={blend:$("patternBlendEdges").checked,ms:$("patternJoin").value};
+            patternMode=input.value;const saved=patternEdgeSettings[patternMode];
+            $("patternBlendEdges").checked=saved.blend;$("patternJoin").value=saved.ms;
+        }
         discardPattern();patternControls();render();
         if(live&&input.id!=="patternDuration")patternTimer=setTimeout(previewPattern,180);
     };
@@ -781,6 +1015,7 @@ $("save").addEventListener("click",async()=>{
     }catch(error){status(error.message);}finally{$("save").disabled=false;}
 });
 new ResizeObserver(render).observe(document.body);
+new ResizeObserver(render).observe(floatingPanel);
 const id=new URLSearchParams(location.search).get("project");
 const embedded=document.getElementById("s3f-project");
 if(embedded){try{const data=JSON.parse(embedded.textContent);if(data)install(data);}catch(error){status(error.message);}}

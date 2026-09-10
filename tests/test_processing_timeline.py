@@ -122,6 +122,15 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.extract.call_count, 1)
         self.assertEqual(swapped["config"]["target_anchor"], "left_hand")
 
+    def test_detailed_main_and_additional_anchors_share_poses_and_keep_six_axes(self):
+        anchors = ["left_index_tip", "right_ear", "left_heel"]
+        project, report = self.run_plan({"tracking": [region(anchor=anchors[0], additional_anchors=anchors[1:])]})
+        self.assertEqual(self.extract.call_count, 1)
+        self.assertEqual([s["data"]["config"]["target_anchor"] for s in project["timeline"]["sources"]], anchors)
+        self.assertEqual(report["regions"][0]["anchors"], anchors)
+        for source in project["timeline"]["sources"]:
+            self.assertEqual(set(source["data"]["scripts"]), set(AXES))
+
     def test_adding_anchor_keeps_other_regions_assigned_to_their_own_source(self):
         from sam3d_funscript.editor import merge_projects
         plan = {"tracking": [region("a", 0, 2000), region("b", 2000, 4000, anchor="mouth")]}

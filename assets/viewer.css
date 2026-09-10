@@ -20,3 +20,14 @@
 .video-panel .curve-head{margin-bottom:14px}
 .pattern-panel{margin:12px 0;padding:12px;border:1px solid #3c4e62;border-radius:7px;background:#1b2935}.pattern-panel summary{cursor:pointer;color:#efb1cd}.pattern-panel .controls{margin:12px 0;flex-wrap:wrap}.pattern-panel input[type=number]{width:85px}.pattern-panel [hidden]{display:none!important}.pattern-panel p{margin:10px 0;color:#a9bbc9}.pattern-panel #patternStatus{color:#f3b0ce}.pattern-panel #applyPattern{background:#245748}.pattern-panel button{max-width:100%;white-space:normal}
 .pattern-panel select{max-width:min(100%,300px)}.pattern-panel label{max-width:100%;flex-wrap:wrap}
+
+.track.collapsed>canvas,.track.collapsed>#curve{display:none}.track-head .collapse-track{font-size:16px;min-width:26px;padding:2px 6px;color:#9cccf1}#sceneCutCount{font-size:11px;color:#d9c57e}
+
+body.wide-layout main{max-width:none}.layout-controls{display:flex;align-items:center;gap:12px;margin-left:auto}.layout-controls label{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px}.layout-controls input{accent-color:#75e2ba}
+
+/* Fixed positioning keeps the same video element playing while tracks scroll. */
+#floatVideo{padding:4px 8px;font-size:11px}.video-panel>.curve-head{gap:8px;margin-bottom:8px}
+body.video-floating .stage{grid-template-columns:1fr 1fr}.video-panel.floating{position:fixed;z-index:50;display:flex;flex-direction:column;box-shadow:0 10px 35px #0009;border-color:#6a9db4;padding:10px;min-width:0;min-height:0}
+.video-panel.floating>.curve-head{flex-shrink:0;cursor:move;touch-action:none;user-select:none}.video-panel.floating h2{font-size:12px}.video-panel.floating .video-wrap{flex:1;min-height:0;overflow:hidden}.video-panel.floating .video-wrap video{height:100%;max-height:none;object-fit:contain}
+#videoResize{position:absolute;right:0;bottom:0;padding:0 2px;border:0;border-radius:0;background:#263e4fcc;cursor:nwse-resize;touch-action:none;color:#91bbcc;width:20px;height:20px;line-height:20px}
+@media(max-width:600px){body.video-floating .stage{grid-template-columns:1fr}}

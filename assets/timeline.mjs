@@ -89,6 +89,7 @@ export function assignTrack(project, track, source, axis) {
     track.settings = copy(data.config.axis_settings[axis]); track.script = copy(data.scripts[axis]);
     delete track.metrics;
     delete track.window;
+    delete track.patterns;
     // A reassigned lane needs a fresh auto-direction cache; other lanes retain theirs.
     contexts.get(project)?.delete(track);
 }
@@ -160,6 +161,20 @@ export function trackCoverage(project, track) {
     const start = track.window?.[0] ?? source.times_ms[0];
     const end = track.window?.[1] ?? source.metadata.duration_ms ?? source.times_ms.at(-1);
     return [roundEven(start), Math.min(roundEven(end), roundEven(project.metadata.duration_ms))];
+}
+
+// Selecting a source cannot extend into time that source never analysed. Main
+// keeps the full video range, even when a source is remembered for copying.
+export function boundedSelection(project, start, end, lane=project.timeline.active) {
+    const track=project.timeline.tracks.find(t=>t.id===lane);
+    const [low,high]=track?trackCoverage(project,track):[0,roundEven(project.metadata.duration_ms)];
+    return [start,end].map(t=>Math.max(low,Math.min(high,roundEven(t)))).sort((a,b)=>a-b);
+}
+
+export function sceneCutTimes(project) {
+    const times=project.metadata.scene_cuts?.times_ms;
+    if(!Array.isArray(times))return [];
+    return [...new Set(times.filter(t=>Number.isFinite(t)&&t>=0&&t<=project.metadata.duration_ms))].sort((a,b)=>a-b);
 }
 
 function windowProject(project, sourceId, window) {
@@ -262,6 +277,12 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
         ...(track.window ? {window: [...track.window]} : {}),
         name: track.name, join: whole ? "whole" : method, blend_ms: whole || method === "cut" ? 0 : Math.min(blendMs, (end - start) / 2)});
     project.scripts[outputAxis] = script;
+    if(whole){
+        if(track.patterns?.length)main.patterns=copy(track.patterns);else delete main.patterns;
+    }else if(main.patterns){
+        // A replacement source section supersedes any pattern it intersects.
+        main.patterns=main.patterns.filter(p=>p.end+1<start||p.start-1>end);
+    }
     main.regions = regions.sort((a, b) => a.start - b.start); main.assembled = true;
     delete project.metrics[outputAxis];
 }
@@ -282,7 +303,7 @@ export function copyTrackToMain(project, track, options = {}) {
             settings: data.config.axis_settings[axis], script: data.scripts[axis]};
         // Local fitting changed only the displayed axis; other axes retain their
         // original calibration and pose context, over the same selected interval.
-        if (lane !== track) delete lane.window;
+        if (lane !== track) {delete lane.window;delete lane.patterns;}
         validateReference(lane.script);
         applyTrack(preview, lane, axis, options);
         preview.timeline.main[axis].edited = true;

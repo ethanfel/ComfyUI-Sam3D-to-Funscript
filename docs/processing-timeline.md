@@ -49,7 +49,61 @@ when there is one directly connected standalone owner. With no sole owner, the
 timeline keeps its own independent saved Motion Studio session. Generated mains
 refresh on processing reruns; user-edited or locked assembled mains are preserved.
 
+## Stabilization in three stages
+
+Select a gold Stabilization region to open **1 · Mask**, **2 · Stabilize**, and
+**3 · Anchors**. Manual numbered points remain fully supported: choose **Use
+manual points →** to skip the optional mask stage. Existing point regions open
+on Stabilize.
+
+1. **Mask (optional).** Seek to a clear frame within the region, choose **Use this
+   frame**, and paint one reference surface. Erase removes paint; **Undo brush
+   stroke** removes the latest stroke. **Propagate mask** uses the installed
+   ComfyUI-SAM2Matting package to propagate before and after that frame, throughout
+   this gold region. Scrub the original preview to inspect the green overlay.
+   Propagation does not run CoTracker or SAM3D.
+2. **Stabilize.** Place numbered points manually or generate them from the painted
+   mask using **Spacing** and **Maximum points**. With no points yet, Propagate
+   mask generates a set automatically. Replacing an existing set requires checking
+   **Replace existing points and reference keyframes**; global Undo restores it.
+   **Track region** runs CoTracker and renders the stabilized preview without
+   SAM3D. A propagated mask filters point trajectories; it does not replace them.
+   The default **Mask tracking tolerance** is 6 source pixels to allow small matte
+   holes and uncertain edges. Set 0 for strict filtering. Review held frames and
+   the agreeing-point count. Additional marked reference frames can prefill from
+   compatible tracking results; orange/unconfirmed points must be repositioned
+   before tracking. Manual point placement, deletion and online/offline modes stay
+   available.
+3. **Anchors.** Open an overlapping tracking region to edit its main and additional
+   anchors. **Configure this section’s anchors** creates a tracking region in an
+   empty gap, or isolates this range within one existing unlocked region.
+   **Extract anchors** processes this gold region’s full time range, reusing its
+   completed stabilization and running SAM3D for the anchor tracks. It preserves
+   any unrelated marked selection on the timeline.
+
+Each processing action applies the current plan and uses the normal ComfyUI queue
+with progress and cancellation. Masks, points and keyframes save with the workflow;
+completed masks/renders also survive reloads in the session’s output directory.
+**Clear mask · keep points** returns to point-only tracking without deleting points.
+Locked regions remain protected. Changing a mask or region bounds requires updated
+propagation; changing point density only affects the next point generation, while
+changing mask tolerance repeats stabilization using cached point trajectories.
+
+Install ComfyUI-SAM2Matting and its video model separately. Base+ is the default
+(`sam2matting/SAM2Matting-SAM2.1Base+.pt`); Tiny and SAM3Matting need their matching
+checkpoints. This integration resolves the existing package and ComfyUI model
+paths without downloading weights. Frames are decoded into a temporary disk spool
+and read lazily, with bounded propagation state. Packed PNG masks remain on disk
+and are read one frame at a time; scratch disk usage grows with section length.
+The reference mask is not passed to SAM3D as a person mask.
+
 ## Workspace size and video shape
+
+**Timeline tools** beside the video contains Selection, Zoom and Scene cuts.
+**Region settings** shares that panel; selecting or adding a region opens its
+settings. The timeline's **Timeline tools ↗** button returns to the controls.
+The filmstrip sits directly below the preview, without control rows between them.
+On narrow screens the tools panel follows the timeline instead.
 
 **Wide layout** uses the full browser width; turn it off for a centered workspace.
 **Full screen** expands the workspace, including its tool tabs when present. Press
@@ -69,7 +123,7 @@ Drag the visible dividers to resize:
 
 Double-click a divider to reset that size, or use **Reset layout** for all sizes.
 Focused dividers accept arrow keys (Shift for larger vertical steps); Home resets
-them. On narrow screens the preview and settings stack vertically. Lanes keep
+them. On narrow screens the preview, timeline and settings stack vertically. Lanes keep
 enough space for overlapping regions even when their requested height is smaller.
 
 The thumbnail strip shows complete source frames, including portrait footage,
@@ -92,6 +146,15 @@ The main anchor supplies that section of the assembled main curve on all enabled
 axes. Additional anchors appear as separate Motion Studio source tracks named
 `Section · anchor`. Select one there to adjust its calibration or copy a time range
 into the main. Additional anchors do not automatically replace the main.
+
+For individual landmarks, open **Detailed anchors…** beside **Main anchor**.
+Search the grouped list (for example, `left index` or `shoulder`), then choose
+**Use as main** or tick **Extra track**. This exposes the full supported landmark
+catalog while leaving the everyday dropdown short. Only the active detailed main
+anchor is added to that dropdown. Detailed extra tracks appear as removable chips
+below the general extra-anchor choices; changing a general checkbox retains them.
+These choices save with the section, respect its lock and use the same extracted
+poses as the general anchors. Left/right refer to the person's anatomical sides.
 
 Adding or changing anchors with **Use cache** enabled reuses the already processed
 pose coverage. Split and duplicate retain the section's anchor choices. Locked
@@ -134,12 +197,39 @@ Stabilization regions choose where the source should be corrected before pose
 analysis. They use the existing CoTracker3 reference-stabilization backend. A
 reference selection needs a crop and at least three points on the same visible
 surface. Keep that crop large enough to cover the reference's movement. Draw the
-crop and select the starting points in the timeline's source preview. Point
-selection uses the stabilization region's first frame; changing its start clears
-its points so they cannot silently refer to a different frame.
+crop in the timeline's source preview, seek to a clear frame and click **Mark
+reference frame**. Place the numbered points, seek to another clear frame, mark it,
+and place the **same physical points in the same order**. The **Place** selector
+repositions a point; **Reference frames** jumps between keys. **Remove frame**
+removes one frame; right-clicking a point removes its identity from all frames.
 
-Stabilization is processed where it overlaps enabled tracking. To process a
-stabilization interval in an otherwise empty gap, add a tracking region there.
+**Tracker** is selected per stabilization region: Online uses bounded windows;
+Offline uses the whole region and the companion offline weights. Both support
+references in the middle of a section and tracking in both directions. Independent
+estimates correct endpoint drift and reject disagreements. A hidden point is never
+silently accepted as a reliable reference. See [reference-stabilization.md](reference-stabilization.md)
+for memory behavior and installation.
+
+Keys and mode are saved in the plan, workflow, and recoverable local draft. Locked
+regions protect them. Changing the start, splitting, or changing the end of a
+region with keyframes clears its references; choose the bounds before marking.
+The editor reports this reset instead of reusing point coordinates on wrong frames.
+
+Use **Track region** in the stabilization inspector to track the entire selected
+gold region and render its preview, without running SAM3D. It saves and applies
+the point settings automatically, shows progress and **Cancel** beside the button,
+and opens the stabilized preview when finished. No overlapping tracking region is
+required; the marked In/Out selection does not shorten this operation.
+
+Existing motion curves and pose results remain intact. Locked regions cannot be
+retracked from the editor. Completed reference results are cached for subsequent
+**Process all / selection / unfinished** runs, which extract poses using stabilization
+where the lanes overlap. Changed references invalidate affected pose caches on the
+next Process run. Failed or cancelled tracking retains previously completed clips.
+
+Crop coordinates and reset actions are under **Crop coordinates & reset**; point
+placement instructions are under **Point placement & tracking help**. Preview
+statistics are marked **Previous result** when reference settings have changed.
 
 The reference stabilizer uses translation with fixed black padding. It does not
 recover an invisible reference or correct rotation, perspective or depth. It holds
@@ -157,7 +247,28 @@ One mask identifies one person, exposed as person slot 0.
 
 ## Hard-cut guides
 
-Expand **Scene cuts** above the timeline and click **Detect cuts** to scan the input video. This is a
+Motion Studio also shows the connected timeline's detected cuts: gold diamonds
+and faint vertical guides align across main and every source curve. Click a
+diamond at the top of a curve to seek, or toggle **Scene cuts** beside the zoom
+controls. New scans appear without rerunning pose extraction. The source video
+and editing session must match; downloaded projects retain their cut markers.
+
+Motion Studio's toolbar has **Wide layout** (on by default) to use the full tab
+width; turn it off for the centered layout. The browser remembers this choice,
+and offline project downloads retain it. **Full screen** fills the display;
+inside the combined workspace it keeps the tool tabs available. Escape exits
+full screen.
+
+Use the **▾** button on a Motion Studio track to collapse its curve while keeping
+the row controls available; **▸** expands it. This works on locked tracks too,
+and saved projects retain the collapsed state. Each source row's **Select range**
+button selects its exact analysed interval. Selections made on a source stop at
+that source's boundaries; main selections span the video. There is one shared
+selection: blue fill identifies the selected row, and dashed guides align that
+same interval on the other rows. **Copy selection · all axes** copies the row's
+available matching axes into unlocked main axes.
+
+Open **Timeline tools**, expand **Scene cuts**, and click **Detect cuts** to scan the input video. This is a
 separate, cached CPU scan; it does not run SAM3D or stabilization. It follows every
 source frame regardless of the pose **sample_fps** setting, uses small images and
 bounded decoder buffers, and puts each marker on the first frame of the new shot
@@ -170,6 +281,32 @@ boundary. **Select shot** selects the interval between the surrounding cuts; use
 **Isolate selected range** on the active tracking region to make it its own
 scheduled section. **Snap to cuts** aligns nearby pointer selections and region
 edges with markers. **Show cuts** hides or displays the guides.
+
+Click a **diamond cut marker** on the ruler to select its boundary and open its
+actions. The selected edge is highlighted across both lanes. Marker selection
+works even when **Snap to cuts** is off.
+
+- **Use as In / Use as Out**, or **I / O**, put a selection boundary exactly at
+  that cut. A cut is before the incoming shot's first frame: using it as Out
+  excludes that frame, so adjacent zones meet without leaking a frame across cuts.
+- **Shift-click a second cut** to select the interval between the two markers,
+  in either direction.
+- **Shot before / Shot after** select the adjacent shot, using the clip's first
+  and last boundaries where necessary. Double-click a marker to select its
+  following shot.
+- Choose **Tracking** or **Stabilization**, then **Make region**. Inside an
+  existing region, this isolates the chosen interval and preserves its settings.
+  Inside an empty gap, it creates a new region. Locked regions cannot be split;
+  a selection crossing several existing regions is rejected without modifying
+  them. An exact match selects the existing region. New stabilization regions
+  still need their reference crop and points.
+
+The floating actions sit above the ruler and appear only while a cut is selected.
+Escape, clicking elsewhere, frame stepping, or playing dismisses the boundary
+mode. Ordinary **Mark Out** then returns to including the displayed frame. The
+selection hint and button tooltip state which behavior is active. At overview
+zoom, crowded marker targets are grouped to keep them clickable; zoom in or use
+the cut actions' previous/next arrows to reach every detected boundary.
 
 Detection only annotates the timeline. It does not automatically split regions,
 change anchors, invalidate completed motion, or overwrite locks. Markers persist
@@ -193,7 +330,7 @@ processing run supplies a project.
 
 ## Navigate and select
 
-The toolbar groups **Scale / Zoom**, **Playhead**, and **Selection** separately.
+The **Timeline tools** panel groups **Scale / Zoom**, **Playhead**, and **Selection** separately.
 Mark buttons sit next to their In/Out values; selection actions follow them.
 The **Scene cuts** section expands when needed, keeping detection settings out of
 the main editing row. Its header shows the latest scan status even when collapsed.
@@ -205,8 +342,11 @@ the main editing row. Its header shows the latest scan status even when collapse
 - **Left/Right** step exactly one source frame; **Shift+Left/Right** step ten.
   **Home/End** go to the first/last frame of the available clip. These shortcuts
   do not take over typing in text fields or resizing a focused layout divider.
+  During decoding, the preview holds its last complete frame. Rapid steps are
+  combined into the latest requested destination rather than overlapping seeks.
 - Use **I / Mark In**, step or play to the other end, then **O / Mark Out** to
-  select an interval without dragging. Mark Out **includes the displayed frame**.
+  select an interval without dragging. Mark Out **includes the displayed frame**
+  unless a cut marker is selected, when it uses that exact cut boundary instead.
   In/Out fields use an exclusive Out boundary: frames 3, 4 and 5 are **In 3,
   Out 6**. This also allows the very last frame to be selected. **Select frame**
   selects only the displayed frame.
@@ -282,8 +422,45 @@ clock. This keeps separate region runs aligned when the final project is assembl
 The assembled Motion Studio project uses the original source for its unified
 video preview. Projected pose coordinates from stabilized regions are mapped back
 onto that original image; the inferred 3D motion remains measured from the
-stabilized analysis. Switching among multiple rendered region videos is not part
-of this first timeline preview.
+stabilized analysis.
+
+In the **Processing timeline**, choose **Stabilized** beside the video heading to
+review rendered stabilization at the current source frame. Playback automatically
+switches between rendered sections and the original video in uncovered intervals.
+The heading identifies which view is actually displayed. Frame stepping, selection
+marks and seeking always use original source frame numbers, including trimmed clips.
+
+Select a gold region and use **Preview stabilized** to jump into its saved render,
+or **Open clip** to play that file separately. These controls discover existing
+completed renders; no processing rerun is needed. Changed crop, points, timing or
+tracking thresholds label the saved clip **previous render** until you process it
+again. Deleted/disabled regions do not take over timeline playback. Reference point
+editing returns to the original marked reference frame so coordinates stay correct; crop editing also uses original coordinates.
+The stabilization inspector also reports **tracked / held frames**. During a held
+frame the preview shows an amber **HELD · previous correction** label and its reason
+(missing points, disagreement or a tracking jump). Held means the stabilizer reused
+its last accepted translation; it does not mean the reference stayed still.
+**Show tracked points** overlays the visible tracker estimates on the render or
+original preview. These points can drift to another surface even when visible;
+inspect them against the image. **Previous gap / Next gap** jump to held intervals
+on the original source clock. Loaded regions also show their held percentage in
+the gold lane. These diagnostics review saved results without rerunning extraction.
+
+Rendered stabilization clips have black padding and no audio; the original video
+retains its own audio when playback returns to it.
+
+Motion Studio places the device preview between the video and 3D body view.
+**Float video** keeps the same video and projected pose overlay above the tracks
+while you scroll. Drag its heading to move it, drag the lower-right handle to
+resize it, and use **Dock video** to return it to the top. Focus the heading or
+resize handle and use arrow keys for keyboard adjustment (Shift makes larger steps).
+The floating preview stays within its editor tab.
+
+Beside Motion Studio's selection controls, **Play selection** plays from In to Out
+once. Enable **Loop selection** to repeat that range; the video, pose and device
+preview follow the same playhead. Empty selections disable looping. The loop option
+is saved with the project and works in the offline viewer; preview playback does
+not change exported motion.
 
 **sample_fps = 0** follows source frames. A lower nonzero rate samples fewer frames;
 it does not change playback speed. **batch_size** changes how pose extraction is
@@ -294,6 +471,18 @@ the amount of processed footage.
 Analysis includes context around chunk boundaries and keeps output inside the
 requested coverage. Context does not cross stabilization boundaries. Mark scene
 cuts with separate tracking regions so they remain explicit in the plan.
+
+## Loading after an update or restart
+
+Editor assets revalidate on load so a new page does not mix updated code with
+older helper modules. If startup fails, an error and **Retry loading** appear
+above the editor. Retry reloads the page and retains the saved plan and the
+browser's unapplied draft; there is no need to clear browser storage. A delayed
+startup also exposes Retry while it waits for code or the local server.
+
+**Indexing source frames** is a separate step and may take time on a long clip's
+first open. Subsequent opens reuse its timestamp index. If a backend update is
+required, the error identifies it; restarting ComfyUI interrupts any active job.
 
 ## Current scope
 

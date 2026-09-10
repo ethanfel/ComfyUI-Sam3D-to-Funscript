@@ -79,6 +79,33 @@ class ProcessingSessionTests(unittest.TestCase):
             separate = self.node.publish_motion(deepcopy(incoming), 'b' * 32, root)
             self.assertEqual(self.node.load_project(separate)['scripts'], incoming['scripts'])
 
+    def test_published_guides_and_collapsed_tracks_survive_reruns_without_changing_locked_curves(self):
+        from test_core import fixture
+        from sam3d_funscript.core import build_project
+        from sam3d_funscript.editor import initialize
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); session = 'a' * 32
+            incoming = initialize(build_project(fixture()))
+            timeline = {'session': 'c' * 32, 'info': {'source_id': 'source'},
+                        'scene_cuts': {'source_id': 'source', 'times_ms': [500.125, 1500]}}
+            self.node.publish_motion(deepcopy(incoming), session, root, timeline)
+            store = self.node.EditorStore(root); saved = store.read(session)
+            saved['project']['timeline']['tracks'][0].update(collapsed=True, locked=True)
+            saved['project']['preview'] = {'main_collapsed': True, 'show_cuts': False}
+            store.save(session, saved['project'], saved['revision'])
+            timeline['scene_cuts']['times_ms'] = [750.25]
+            path = self.node.publish_motion(deepcopy(incoming), session, root, timeline)
+            output = self.node.load_project(path)
+            self.assertEqual(output['metadata']['scene_cuts']['times_ms'], [750.25])
+            self.assertEqual(output['metadata']['processing_timeline']['session'], 'c' * 32)
+            self.assertTrue(output['timeline']['tracks'][0]['collapsed'])
+            self.assertEqual(output['preview'], saved['project']['preview'])
+            self.assertEqual(output['scripts'], saved['project']['scripts'])
+            self.assertEqual(output['timeline']['tracks'][0]['script'], saved['project']['timeline']['tracks'][0]['script'])
+            timeline['scene_cuts']['source_id'] = 'different-trim'
+            path = self.node.publish_motion(deepcopy(incoming), session, root, timeline)
+            self.assertNotIn('scene_cuts', self.node.load_project(path)['metadata'])
+
     def test_connecting_standalone_adopts_newer_saved_editor_edits(self):
         from test_core import fixture
         from sam3d_funscript.core import build_project
