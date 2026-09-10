@@ -2,6 +2,7 @@ import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReferen
 import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {smoothActions} from "./curve-edit.mjs";
+import {PATTERNS, generatePattern, continuePattern} from "./patterns.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
@@ -16,6 +17,7 @@ let videoVariant="stabilized",videoMapping=null,videoOutput=null,mediaLoading=fa
 const localVideos={stabilized:null,original:null};
 let comparisonRevision=0, comparisonCache=null;
 let deviceOutputCache=null;
+let patternDraft=null, patternTimer=null;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
@@ -147,7 +149,7 @@ function install(data, keepPlayback=false, output=null) {
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
     document.body.classList.remove("waiting-for-workflow");$("workflowWaiting").hidden=true;
     keepPlayback=!!(keepPlayback&&sameVideoSource(project?.metadata?.source,data.metadata.source));
-    dragging=null;
+    dragging=null;discardPattern();
     if(!keepPlayback){video.pause();video.onloadedmetadata=null;video.removeAttribute("src");video.load();++mediaRevision;mediaLoading=false;
     for(const key of Object.keys(localVideos)){if(localVideos[key])URL.revokeObjectURL(localVideos[key]);localVideos[key]=null;}
     videoURL=null;videoVariant="stabilized";videoMapping=null;}
@@ -200,6 +202,7 @@ function calibrationControls() {
 }
 function selectLane(id) {
     if(!project)return;
+    if(id!==project.timeline.active)discardPattern("Track changed. Preview on this curve before applying.");
     project.timeline.active=id;controls();render();
 }
 function selectionControls() {
@@ -218,6 +221,7 @@ function selectionControls() {
     const scope=selectedCurve.track?trackCoverage(project,selectedCurve.track):[0,roundEven(project.metadata.duration_ms)];
     $("smoothSelection").disabled=locked()||range[1]<=range[0]||range[0]<scope[0]||range[1]>scope[1];
     $("smoothTarget").textContent=`${selectedCurve.track?.name||"Main"} · ${selectedCurve.axis}${locked()?" · locked":" · selected range only"}`;
+    patternControls();
     const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
     for(const row of $("tracks").children){
         row.classList.toggle("copy-source",row.dataset.track===track?.id);
@@ -227,6 +231,7 @@ function selectionControls() {
     }
 }
 function setSelection(start,end) {
+    discardPattern("Range changed. Preview before applying.");
     const duration=roundEven(project.metadata.duration_ms);
     project.timeline.selection_lane=project.timeline.active;
     project.timeline.selection=[start,end].map(t=>Math.max(0,Math.min(duration,roundEven(t)))).sort((a,b)=>a-b);
@@ -424,6 +429,12 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
     }
     ctx.drawImage(layer.surface,0,0,layer.surface.width,layer.surface.height,0,0,w,h);
     ctx.save();ctx.beginPath();ctx.rect(42,10,w-54,h-30);ctx.clip();
+    if(patternDraft && patternDraft.key===patternKey() && (canvas.dataset.track||"main")===project.timeline.active){
+        const points=patternDraft.inside, indices=displayIndices(points.length,i=>points[i].at,i=>points[i].pos,...bounds,w-54);
+        ctx.strokeStyle="#ff91bc";ctx.lineWidth=2.5;ctx.setLineDash([6,4]);ctx.beginPath();let pen=false;
+        for(const i of indices){if(i===null){pen=false;continue;}const p=points[i];if(pen)ctx.lineTo(x(p.at),y(p.pos));else ctx.moveTo(x(p.at),y(p.pos));pen=true;}
+        ctx.stroke();ctx.setLineDash([]);
+    }
     const [start,end]=project.timeline.selection;
     if(end>start){
         const source=selectionTrack(project),chosen=(canvas.dataset.track||"main")===(project.timeline.selection_lane||source?.id);
@@ -443,6 +454,7 @@ function drawCurve(canvas, data, axis, isMain, active, window) {
 }
 function render() {
     if(!project)return;
+    patternControls();
     $("time").textContent=project.metadata.duration_ms>=60000?formatTime(currentMs,3,project.metadata.duration_ms>=3600000):(currentMs/1000).toFixed(3)+" s";
     $("time").dataset.ms=String(currentMs);
     const selectedContext=selected(), outputAxis=$("axis").value;
@@ -475,7 +487,7 @@ if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frameCallback
 video.addEventListener("timeupdate",()=>{if(!video.requestVideoFrameCallback||video.paused){updateVideoTime(video.currentTime);render();}});
 video.addEventListener("seeked",()=>{updateVideoTime(video.currentTime);if(project&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);render();});
 video.addEventListener("error",()=>status("Choose the source video locally if this browser cannot load the server copy"));
-$("axis").addEventListener("change",()=>{controls();render();});
+$("axis").addEventListener("change",()=>{discardPattern("Axis changed. Preview before applying.");controls();render();});
 $("zoom").addEventListener("change",()=>{if(project)zoomTimeline(Number($("zoom").value)||project.metadata.duration_ms);});
 $("zoomLevel").addEventListener("input",()=>{if(project)zoomTimeline(sliderSpan(project.metadata.duration_ms,Number($("zoomLevel").value)));});
 $("zoomIn").onclick=()=>zoomTimeline(view.span_ms/2);$("zoomOut").onclick=()=>zoomTimeline(view.span_ms*2);
@@ -590,6 +602,73 @@ $("smoothSelection").onclick=()=>{
         status(`Smoothed ${track?.name||"Main"} · ${axis} over ${(start/1000).toFixed(3)}–${(end/1000).toFixed(3)} s · ${$("smoothMs").value} ms. Undo restores this curve.`);
     }catch(error){status(error.message);}
 };
+$("patternShape").replaceChildren(...PATTERNS.map(name=>new Option(name,name)));
+$("patternShape").value="Sine Wave";
+function patternOptions() {
+    const n=id=>$(id).valueAsNumber, ms=id=>n(id)*1000;
+    return {mode:$("patternMode").value, side:$("patternSide").value, contextMs:ms("patternContext"),
+        cycleMs:ms($("patternMode").value==="continue"?"patternCycleOverride":"patternCycle"),
+        shape:$("patternShape").value, amplitude:n("patternAmplitude"), center:n("patternCenter"),
+        fadeInMs:ms("patternFadeIn"),fadeOutMs:ms("patternFadeOut"),reverse:$("patternReverse").checked,seed:n("patternSeed"),
+        joinMs:n("patternJoin"),stepMs:n("patternStep")};
+}
+function patternKey() {
+    return project?JSON.stringify([comparisonRevision,project.timeline.active,selected().axis,project.timeline.selection,patternOptions()]):null;
+}
+function discardPattern(message="") {
+    clearTimeout(patternTimer);patternTimer=null;patternDraft=null;
+    $("applyPattern").disabled=true;$("cancelPattern").disabled=true;
+    if(message)$("patternStatus").textContent=message;
+}
+function patternControls() {
+    if(!project)return;
+    const {axis,track}=selected(),[start,end]=project.timeline.selection;
+    const scope=track?trackCoverage(project,track):[0,roundEven(project.metadata.duration_ms)];
+    const name=`${track?.name||"Main"} · ${axis}`, valid=end>start&&start>=scope[0]&&end<=scope[1];
+    if(patternDraft&&patternDraft.key!==patternKey())discardPattern("Curve, range or settings changed. Preview again before applying.");
+    $("previewPattern").disabled=locked()||!valid;
+    $("applyPattern").disabled=locked()||!valid||!patternDraft;
+    $("applyPattern").textContent=`Apply to ${name}`;
+    $("cancelPattern").disabled=!patternDraft;
+    $("patternTarget").textContent=`${name}${locked()?" · locked":valid?` · ${(start/1000).toFixed(3)}–${(end/1000).toFixed(3)} s`:" · select a range within this track"}`;
+    $("continueOptions").hidden=$("patternMode").value!=="continue";
+    $("generateOptions").hidden=$("patternMode").value!=="generate";
+    $("patternSeedLabel").hidden=$("patternShape").value!=="Random";
+}
+function previewPattern() {
+    if(!project)return;patternControls();if($("previewPattern").disabled)return;
+    discardPattern();
+    try{
+        const {data,axis}=selected(),[start,end]=project.timeline.selection,options=patternOptions();
+        const result=(options.mode==="continue"?continuePattern:generatePattern)(data.scripts[axis].actions,start,end,options);
+        patternDraft={...result,key:patternKey()};
+        $("patternStatus").textContent=`Pink preview · ${result.summary} Apply changes this axis only.`;
+        patternControls();render();
+    }catch(error){$("patternStatus").textContent=error.message;render();}
+}
+$("previewPattern").onclick=previewPattern;
+$("cancelPattern").onclick=()=>{discardPattern("Preview discarded. The curve is unchanged.");render();};
+$("applyPattern").onclick=()=>{
+    if(!project)return;patternControls();if($("applyPattern").disabled)return;
+    const {data,axis,track}=selected(),draft=patternDraft;
+    record();data.scripts[axis]={...data.scripts[axis],actions:draft.actions};delete data.metrics?.[axis];
+    commitSelected(data,axis,track);discardPattern();dirty();controls();render();
+    const message=`Applied to ${track?.name||"Main"} · ${axis}. ${draft.summary} Undo restores the previous curve.`;
+    $("patternStatus").textContent=message;status(message);
+};
+$("patternRange").onclick=()=>{
+    if(!project)return;const duration=$("patternDuration").valueAsNumber*1000;
+    if(!Number.isFinite(duration)||duration<1||duration>3600000){$("patternStatus").textContent="Enter a duration between 0.001 and 3600 seconds.";return;}
+    setSelection(currentMs,Math.min(project.metadata.duration_ms,currentMs+duration));
+};
+for(const input of $("patternPanel").querySelectorAll("input,select")){
+    const changed=()=>{
+        const live=!!patternDraft||!!patternTimer;
+        discardPattern();patternControls();render();
+        if(live&&input.id!=="patternDuration")patternTimer=setTimeout(previewPattern,180);
+    };
+    input.addEventListener("input",changed);input.addEventListener("change",changed);
+}
 async function toggleLock(target) {
     target.locked=!target.locked;
     // Unlock is explicit: Undo cannot reach behind a lock and replace its curve.

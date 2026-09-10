@@ -4,6 +4,7 @@ import {api} from "../../scripts/api.js";
 import {errorMessage,queueReferenceTracking} from "./reference-queue.mjs";
 import {prepareEditorSessions,notifyEditorRun} from "./editor-bridge.mjs";
 import {prepareNodeSessions} from "./sessions.mjs";
+import {migrateCutSensitivity} from "./migrate.mjs";
 
 const editors=new Map(),jobs=new Map();
 const newSession=()=>Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,"0")).join("");
@@ -29,6 +30,7 @@ registerWorkspaceTool("timeline",{
 });
 app.registerExtension({
     name:"sam3d.funscript.processing-timeline",
+    beforeConfigureGraph(graph){migrateCutSensitivity(graph);},
     setup(){
         window.addEventListener("message",async event=>{
             const message=event.data;
@@ -53,20 +55,26 @@ app.registerExtension({
                     if(!response.ok)throw new Error(`Could not cancel this job (${response.status}). Use ComfyUI's queue controls.`);
                     job.reply({state:"running",text:"Cancellation requested · completed regions are kept"});return;
                 }
-                if(!["all","selected","unfinished"].includes(message.operation))throw new Error("Unknown timeline operation");
+                if(!["all","selected","unfinished","detect_cuts"].includes(message.operation))throw new Error("Unknown timeline operation");
+                const cutScan=message.operation==="detect_cuts";
+                if(cutScan&&!["normal","low","high"].includes(message.cut_sensitivity))throw new Error("Unknown cut sensitivity");
                 if(jobs.has(node))throw new Error("This timeline is already processing.");
                 const job={reply};jobs.set(node,job);
                 try{
-                    setPlan();reply({state:"queued",text:"Preparing selected processing job…"});
+                    setPlan();reply({state:"queued",text:cutScan?"Preparing hard-cut scan…":"Preparing selected processing job…"});
                     const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(!stateResponse.ok)throw new Error("Could not read the saved timeline before processing.");
                     const state=await stateResponse.json();
                     const motionSessions=prepareNodeSessions(app.graph?._nodes||[]);
                     if(state.editor_session)motionSessions.add(state.editor_session);
-                    await prepareEditorSessions(motionSessions);
+                    if(!cutScan)await prepareEditorSessions(motionSessions);
                     const prompt=await app.graphToPrompt();assertCurrent();
                     if(!prompt.output[String(node.id)])throw new Error("Enable the timeline node before processing.");
                     prompt.output[String(node.id)].inputs.operation=message.operation;
+                    if(cutScan){
+                        prompt.output[String(node.id)].inputs.cut_sensitivity=message.cut_sensitivity;
+                        const widget=node.widgets.find(w=>w.name==="cut_sensitivity");if(widget)widget.value=message.cut_sensitivity;
+                    }
                     const output=await queueReferenceTracking(api,prompt,node.id,data=>{
                         if(data.prompt_id)job.prompt_id=data.prompt_id;
                         if(data.value===undefined)reply(data);
@@ -74,7 +82,7 @@ app.registerExtension({
                     assertCurrent();
                     node.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline processing complete";
                     const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
-                    if(latestResponse.ok){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
+                    if(latestResponse.ok&&!cutScan){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
                     reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0]});
                 }finally{jobs.delete(node)}
             }catch(error){reply({state:"error",error:errorMessage(error)})}
@@ -83,6 +91,10 @@ app.registerExtension({
             const data=event.detail;
             for(const [node,job] of jobs){
                 if(node.properties.s3f_timeline_session!==data.session)continue;
+                if(data.stage==="scene_cuts"){
+                    job.reply({state:"running",text:`Scanning hard cuts · ${data.frames||0} frames · ${data.cuts||0} markers`,
+                        value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
+                }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
                 const text=[data.stage||"Processing",data.region_id,total?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
                 job.reply({state:"running",text,value:done,max:total});

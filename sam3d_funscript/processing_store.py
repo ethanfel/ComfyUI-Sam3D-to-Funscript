@@ -97,6 +97,20 @@ class ProcessingStore:
                 state["progress"] = value
                 self.write(state)
 
+    def update_cuts(self, session, source_id, result=None, progress=None):
+        """Annotations never change a motion result, plan revision, or region lock."""
+        with LOCK:
+            state = self.read(session)
+            if state is None or state["info"]["source_id"] != source_id:
+                raise PlanConflict("The source video changed while detecting cuts. Prepare the timeline again.")
+            if result is not None:
+                if result.get("source_id") != source_id:
+                    raise PlanConflict("Cut markers belong to another source video.")
+                state["scene_cuts"] = copy.deepcopy(result)
+            if progress is not None:
+                state["cut_progress"] = copy.deepcopy(progress)
+            return self.write(state)
+
     def bind_editor(self, session, editor_session, project_path=None):
         from .editor import EditorStore
         EditorStore(self.root.parent).path(editor_session)  # Validate before persisting the link.

@@ -18,7 +18,8 @@
       "tracker_model": "cotracker3_scaled_online.pth",
       "operation": "prepare",
       "plan_json": "{}",
-      "use_cache": true
+      "use_cache": true,
+      "cut_sensitivity": "normal"
     }
   },
   "3": {

@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {neighboringCut,snapCut,shotRange,visibleCuts} from '../assets/cut-markers.mjs';
+const cuts=[30120.125,31500,90000];
+assert.equal(neighboringCut(cuts,30120.125,1),31500);
+assert.equal(neighboringCut(cuts,30120.125,-1),null);
+assert.equal(neighboringCut(cuts,90200,-1),90000);
+assert.equal(neighboringCut(cuts,90000,1),null);
+assert.equal(snapCut(cuts,30125,10),30120.125);
+assert.equal(snapCut(cuts,40000,250),40000);
+assert.deepEqual(shotRange(cuts,30120.125,30000,100000),[30120.125,31500]);
+assert.deepEqual(shotRange(cuts,30001,30000,100000),[30000,30120.125]);
+assert.deepEqual(shotRange(cuts,99000,30000,100000),[90000,100000]);
+assert.deepEqual(shotRange([],40000,30000,100000),[30000,100000]);
+assert.deepEqual(visibleCuts(cuts,31000,2000,300),[31500]);
+const dense=Array.from({length:100000},(_,i)=>i*1000);
+assert.ok(visibleCuts(dense,0,100000000,1000).length<=1001);
+console.log('Cut markers: precise navigation, snapping, trimmed shot ranges and dense overview passed');

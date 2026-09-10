@@ -5,8 +5,9 @@
 [Quick start](#quick-start) · [Workflows](#workflows) · [Full guide](docs/guide.md)
 
 - **Track motion** using body, hand or mouth anchors. Add mask videos to select individual people.
-- **Plan long videos:** select anchor and stabilization regions in the [processing timeline](docs/processing-timeline.md), then process all, selected or unfinished intervals.
+- **Plan long videos:** detect hard cuts and select anchor and stabilization regions in the [processing timeline](docs/processing-timeline.md), then process all, selected or unfinished intervals.
 - **Build your timeline** with multiple tracks, zoom, section blending and locks that protect edits across reruns.
+- **Fill motion gaps or add patterns:** preview a continuation of the surrounding rhythm or choose from 14 generated shapes, then join it into the selected curve. See [gap filling and patterns](docs/patterns.md).
 - **Edit in a dedicated tab:** connected Processing Timeline, Reference Editor and Motion Studio tools share one tabbed workspace. **Motion Studio · Standalone** keeps the workflow node compact.
 - **Preview devices** with Handy 2 for stroke or SR6 for all six axes.
 - **Compare device output:** use [stroke profiles](docs/device-output.md) to derive a separate L0 script for a physical range and speed limit.

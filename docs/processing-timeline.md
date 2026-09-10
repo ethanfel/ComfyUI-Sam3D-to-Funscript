@@ -49,6 +49,37 @@ when there is one directly connected standalone owner. With no sole owner, the
 timeline keeps its own independent saved Motion Studio session. Generated mains
 refresh on processing reruns; user-edited or locked assembled mains are preserved.
 
+## Workspace size and video shape
+
+**Wide layout** uses the full browser width; turn it off for a centered workspace.
+**Full screen** expands the workspace, including its tool tabs when present. Press
+Escape or click **Exit full screen** to return.
+
+The preview column initially follows the source video's aspect ratio. Portrait
+video uses a narrow column and landscape video a wider one. **Fit video shape**
+restores this automatic width after manual resizing. Frames remain proportional
+inside the available area; neither this layout nor its dividers crop the source.
+
+Drag the visible dividers to resize:
+
+- the width between **Original source** and **Region settings**;
+- the height below the preview/settings panels;
+- the filmstrip, each tracking/stabilization lane and the overview using their
+  bottom dividers.
+
+Double-click a divider to reset that size, or use **Reset layout** for all sizes.
+Focused dividers accept arrow keys (Shift for larger vertical steps); Home resets
+them. On narrow screens the preview and settings stack vertically. Lanes keep
+enough space for overlapping regions even when their requested height is smaller.
+
+The thumbnail strip shows complete source frames, including portrait footage,
+and its density adapts to frame shape and strip height. Click a thumbnail to seek
+to that sampled source frame. Thumbnail requests stay bounded to the visible range.
+
+Layout choices are stored locally in this browser, independently of plans, locks,
+processing caches and edits. They survive reopening the workspace and do not need
+**Apply to node**.
+
 ## Multiple anchors in one section
 
 Select a Tracking region, choose its **Main anchor**, then tick the desired
@@ -124,6 +155,42 @@ input with stabilization is rejected until an aligned mask-transformation path i
 available; an original mask must not be applied to a translated video.
 One mask identifies one person, exposed as person slot 0.
 
+## Hard-cut guides
+
+Click **Detect cuts** above the timeline to scan the input video. This is a
+separate, cached CPU scan; it does not run SAM3D or stabilization. It follows every
+source frame regardless of the pose **sample_fps** setting, uses small images and
+bounded decoder buffers, and puts each marker on the first frame of the new shot
+using the original presentation timestamp. Upstream trims retain their source
+clock. The scan uses the video actually wired into the Timeline node.
+
+Cuts appear as faint dashed lines across both lanes, small ruler ticks, and marks
+in the clip overview. **Previous cut** and **Next cut** move the playhead to a
+boundary. **Select shot** selects the interval between the surrounding cuts; use
+**Isolate selected range** on the active tracking region to make it its own
+scheduled section. **Snap to cuts** aligns nearby pointer selections and region
+edges with markers. **Show cuts** hides or displays the guides.
+
+Detection only annotates the timeline. It does not automatically split regions,
+change anchors, invalidate completed motion, or overwrite locks. Markers persist
+with the timeline's source and survive restarts. Repeated scans reuse their cache;
+a different source or trim gets its own markers. Cancelled scans retain the prior
+completed markers. **Use cache = false** rescans the video.
+
+**Sensitivity** defaults to Normal. High finds smaller changes and can add extra
+markers; Low requires stronger changes. Detection uses
+[PySceneDetect's adaptive content detector](https://www.scenedetect.com/docs/latest/api/detectors.html#adaptivedetector)
+with a short rolling window and suppression of isolated single-frame flashes.
+These are suggested hard-cut boundaries: similar-looking shots may be missed,
+strong motion or longer flashes can still produce false markers, and one-frame
+inserts can be suppressed. Fades and dissolves are outside this feature's scope.
+Review a marker before using it as an analysis boundary.
+
+PySceneDetect is included in `requirements.txt`; no model weights are required.
+The node's `detect_cuts` operation performs the same scan from ComfyUI. It emits
+annotations only, so downstream motion nodes wait until a normal prepare or
+processing run supplies a project.
+
 ## Navigate and select
 
 - Click the timeline to seek. **Shift-drag** selects a time interval.
@@ -142,6 +209,7 @@ interval limits a processing request; it does not trim or shift the original vid
 
 | Operation | Use |
 | --- | --- |
+| `detect_cuts` | Scan the source for hard-cut guides without pose extraction or motion output. |
 | `prepare` | Open or refresh the planning interface and pass an existing completed project downstream. |
 | `all` | Process the eligible tracking regions in the plan. |
 | `selected` | Process the selected scope, clipping retained output to its time selection. |
@@ -202,8 +270,8 @@ cuts with separate tracking regions so they remain explicit in the plan.
 
 The first version focuses on manual regional planning, SAM3D anchor analysis,
 optional CoTracker stabilization, persistent results and protected approved work.
-Automatic scene detection, automatic identity recovery through cuts, and device
-motion accuracy are not implied by a completed processing status. Review the
+Hard-cut guides assist manual planning; automatic identity recovery through cuts
+and device motion accuracy are not implied by a completed processing status. Review the
 assembled curves and joins in Motion Studio before exporting.
 
 Regenerate both distributed workflow formats with:

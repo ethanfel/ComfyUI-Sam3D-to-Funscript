@@ -42,6 +42,7 @@ def build_workflow():
         "operation": "prepare",
         "plan_json": "{}",
         "use_cache": True,
+        "cut_sensitivity": "normal",
     }
     api = {
         "1": {"class_type": "LoadVideo", "inputs": {"file": ""}},
@@ -55,7 +56,7 @@ def build_workflow():
         "PROCESSING TIMELINE\n\n"
         "1. Choose a video in the core Load Video node. Leave operation on prepare and run once. "
         "The timeline opens without extracting the whole video.\n\n"
-        "2. Click Open processing timeline. Define tracking regions and choose an anchor for each. "
+        "2. Click Open processing timeline. Detect cuts to add scene guides, then define tracking regions and choose anchors. "
         "Use a separate stabilization region only where a reference needs to be held still.\n\n"
         "3. Apply the plan and process the required regions from the timeline. "
         "Review results and lock approved regions. Save the workflow to retain the plan.\n\n"

@@ -91,7 +91,8 @@
         "cotracker3_scaled_online.pth",
         "prepare",
         "{}",
-        true
+        true,
+        "normal"
       ]
     },
     {
@@ -231,7 +232,7 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "PROCESSING TIMELINE\n\n1. Choose a video in the core Load Video node. Leave operation on prepare and run once. The timeline opens without extracting the whole video.\n\n2. Click Open processing timeline. Define tracking regions and choose an anchor for each. Use a separate stabilization region only where a reference needs to be held still.\n\n3. Apply the plan and process the required regions from the timeline. Review results and lock approved regions. Save the workflow to retain the plan.\n\n4. Run the workflow to send the latest completed result to Motion Studio. Leave operation on prepare to reuse it, or choose all, selected or unfinished to process during that run.\n\nThe compact standalone node owns the Motion Studio editing session. Its editor_session connection makes the embedded preview share the same edits.\n\nsample_fps = 0 follows source frames. Larger batch_size changes extraction batching; it does not change region timing.\n\nFirst version: SAM3D anchor tracking and optional CoTracker3 reference stabilization. Use an original person mask only when stabilization is disabled. See docs/processing-timeline.md for cache, lock and gap behavior."
+        "PROCESSING TIMELINE\n\n1. Choose a video in the core Load Video node. Leave operation on prepare and run once. The timeline opens without extracting the whole video.\n\n2. Click Open processing timeline. Detect cuts to add scene guides, then define tracking regions and choose anchors. Use a separate stabilization region only where a reference needs to be held still.\n\n3. Apply the plan and process the required regions from the timeline. Review results and lock approved regions. Save the workflow to retain the plan.\n\n4. Run the workflow to send the latest completed result to Motion Studio. Leave operation on prepare to reuse it, or choose all, selected or unfinished to process during that run.\n\nThe compact standalone node owns the Motion Studio editing session. Its editor_session connection makes the embedded preview share the same edits.\n\nsample_fps = 0 follows source frames. Larger batch_size changes extraction batching; it does not change region timing.\n\nFirst version: SAM3D anchor tracking and optional CoTracker3 reference stabilization. Use an original person mask only when stabilization is disabled. See docs/processing-timeline.md for cache, lock and gap behavior."
       ],
       "color": "#432",
       "bgcolor": "#653"

@@ -1,0 +1,184 @@
+import {evaluate, roundEven, validateReference} from "./curve.mjs";
+
+// Shape names/formulas from the user-supplied Pattern_Generation/main.lua
+// (Pattern Generator by Nerfarious837). Editor integration is independent of OFS.
+export const PATTERNS = ["Heartbeat", "Jigsaw", "Jigsaw Squiggle", "Pulse", "Ramp Down", "Ramp Up", "Random", "River Bed Center", "River Bed High", "River Bed Low", "Sine Squiggle", "Sine Wave", "Square", "Triangle"];
+const TAU = 2 * Math.PI, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ease = u => u * u * (3 - 2 * u);
+const wrap = p => ((p + Math.PI) % TAU + TAU) % TAU - Math.PI;
+function range(actions, start, end) {
+    validateReference({actions});
+    if (![start, end].every(Number.isFinite) || start < 0 || end <= start) throw new Error("Select a nonempty time range.");
+    start = roundEven(start); end = roundEven(end);
+    if (end <= start) throw new Error("Select at least one millisecond.");
+    return [start, end];
+}
+function number(value, name, min, max) {
+    if (!Number.isFinite(value) || value < min || value > max) throw new Error(`${name} must be between ${min} and ${max}.`);
+    return value;
+}
+function slope(actions, at, side) {
+    let lo = 0, hi = actions.length;
+    while (lo < hi) {const m = (lo + hi) >> 1; if (actions[m].at < at || (side > 0 && actions[m].at === at)) lo = m + 1; else hi = m;}
+    if (!lo || lo === actions.length) return 0;
+    const a = actions[lo - 1], b = actions[lo];
+    return (b.pos - a.pos) / (b.at - a.at);
+}
+function hermite(a, b, ma, mb, u) {
+    return (2*u**3-3*u*u+1)*a + (u**3-2*u*u+u)*ma + (-2*u**3+3*u*u)*b + (u**3-u*u)*mb;
+}
+// Limit joining tangents to keep each join between its endpoints. The rest of
+// the generated oscillation is untouched. No samples inside the bad gap are used.
+function join(a, b, ma, mb, u) {
+    const delta = b - a;
+    if (!delta) return a;
+    ma = clamp(ma / delta, 0, 3) * delta; mb = clamp(mb / delta, 0, 3) * delta;
+    const norm = Math.hypot(ma / delta, mb / delta);
+    if (norm > 3) {ma *= 3 / norm; mb *= 3 / norm;}
+    return hermite(a, b, ma, mb, u);
+}
+function replace(actions, start, end, value, joinMs, stepMs) {
+    number(joinMs, "Join duration (ms)", 0, 60000); number(stepMs, "Point spacing (ms)", 1, 1000);
+    const width = Math.min(joinMs, (end - start) / 2);
+    const count = Math.ceil((end - start) / stepMs);
+    if (count > 100000) throw new Error("This preview would exceed 100,000 points. Use a shorter interval, a slower cycle or larger point spacing.");
+    const boundary = [evaluate(actions, start), evaluate(actions, end)];
+    const derivative = t => {const a=Math.max(start,t-.5),b=Math.min(end,t+.5);return (value(b)-value(a))/(b-a);};
+    const at = t => {
+        if (t === start) return boundary[0];
+        if (t === end) return boundary[1];
+        if (width && t < start + width) return join(boundary[0], value(start + width), slope(actions,start,-1)*width, derivative(start+width)*width, (t-start)/width);
+        if (width && t > end - width) return join(value(end-width), boundary[1], derivative(end-width)*width, slope(actions,end,1)*width, (t-end+width)/width);
+        return value(t);
+    };
+    const times = new Set([start, end, roundEven(start + width), roundEven(end - width)]);
+    for (let i = 1; i < count; i++) times.add(roundEven(start + i * (end-start) / count));
+    const inside = [...times].sort((a,b)=>a-b).map(t => ({at:t, pos:roundEven(clamp(at(t),0,100))}));
+    return {actions:[...actions.filter(p=>p.at<start),...inside,...actions.filter(p=>p.at>end)].map(p=>({...p})), inside};
+}
+function random(seed, index) {
+    let x = (seed ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0;
+    x = Math.imul(x ^ x >>> 16, 0x21f0aaad); x = Math.imul(x ^ x >>> 15, 0x735a2d97);
+    return ((x ^ x >>> 15) >>> 0) / 4294967296;
+}
+export function generatePattern(actions, start, end, options = {}) {
+    [start,end] = range(actions,start,end);
+    const {shape="Sine Wave", cycleMs=2000, amplitude=40, center=50, fadeInMs=0, fadeOutMs=0, reverse=false, seed=1, stepMs=20, joinMs=200} = options;
+    if (!PATTERNS.includes(shape)) throw new Error("Choose a known pattern.");
+    number(cycleMs,"Cycle length (ms)",200,60000); number(amplitude,"Amplitude",0,50); number(center,"Center",0,100);
+    number(fadeInMs,"Fade in (ms)",0,60000); number(fadeOutMs,"Fade out (ms)",0,60000); number(seed,"Random seed",0,4294967295);
+    number(stepMs,"Point spacing (ms)",1,1000);
+    const spacing=Math.min(stepMs,cycleMs/96), duration=end-start;
+    let clipped=0, samples=0;
+    const value = at => {
+        const t=at-start, c=t/cycleMs, phase=c-Math.floor(c);
+        let v;
+        switch (shape) {
+        case "Heartbeat": case "Sine Wave": v=Math.sin(c*TAU); break;
+        case "Jigsaw": v=phase*2-1; break;
+        case "Jigsaw Squiggle": v=phase*2-1+Math.sin(c*16)*.35; break;
+        case "Pulse": v=Math.sin(c*24)>0?1:-1; break;
+        case "Ramp Down": v=.9-t/duration*1.8; break;
+        case "Ramp Up": v=t/duration*1.8-.9; break;
+        case "Random": v=(random(seed,Math.floor(t/stepMs))-.5)*1.6; break;
+        case "River Bed Center": v=Math.sin(c*1.8)*.7+Math.sin(c*44)*.28; break;
+        case "River Bed High": v=Math.sin(c*1.4)*.55+.65+Math.sin(c*36)*.25; break;
+        case "River Bed Low": v=Math.sin(c*1.4)*.55-.65+Math.sin(c*36)*.25; break;
+        case "Sine Squiggle": v=Math.sin(c*TAU)+Math.sin(c*14)*.4; break;
+        case "Square": v=Math.sin(c*12)>0?1:-1; break;
+        case "Triangle": v=(1-Math.abs(phase*2-1))*2-1; break;
+        }
+        const fade=Math.min(1,fadeInMs?t/fadeInMs:1,fadeOutMs?(duration-t)/fadeOutMs:1);
+        const pos=center+(reverse?-1:1)*amplitude*v*clamp(fade,0,1);
+        samples++; if(pos<0||pos>100)clipped++;
+        return clamp(pos,0,100);
+    };
+    const result=replace(actions,start,end,value,joinMs,spacing);
+    return {...result, summary:`${shape} · ${(cycleMs/1000).toFixed(3)} s cycle control · ${result.inside.length} points${clipped?` · ${(clipped/samples*100).toFixed(1)}% of samples clipped; reduce amplitude or move center`:""}`};
+}
+
+function solve(matrix, vector) {
+    const a=matrix.map((row,i)=>[...row,vector[i]]), n=vector.length;
+    for(let k=0;k<n;k++){
+        let pivot=k;for(let i=k+1;i<n;i++)if(Math.abs(a[i][k])>Math.abs(a[pivot][k]))pivot=i;
+        [a[k],a[pivot]]=[a[pivot],a[k]];if(Math.abs(a[k][k])<1e-8)return null;
+        const d=a[k][k];for(let j=k;j<=n;j++)a[k][j]/=d;
+        for(let i=0;i<n;i++)if(i!==k){const f=a[i][k];for(let j=k;j<=n;j++)a[i][j]-=f*a[k][j];}
+    }
+    return a.map(row=>row[n]);
+}
+function rhythm(actions, boundary, side, contextMs, cycleMs) {
+    const start=Math.max(actions[0].at,side<0?boundary-contextMs:boundary), end=Math.min(actions.at(-1).at,side<0?boundary:boundary+contextMs);
+    const duration=end-start;
+    if(duration<320)return null;
+    const n=Math.min(2048,Math.floor(duration/10)), step=duration/n;
+    const values=Array.from({length:n+1},(_,i)=>evaluate(actions,start+i*step));
+    const mean=values.reduce((s,v)=>s+v,0)/values.length;
+    let trend=0,denom=0;for(let i=0;i<=n;i++){trend+=(i-n/2)*(values[i]-mean);denom+=(i-n/2)**2;}trend/=denom;
+    const detrended=values.map((v,i)=>v-mean-trend*(i-n/2));
+    const energy=detrended.reduce((s,v)=>s+v*v,0)/values.length;
+    if(energy<4)return null;
+    let period=cycleMs, agreement=1;
+    if(!period){
+        const scores=[];
+        for(let lag=Math.max(2,Math.ceil(160/step));lag<=Math.floor(n/2);lag++){
+            let error=0,power=0;
+            for(let i=lag;i<=n;i++){error+=(detrended[i]-detrended[i-lag])**2;power+=detrended[i]**2+detrended[i-lag]**2;}
+            scores[lag]=1-error/Math.max(1e-9,power);
+        }
+        const peaks=[];
+        for(let lag=1;lag<scores.length;lag++)if(scores[lag]>.65&&scores[lag]>=(scores[lag-1]??-1)&&scores[lag]>=(scores[lag+1]??-1))peaks.push(lag);
+        if(!peaks.length)return null;
+        const best=Math.max(...peaks.map(i=>scores[i]));
+        const lag=peaks.find(i=>scores[i]>=best-.04);
+        const a=scores[lag-1]??scores[lag], b=scores[lag], c=scores[lag+1]??scores[lag];
+        const shift=clamp((a-c)/(2*(a-2*b+c)||1),-.5,.5);
+        period=(lag+shift)*step;agreement=b;
+    }
+    if(duration<period*1.5)return null;
+    const omega=TAU/period;
+    const row = t => [1,(t-boundary)/contextMs,...[1,2,3].flatMap(k=>[Math.sin(k*omega*(t-boundary)),Math.cos(k*omega*(t-boundary))])];
+    const matrix=Array.from({length:8},()=>Array(8).fill(0)), rhs=Array(8).fill(0);
+    for(let i=0;i<=n;i++){const r=row(start+i*step);for(let a=0;a<8;a++){rhs[a]+=r[a]*values[i];for(let b=0;b<8;b++)matrix[a][b]+=r[a]*r[b];}}
+    const coefficients=solve(matrix,rhs);if(!coefficients)return null;
+    const errors=values.reduce((s,v,i)=>s+(v-row(start+i*step).reduce((sum,x,k)=>sum+x*coefficients[k],0))**2,0)/values.length;
+    const quality=clamp(Math.min(agreement,1-errors/energy),0,1);
+    const amplitude=[0,1,2].map(k=>Math.hypot(coefficients[2+2*k],coefficients[3+2*k]));
+    const phase=[0,1,2].map(k=>Math.atan2(coefficients[3+2*k],coefficients[2+2*k]));
+    if(quality<.55||amplitude[0]<2)return null;
+    return {period,omega,quality,center:coefficients[0],amplitude,phase};
+}
+export function continuePattern(actions, start, end, options = {}) {
+    [start,end]=range(actions,start,end);
+    const {contextMs=4000, cycleMs=0, side="both", joinMs=150, stepMs=20}=options;
+    number(contextMs,"Surrounding context (ms)",500,30000);number(cycleMs,"Cycle override (ms; 0 = auto)",0,60000);
+    number(stepMs,"Point spacing (ms)",1,1000);
+    if(cycleMs&&cycleMs<200)throw new Error("Cycle override must be zero (auto) or at least 200 ms.");
+    if(!["both","before","after"].includes(side))throw new Error("Choose before, after or both sides.");
+    // Only the two surrounding windows participate in rhythm estimation.
+    let left=side!=="after"?rhythm(actions,start,-1,contextMs,cycleMs):null;
+    let right=side!=="before"?rhythm(actions,end,1,contextMs,cycleMs):null;
+    const found=[left&&`before ${(left.period/1000).toFixed(3)} s (${Math.round(left.quality*100)}% rhythm fit)`,right&&`after ${(right.period/1000).toFixed(3)} s (${Math.round(right.quality*100)}% rhythm fit)`].filter(Boolean);
+    if(!left&&!right)throw new Error("No repeating motion found outside this range. Expand the context, set a cycle override, or choose Generate pattern.");
+    const duration=end-start;
+    if(!left)left={...right,phase:right.phase.map((p,k)=>p-(k+1)*right.omega*duration)};
+    if(!right)right={...left,phase:left.phase.map((p,k)=>p+(k+1)*left.omega*duration)};
+    const a=left.phase[0], expected=a+duration*(left.omega+right.omega)/2;
+    let b=right.phase[0]+TAU*Math.round((expected-right.phase[0])/TAU);
+    while(b<=a)b+=TAU;
+    // Interpolate phase (not opposite wave values), preserving oscillation
+    // amplitude while joining rhythms with different rates/phase at either end.
+    const value=t=>{
+        const u=(t-start)/duration, weight=ease(u);
+        const phase=join(a,b,left.omega*duration,right.omega*duration,u);
+        let v=left.center+(right.center-left.center)*weight;
+        for(let k=0;k<3;k++){
+            const amplitude=left.amplitude[k]+(right.amplitude[k]-left.amplitude[k])*weight;
+            const p=wrap(left.phase[k]-(k+1)*left.phase[0]), q=wrap(right.phase[k]-(k+1)*right.phase[0]);
+            v+=amplitude*Math.sin((k+1)*phase+p+wrap(q-p)*weight);
+        }
+        return clamp(v,0,100);
+    };
+    const result=replace(actions,start,end,value,joinMs,Math.min(stepMs,left.period/64,right.period/64));
+    return {...result, summary:`Continued ${found.join(" · ")}. Synthesized motion; review the join.`, periods:found, quality:Math.min(left.quality,right.quality)};
+}

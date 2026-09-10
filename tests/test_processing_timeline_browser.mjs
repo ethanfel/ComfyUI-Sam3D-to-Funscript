@@ -10,20 +10,26 @@ const root=path.resolve('.'),temporary=fs.mkdtempSync(path.join(os.tmpdir(),'s3f
 const clip=path.join(temporary,'neutral.mp4');
 const ffmpeg=spawnSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x120:rate=2','-t','60','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart',clip]);
 assert.equal(ffmpeg.status,0,ffmpeg.stderr.toString());
+const portraitClip=path.join(temporary,'portrait.mp4'),portraitThumb=path.join(temporary,'portrait.jpg');
+for(const args of [
+ ['-v','error','-f','lavfi','-i','testsrc2=size=180x320:rate=2','-t','10','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart',portraitClip],
+ ['-v','error','-i',portraitClip,'-frames:v','1',portraitThumb]
+]){const result=spawnSync('ffmpeg',args);assert.equal(result.status,0,result.stderr.toString());}
+
 const session='1234567890abcdef1234567890abcdef';
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
 let seenProcess=null,apiRequests=0;
 const parentHtml=`<!doctype html><button id="open" onclick="window.editor=window.open('/sam3d_funscript/assets/processing-timeline.html?session=${session}&node=1')">Open editor</button><script>
-window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){window.lastProcess=d;await fetch('/test/process',{method:'POST',body:JSON.stringify(d)});e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete'},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
+window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;await fetch('/test/process',{method:'POST',body:JSON.stringify(d)});e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete'},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
 </script>`;
 const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.mp4':'video/mp4'};
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
+ if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
  if(url.pathname===`/sam3d_funscript/timelines/${session}`){apiRequests++;res.setHeader('Content-Type','application/json');if(req.method==='POST'){let body='';for await(const part of req)body+=part;const sent=JSON.parse(body);if(sent.revision!==state.revision){res.statusCode=409;res.setHeader('Content-Type','text/plain');res.end('stale revision');return;}state={...state,revision:state.revision+1,plan:sent.plan};}res.end(JSON.stringify(state));return;}
- if(url.pathname.endsWith('/thumbnail')){res.statusCode=404;res.end();return;}
- let file;if(url.pathname.endsWith('/video'))file=clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
+ if(url.pathname.endsWith('/thumbnail')){if(state.info.source_id==='portrait'){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));}else{res.statusCode=404;res.end();}return;}
+ let file;if(url.pathname.endsWith('/video'))file=state.info.source_id==='portrait'?portraitClip:clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
  if(!file||!fs.existsSync(file)){res.statusCode=404;res.end();return;}
  const buffer=fs.readFileSync(file);res.setHeader('Content-Type',mime[path.extname(file)]||'application/octet-stream');
  const range=req.headers.range?.match(/bytes=(\d+)-(\d*)/);if(range){const start=Number(range[1]),end=range[2]?Math.min(Number(range[2]),buffer.length-1):buffer.length-1;res.writeHead(206,{'Content-Range':`bytes ${start}-${end}/${buffer.length}`,'Accept-Ranges':'bytes','Content-Length':end-start+1});res.end(buffer.subarray(start,end+1));}else res.end(buffer);
@@ -80,6 +86,29 @@ try{
  await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:lane.x+lane.w*.25,y:lane.y+70,button:'left',modifiers:8,clickCount:1});await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:lane.x+lane.w*.6,y:lane.y+70,buttons:1,modifiers:8});await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:lane.x+lane.w*.6,y:lane.y+70,button:'left',modifiers:8,clickCount:1});
  const range=await page.evaluate('[Number(document.querySelector("#selectionIn").value),Number(document.querySelector("#selectionOut").value)]');assert.ok(range[1]>range[0]);
  await page.evaluate('document.querySelector("#processSelected").click()');await until(()=>page.evaluate('document.querySelector("#progressText").textContent==="Processing complete"'),'process complete');assert.equal(seenProcess.operation,'selected');assert.ok(seenProcess.plan.selection[1]>seenProcess.plan.selection[0]);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/neutral_test/);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/session=shared-motion-session/);assert.equal(seenProcess.editor_session,'shared-motion-session');
+ // Scene guides annotate the original clock without changing motion regions/results.
+ const beforeCuts=JSON.stringify({plan:state.plan,report:state.report,project:state.project,revision:state.revision});
+ await parent.evaluate('window.rejectCuts=true');await page.evaluate('document.querySelector("#detectCuts").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("main ComfyUI tab")'),'old bridge recovery message');
+ await parent.evaluate('window.rejectCuts=false');
+
+ await page.evaluate('document.querySelector("#detectCuts").click()');
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Cut scan complete")'),'hard-cut scan');
+ assert.equal(seenProcess.operation,'detect_cuts');assert.equal(seenProcess.cut_sensitivity,'normal');
+ assert.equal(JSON.stringify({plan:state.plan,report:state.report,project:state.project,revision:state.revision}),beforeCuts);
+ assert.match(await page.evaluate('document.querySelector("#cutStatus").textContent'),/3 cut markers/);
+ await page.evaluate('document.querySelector("#goTime").value=0;document.querySelector("#seekTime").click();document.querySelector("#nextCut").click()');
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'5.000');
+ await page.evaluate('document.querySelector("#selectShot").click()');
+ assert.deepEqual(await page.evaluate('[document.querySelector("#selectionIn").value,document.querySelector("#selectionOut").value]'),['5.000','17.000']);
+ await page.evaluate('document.querySelector("#nextCut").click();document.querySelector("#previousCut").click();document.querySelector("#fitSelection").click()');
+ const mark=await page.evaluate('(()=>{document.querySelector("#ruler").scrollIntoView({block:"center"});const r=document.querySelector("#ruler").getBoundingClientRect();return{x:r.x+r.width*(840/(12000+1680)),y:r.y+r.height-7}})()');
+ await click(mark.x+2,mark.y);
+ assert.equal(await page.evaluate('document.querySelector("#goTime").value'),'5.000','click near a guide snaps to its cut');
+ const guideInk=await page.evaluate('(()=>{const c=document.querySelector("#trackingLane .cut-guides"),p=c.getContext("2d").getImageData(0,0,c.width,c.height).data;return p.some((v,i)=>i%4===3&&v>0)})()');assert.ok(guideInk);
+ await page.evaluate('document.querySelector("#showCuts").click()');
+ assert.equal(await page.evaluate('(()=>{const c=document.querySelector("#trackingLane .cut-guides"),p=c.getContext("2d").getImageData(0,0,c.width,c.height).data;return p.some((v,i)=>i%4===3&&v>0)})()'),false);
+ await page.evaluate('document.querySelector("#showCuts").click()');
  // A stale revision cannot silently overwrite another editor.
  state.revision++;
  await page.evaluate('document.querySelector("#regionName").value="Unsaved local edit";document.querySelector("#regionName").dispatchEvent(new Event("change"));document.querySelector("#apply").click()');
@@ -92,11 +121,47 @@ try{
  // Upstream trims display original timestamps without an unprocessable leading range.
  state={...state,revision:state.revision+1,info:{...state.info,source_id:'trimmed',start:'30',end_ms:3630000},plan:{...state.plan,source_id:'trimmed',tracking:[{...state.plan.tracking[0],id:'trimmed0',start_ms:30000,end_ms:3630000}],stabilization:[],selection:[30000,30000],selected_ids:[]}};
  await page.evaluate('window.s3fTimelineLoad()');
- assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/^0:30/);assert.equal(Number(await page.evaluate('document.querySelector("#pan").min')),30000);
+ assert.equal(await page.evaluate('document.querySelector("#nextCut").disabled'),true,'old source markers must not appear on a new source');assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/^0:30/);assert.equal(Number(await page.evaluate('document.querySelector("#pan").min')),30000);
  await page.evaluate('document.querySelector("#zoomIn").click();document.querySelector("#pan").value=0;document.querySelector("#pan").dispatchEvent(new Event("input"));document.querySelector("#fitAll").click()');
  assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/^0:30/);
+
+ // Layout edits never alter analysis regions; portrait media and full frames fit.
+ state={...state,revision:state.revision+1,info:{...state.info,source_id:'portrait',start:'0',end_ms:10000,width:180,height:320},plan:{...state.plan,source_id:'portrait',tracking:[{...state.plan.tracking[0],id:'portrait0',start_ms:0,end_ms:10000}],stabilization:[],selection:[0,0],selected_ids:[]}};
+ await page.evaluate('window.s3fTimelineLoad()');
+ await page.call('Emulation.setDeviceMetricsOverride',{width:2300,height:1300,deviceScaleFactor:1,mobile:false});
+ await until(()=>page.evaluate('document.querySelector("#source").videoHeight===320'),'portrait video');
+ const originalPlan=JSON.stringify(state.plan),originalRevision=state.revision;
+ assert.ok(await page.evaluate('document.querySelector("main").getBoundingClientRect().width>2200'),'wide mode uses the available window');
+ await page.evaluate('document.querySelector("#wideLayout").click()');await wait(80);
+ assert.ok(await page.evaluate('document.querySelector("main").getBoundingClientRect().width<=1900'),'centered mode remains available');
+ await page.evaluate('document.querySelector("#wideLayout").click()');await wait(80);
+ assert.ok(await page.evaluate('document.querySelector("#sourcePreview").getBoundingClientRect().width<300'),'portrait preview avoids a wide fixed box');
+ await until(()=>page.evaluate('document.querySelector("#thumbnails img")?.naturalHeight===320'),'uncropped portrait thumbnails');
+ assert.equal(await page.evaluate('getComputedStyle(document.querySelector("#thumbnails img")).objectFit'),'contain');
+ const rect=selector=>page.evaluate(`(()=>{document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height}})()`);
+ async function resizePanel(key,dx,dy){const r=await rect(`[data-resize="${key}"]`);await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:r.x+r.w/2,y:r.y+r.h/2,button:'left',clickCount:1});await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:r.x+r.w/2+dx,y:r.y+r.h/2+dy,buttons:1});await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:r.x+r.w/2+dx,y:r.y+r.h/2+dy,button:'left',clickCount:1});await wait(80);}
+ const left=await rect('#sourcePreview');await resizePanel('split',220,0);assert.ok((await rect('#sourcePreview')).w>left.w+180);
+ const stage=await rect('#previewWorkspace'),canvas=await rect('#sourceCanvas');await resizePanel('stage',0,120);assert.ok((await rect('#previewWorkspace')).h>stage.h+100);assert.ok((await rect('#sourceCanvas')).h>canvas.h+100);
+ const thumbs=await rect('#thumbnails');await resizePanel('thumbnails',0,70);assert.ok((await rect('#thumbnails')).h>thumbs.h+60);
+ await resizePanel('tracking',0,90);assert.ok((await rect('#trackingLane')).h>=178);
+ await resizePanel('overview',0,40);assert.ok((await rect('#overview')).h>=80);
+ await page.evaluate('document.querySelector("[data-resize=stabilization]").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true}))');await wait(80);
+ assert.ok((await rect('#stabilizationLane')).h>=100);
+ assert.equal(JSON.stringify(state.plan),originalPlan);assert.equal(state.revision,originalRevision);
+ const preferences=await page.evaluate('localStorage.getItem("s3f-processing-layout:1")');
+ const oldPage=await page.evaluate('performance.timeOrigin');await page.call('Page.reload',{ignoreCache:true});await until(()=>page.evaluate(`performance.timeOrigin!==${oldPage}&&document.querySelector('#source')?.readyState>=2&&!!document.querySelector('#trackingLane').style.height`),'restored layout');
+ assert.equal(await page.evaluate('localStorage.getItem("s3f-processing-layout:1")'),preferences);
+ assert.ok((await rect('#trackingLane')).h>=178);assert.ok((await rect('#thumbnails')).h>=158);
+ await page.evaluate('document.querySelector("#fullscreenLayout").click()');await until(()=>page.evaluate('!!document.fullscreenElement'),'full-screen entry');
+ await page.evaluate('document.querySelector("#fullscreenLayout").click()');await until(()=>page.evaluate('!document.fullscreenElement'),'full-screen exit');
+ await page.evaluate('document.querySelector("#fitVideoLayout").click()');await wait(80);assert.ok((await rect('#sourcePreview')).w<350);
+ await until(()=>page.evaluate('!!document.querySelector("#thumbnails .thumbnail")'),'resized filmstrip');
+ const thumbnailTime=await page.evaluate('(()=>{const b=document.querySelector("#thumbnails .thumbnail");b.click();return b.getAttribute("aria-label")})()');assert.match(thumbnailTime,/Seek to/);
+ await page.evaluate('document.querySelector("#resetLayout").click()');await wait(80);assert.equal((await rect('#trackingLane')).h,90);
+ fs.mkdirSync('development/timeline-layout-browser',{recursive:true});await page.evaluate('window.scrollTo(0,0)');await wait(100);
+ fs.writeFileSync('development/timeline-layout-browser/portrait.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
  assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'narrow layout horizontal overflow');
  assert.equal(errors.length,0,JSON.stringify(errors));
- console.log(JSON.stringify({checks:['neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout'],apiRequests,errors},null,2));
+ console.log(JSON.stringify({checks:['neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message'],apiRequests,errors},null,2));
 }finally{for(const socket of sockets)socket.close();chrome.kill('SIGTERM');server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(temporary,{recursive:true,force:true});}

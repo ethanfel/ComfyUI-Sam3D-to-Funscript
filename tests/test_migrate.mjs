@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import {migrateVideoInputs, migrateAnchorOverrides} from "../web/migrate.mjs";
+import {migrateVideoInputs, migrateAnchorOverrides, migrateCutSensitivity} from "../web/migrate.mjs";
+
+const legacyTimeline={nodes:[{type:"S3F_ProcessingTimeline",widgets_values:["model",0,8,"tracker","prepare","{}",true,"",null]}]};
+migrateCutSensitivity(legacyTimeline);
+assert.deepEqual(legacyTimeline.nodes[0].widgets_values,["model",0,8,"tracker","prepare","{}",true,"normal","",null]);
+const updatedTimeline=structuredClone(legacyTimeline);migrateCutSensitivity(legacyTimeline);assert.deepEqual(legacyTimeline,updatedTimeline);
+const namedTimeline={nodes:[{type:"S3F_ProcessingTimeline",widgets_values:["model",0,8,"tracker","prepare","{}",true],widgets_values_named:{cut_sensitivity:"high"}}]};
+migrateCutSensitivity(namedTimeline);assert.equal(namedTimeline.nodes[0].widgets_values[7],"high");
 
 const settings = ["model.safetensors", 16, 2, 4, 2000, "[[0,0,1,1]]", 8, 0, true];
 const original = {

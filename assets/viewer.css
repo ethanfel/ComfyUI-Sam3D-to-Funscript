@@ -18,3 +18,5 @@
 .editing-points .track canvas{cursor:crosshair}
 
 .video-panel .curve-head{margin-bottom:14px}
+.pattern-panel{margin:12px 0;padding:12px;border:1px solid #3c4e62;border-radius:7px;background:#1b2935}.pattern-panel summary{cursor:pointer;color:#efb1cd}.pattern-panel .controls{margin:12px 0;flex-wrap:wrap}.pattern-panel input[type=number]{width:85px}.pattern-panel [hidden]{display:none!important}.pattern-panel p{margin:10px 0;color:#a9bbc9}.pattern-panel #patternStatus{color:#f3b0ce}.pattern-panel #applyPattern{background:#245748}.pattern-panel button{max-width:100%;white-space:normal}
+.pattern-panel select{max-width:min(100%,300px)}.pattern-panel label{max-width:100%;flex-wrap:wrap}

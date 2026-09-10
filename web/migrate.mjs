@@ -1,3 +1,14 @@
+// Keep trailing non-serialized DOM widgets from filling a newly added control.
+export function migrateCutSensitivity(graph) {
+    for (const node of graph.nodes || []) {
+        if (node.type !== "S3F_ProcessingTimeline" || !Array.isArray(node.widgets_values)) continue;
+        const named = node.widgets_values_named?.cut_sensitivity;
+        if (!["normal", "low", "high"].includes(node.widgets_values[7])) {
+            node.widgets_values.splice(7, 0, ["normal", "low", "high"].includes(named) ? named : "normal");
+        }
+    }
+}
+
 // Keep the original path-based canvas examples usable after adding the VIDEO socket.
 export function migrateVideoInputs(graph) {
     if (!Array.isArray(graph.nodes) || !Array.isArray(graph.links)) return;

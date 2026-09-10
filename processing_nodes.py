@@ -69,10 +69,11 @@ class S3F_ProcessingTimeline:
             "sample_fps": ("FLOAT", {"default": 0, "min": 0, "max": 120, "step": 1, "tooltip": "0 analyzes every source frame. Original timestamps are retained."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "tracker_model": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
-            "operation": (["prepare", "all", "selected", "unfinished"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor and passes its latest completed project. Processing can also start inside the timeline."}),
+            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor and passes its latest completed project. Detect cuts only adds timeline guides, without extracting poses."}),
             "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here with the workflow."}),
             "use_cache": ("BOOLEAN", {"default": True}),
-        }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."})},
+        }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."}),
+            "cut_sensitivity": (["normal", "low", "high"], {"default": "normal", "tooltip": "Hard-cut detection sensitivity. High finds smaller changes; low reduces extra markers."})},
             "hidden": {"unique_id": "UNIQUE_ID", "extra_pnginfo": "EXTRA_PNGINFO"}}
 
     RETURN_TYPES = ("S3F_MOTION_PROJECT", "STRING")
@@ -87,13 +88,13 @@ class S3F_ProcessingTimeline:
 
     def run(self, video, model_file, sample_fps=0, batch_size=8,
             tracker_model="cotracker3_scaled_online.pth", operation="prepare", plan_json="{}",
-            use_cache=True, mask_video=None, unique_id=None, extra_pnginfo=None):
+            use_cache=True, mask_video=None, unique_id=None, extra_pnginfo=None, cut_sensitivity="normal"):
         from comfy_execution.graph import ExecutionBlocker
         from comfy.model_management import throw_exception_if_processing_interrupted, InterruptProcessingException
         from server import PromptServer
         from .sam3d_funscript.processing_timeline import run_timeline
 
-        if operation not in ("prepare", "all", "selected", "unfinished"):
+        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts"):
             raise ValueError("Unknown timeline processing operation")
         path, start, duration = video_input_range(video)
         info = source_info(path, start, duration)
@@ -110,6 +111,25 @@ class S3F_ProcessingTimeline:
             if submitted["revision"] != prior["revision"]:
                 raise PlanConflict("This plan changed after the job was queued. Reload the latest timeline and process again.")
         state = store.prepare(session, info, plan_json)
+        if operation == "detect_cuts":
+            from .sam3d_funscript.scene_cuts import detect_cuts
+
+            def cut_progress(event):
+                store.update_cuts(session, info["source_id"], progress=event)
+                PromptServer.instance.send_sync("s3f_timeline_progress", {"session": session, **event})
+
+            try:
+                cut_progress({"stage": "scene_cuts", "frames": 0, "cuts": 0})
+                cuts = detect_cuts(info, output_root / "cut_cache", cut_sensitivity, use_cache,
+                                   progress=cut_progress, interrupt=throw_exception_if_processing_interrupted)
+                state = store.update_cuts(session, info["source_id"], cuts, {"stage": "complete"})
+            except (Exception, InterruptProcessingException) as error:
+                store.update_cuts(session, info["source_id"], progress={"stage": "error", "error": str(error) or "Cut detection cancelled"})
+                raise
+            summary = f"{len(cuts['times_ms'])} hard-cut markers ready." + (" Scan cache reused." if cuts["cache_hit"] else "")
+            return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": [summary],
+                           "s3f_timeline_project": [state.get("project")]},
+                    "result": (ExecutionBlocker(None), str(store.directory(session) / "timeline.json"))}
         editor_session = motion_editor_session(workflow, unique_id, session)
         state = bind_motion_editor(store, state, editor_session, output_root)
         revision, plan = state["revision"], state["plan"]

@@ -121,6 +121,8 @@ class CoreTests(unittest.TestCase):
         self.assertIn("function drawDeviceWireframe", html)
         self.assertIn("function rebuildAxis", html)
         self.assertIn("function buildDeviceOutput", html)
+        self.assertIn("function generatePattern", html)
+        self.assertIn("function continuePattern", html)
 
     def test_simplification_obeys_error_budget(self):
         t = np.arange(0, 2000, 17)
