@@ -18,6 +18,50 @@ from .inference import predict_rgb
 from .mesh_anchor import MASK_ANCHOR_INDEX, NOTE as MASK_ANCHOR_NOTE, patch_position
 
 CACHE_VERSION = 2
+_preview_frame = None
+
+
+def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_range=None, include_mesh=False, interrupt=None):
+    """Decode one source frame; keep at most one frame's CPU prediction for edits."""
+    import folder_paths
+    from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
+
+    global _preview_frame
+    key = [info['source'], at_ms, rois,
+           fingerprint(folder_paths.get_full_path_or_raise('detection', model_file)),
+           fingerprint(Path(__import__(SAM3DBody_Predict.__module__, fromlist=['__file__']).__file__))]
+    if mask_video_range is not None:
+        key.append([fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])])
+    key = json.dumps(key, sort_keys=True)
+    if interrupt:
+        interrupt()
+    if use_cache and _preview_frame is not None and _preview_frame[0] == key and (not include_mesh or _preview_frame[1][0]['faces'] is not None):
+        return _preview_frame[1]
+    with closing(video_frames(info['source']['path'], sample_fps=0, start_seconds=at_ms/1000, max_frames=2)) as frames:
+        rgb, timing = next(frames)
+    if abs(timing['time_ms']-at_ms) > .002:
+        raise ValueError('Could not decode the exact anchor preview frame')
+    height, width = rgb.shape[:2]
+    if (height, width) != (info['height'], info['width']):
+        raise ValueError('The source dimensions changed; prepare the timeline again')
+    boxes = [{'x': x*width, 'y': y*height, 'width': w*width, 'height': h*height} for x,y,w,h in rois]
+    masks = None
+    if mask_video_range is not None:
+        with MaskVideoReader(*mask_video_range) as reader:
+            packed, _ = reader.at(timestamp_seconds(timing), (height, width))
+        if packed is None:
+            raise ValueError('The supplied person mask is empty on this reference frame')
+        masks = [packed]
+    model = SAM3DBody_Loader.execute(model_file).result[0]
+    people = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=max(1, len(boxes)), include_mesh=include_mesh)[0]
+    if len(people) != (1 if masks is not None else len(boxes)):
+        raise ValueError('SAM3D returned a different number of people than the requested ROI slots')
+    if interrupt:
+        interrupt()
+    geometry = {'mouth_regressor': mouth_regressor(model),
+                'faces': np.asarray(model.model.head_pose.faces_np()).copy() if include_mesh else None}
+    _preview_frame = key, (geometry, people)
+    return geometry, people
 
 
 def fingerprint(path):

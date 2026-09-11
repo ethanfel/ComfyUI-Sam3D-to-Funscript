@@ -13,7 +13,7 @@ const encoded=spawnSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=
 assert.equal(encoded.status,0,encoded.stderr.toString());
 const session='a'.repeat(32),draftKey=`s3f-processing-timeline:${session}`,api=`/sam3d_funscript/timelines/${session}`;
 const state={session,revision:1,info:{source_id:'neutral',source:'neutral.mp4',start:'0',duration:'2',source_origin:'0',rate:'2',width:160,height:120,end_ms:2000},plan:{version:1,source_id:'neutral',tracking:[],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null};
-let warming=true,brokenModule=false,brokenApi=false,posts=0;
+let warming=true,brokenModule=false,brokenApi=false,stalledFrames=false,posts=0;
 const helpers={'cut-markers.mjs':'cutSideRange','processing-timeline-edit.mjs':'regionFromSelection'},requests=[];
 const server=http.createServer((req,res)=>{
  const url=new URL(req.url,'http://localhost'),name=path.basename(url.pathname);requests.push(req.url);
@@ -23,7 +23,7 @@ const server=http.createServer((req,res)=>{
   res.end(`<script type="module">await import('/sam3d_funscript/assets/cut-markers.mjs');await import('/sam3d_funscript/assets/processing-timeline-edit.mjs');window.primed=true;</script>`);return;
  }
  if(url.pathname===api){res.setHeader('Content-Type','application/json');res.writeHead(brokenApi?503:200);res.end(JSON.stringify(brokenApi?{error:'Server temporarily unavailable'}:state));return;}
- if(url.pathname===api+'/frames'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:'neutral',first_frame:0,end_frame:4,times_ms:[0,500,1000,1500],end_ms:2000}));return;}
+ if(url.pathname===api+'/frames'){if(stalledFrames)return;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:'neutral',first_frame:0,end_frame:4,times_ms:[0,500,1000,1500],end_ms:2000}));return;}
  const file=url.pathname===api+'/video'?clip:url.pathname.startsWith('/sam3d_funscript/assets/')?path.join(root,'assets',name):null;
  if(!file||!fs.existsSync(file)||brokenModule&&name==='processing-timeline.js'){res.writeHead(404);res.end();return;}
  let data=fs.readFileSync(file);
@@ -75,10 +75,16 @@ try{
  assert.match(await evaluate('document.querySelector("#startupError").textContent'),/unavailable/);
  brokenApi=false;await evaluate('setTimeout(()=>document.querySelector("#retryStartup").click(),0);true');
  await until(()=>evaluate('document.querySelector("main")?.inert===false'),'API recovery');
+ stalledFrames=true;await call('Page.reload');await until(()=>evaluate('document.querySelector("#status")?.textContent.startsWith("Indexing source")'),'indexing stage');
+ await pause(16000);
+ assert.equal(await evaluate('document.querySelector("#startupRecovery").hidden'),false,'slow indexing keeps Retry available');
+ assert.equal(await evaluate('document.querySelector("main").inert'),true);
+ stalledFrames=false;await evaluate('setTimeout(()=>document.querySelector("#retryStartup").click(),0);true');await until(()=>evaluate('document.querySelector("main")?.inert===false'),'retry stalled indexing');
+ console.log('PASS: stalled frame indexing exposes Retry and preserves the draft');
  assert.equal(posts,0,'opening and retrying never write to the project');
  assert.equal(errors.length,0,'startup errors are caught and presented');
  console.log('PASS: backend unavailable/recovery; no project writes or uncaught errors');
 }finally{
  ws?.close();const exited=new Promise(r=>chrome.once('exit',r));chrome.kill('SIGTERM');await exited;
- await new Promise(r=>server.close(r));fs.rmSync(temp,{recursive:true,force:true});
+ server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(temp,{recursive:true,force:true});
 }

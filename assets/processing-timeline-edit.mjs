@@ -44,7 +44,7 @@ export function validateInterval(plan, lane, id, start, end, info) {
     const overlap = (plan[lane] || []).find(item => item.id !== id && item.enabled !== false && start < item.end_ms - .01 && end > item.start_ms + .01);
     if (overlap) throw new Error(`This overlaps ${overlap.name || "another region"} in the same lane. Use adjacent regions or disable the other region first.`);
 }
-export function changeRegion(plan, id, patch, info) {
+export function changeRegion(plan, id, patch, info, clock=null) {
     const found = regionById(plan, id);
     if (!found) throw new Error("Select a region first.");
     const {lane, region} = found;
@@ -52,18 +52,22 @@ export function changeRegion(plan, id, patch, info) {
     const updated = {...region, ...clone(patch)};
     if (lane === "tracking") updated.additional_anchors = [...new Set(updated.additional_anchors || [])].filter(anchor => anchor !== updated.anchor);
     if (updated.enabled !== false) validateInterval(plan, lane, id, updated.start_ms, updated.end_ms, info);
-    if (lane === "stabilization" && (updated.start_ms !== region.start_ms || (updated.end_ms !== region.end_ms && (updated.reference.keyframes || updated.reference.point_mask)))) {
-        // Reference identities were selected on a different first frame. Never silently reuse them.
-        updated.reference = {...clone(updated.reference), points: [], sections: []};
-        delete updated.reference.keyframes; delete updated.reference.point_mask;
+    const changedBounds=updated.start_ms!==region.start_ms||updated.end_ms!==region.end_ms;
+    if (lane === "stabilization" && changedBounds) {
+        updated.reference=sliceReference(updated.reference,region,updated.start_ms,updated.end_ms,clock);
     }
-    if (lane === "tracking" && (updated.start_ms !== region.start_ms || updated.end_ms !== region.end_ms)) delete updated.mask_anchor;
+    if (lane === "tracking" && changedBounds && updated.mask_anchor) {
+        if(!clock)throw new Error('Load the source frame index before trimming an anchor reference.');
+        const frame=clock.ceil(region.start_ms)+updated.mask_anchor.frame,first=clock.ceil(updated.start_ms);
+        if(frame>=first&&frame<clock.ceil(updated.end_ms))updated.mask_anchor={...clone(updated.mask_anchor),frame:frame-first};
+        else delete updated.mask_anchor;
+    }
     return {...plan, [lane]: plan[lane].map(item => item.id === id ? updated : item)};
 }
 function sliceReference(reference, region, start, end, clock) {
     const result=clone(reference);
     const timed=reference.keyframes||reference.point_mask||(reference.sections||[]).some(s=>s.keys?.length);
-    if(timed&&!clock)throw new Error('Load the source frame index before splitting reference frames.');
+    if(timed&&!clock)throw new Error('Load the source frame index before changing reference bounds.');
     if(!clock){result.points=start===region.start_ms?clone(reference.points||[]):[];result.sections=[];return result;}
     const origin=clock.ceil(region.start_ms),first=clock.ceil(start),stop=clock.ceil(end),offset=first-origin;
     const keys=referenceKeys(reference).filter(k=>k.frame>=offset&&k.frame<stop-origin).map(k=>({...clone(k),frame:k.frame-offset}));

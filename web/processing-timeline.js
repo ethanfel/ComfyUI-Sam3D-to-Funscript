@@ -33,7 +33,7 @@ app.registerExtension({
     beforeConfigureGraph(graph){migrateCutSensitivity(graph);},
     setup(){
         window.addEventListener("message",async event=>{
-            const message=event.data;
+            const message={...event.data};
             if(event.origin!==location.origin||!["s3f-timeline-apply","s3f-timeline-process","s3f-timeline-cancel"].includes(message?.type))return;
             const entry=[...editors].find(([node,win])=>win===event.source&&String(node.id)===String(message.node));
             if(!entry)return;
@@ -55,15 +55,23 @@ app.registerExtension({
                     if(!response.ok)throw new Error(`Could not cancel this job (${response.status}). Use ComfyUI's queue controls.`);
                     job.reply({state:"running",text:"Cancellation requested · completed regions are kept"});return;
                 }
-                if(!["all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors"].includes(message.operation))throw new Error("Unknown timeline operation");
-                const cutScan=message.operation==="detect_cuts";
-                const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly;
+                if(message.operation==='scoped_selected'){
+                    if(!['range','regions'].includes(message.processing_scope?.kind))throw new Error('Choose a marked range or selected regions.');
+                    message.operation='selected';
+                }
+                if(!["all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors","preview_anchor"].includes(message.operation))throw new Error("Unknown timeline operation");
+                const cutScan=message.operation==="detect_cuts",anchorPreview=message.operation==='preview_anchor';
+                const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly&&!anchorPreview;
+                if(anchorPreview){
+                    const request=message.anchor_preview,region=message.plan.tracking.find(r=>r.id===request?.region_id&&r.enabled!==false);
+                    if(!region||!Number.isFinite(request.at_ms)||request.at_ms<region.start_ms||request.at_ms>=region.end_ms)throw new Error('Select a frame inside an enabled tracking region to preview');
+                }
                 if(targeted&&!message.plan.stabilization.some(r=>r.id===message.stabilization_id&&r.enabled!==false))throw new Error("Select an enabled stabilization region to track");
                 if(cutScan&&!["normal","low","high"].includes(message.cut_sensitivity))throw new Error("Unknown cut sensitivity");
                 if(jobs.has(node))throw new Error("This timeline is already processing.");
                 const job={reply};jobs.set(node,job);
                 try{
-                    setPlan();reply({state:"queued",text:cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
+                    setPlan();reply({state:"queued",text:anchorPreview?'Preparing anchor preview…':cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
                     const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(!stateResponse.ok)throw new Error("Could not read the saved timeline before processing.");
                     const state=await stateResponse.json();
@@ -73,20 +81,25 @@ app.registerExtension({
                     const prompt=await app.graphToPrompt();assertCurrent();
                     if(!prompt.output[String(node.id)])throw new Error("Enable the timeline node before processing.");
                     prompt.output[String(node.id)].inputs.operation=message.operation;
+                    if(message.operation==='selected'&&message.processing_scope){
+                        prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,processing_scope:message.processing_scope});
+                    }
                     if(targeted)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,stabilization_ids:[message.stabilization_id]});
+                    if(anchorPreview)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,anchor_preview:message.anchor_preview});
                     if(cutScan){
                         prompt.output[String(node.id)].inputs.cut_sensitivity=message.cut_sensitivity;
                         const widget=node.widgets.find(w=>w.name==="cut_sensitivity");if(widget)widget.value=message.cut_sensitivity;
                     }
                     const output=await queueReferenceTracking(api,prompt,node.id,data=>{
                         if(data.prompt_id)job.prompt_id=data.prompt_id;
-                        if(data.value===undefined)reply(data);
+                        if(data.value===undefined)reply(anchorPreview?{...data,text:data.state==='queued'?'Anchor preview queued in ComfyUI…':'Inspecting anchor on the selected frame…'}:data);
                     },{nodeType:"S3F_ProcessingTimeline",resultKey:"s3f_timeline"});
                     assertCurrent();
                     node.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline processing complete";
                     const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(latestResponse.ok&&motionRun){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
-                    reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0]});
+                    reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0],
+                        ...(anchorPreview?{anchor_preview:output.s3f_anchor_preview?.[0]}:{})});
                 }finally{jobs.delete(node)}
             }catch(error){reply({state:"error",error:errorMessage(error)})}
         });
@@ -99,7 +112,7 @@ app.registerExtension({
                         value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
                 }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
-                const text=[({mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
+                const text=[({anchor_preview:'Inspecting source frame',mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
                 job.reply({state:"running",text,value:data.total_frames?data.frames:done,max:data.total_frames||total});
             }
         });

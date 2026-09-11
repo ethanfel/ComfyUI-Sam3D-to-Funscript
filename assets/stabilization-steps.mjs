@@ -1,12 +1,12 @@
 import {maskPoints,maskGeometry,drawPointMask} from './reference-mask.mjs';
-import {referenceKeys,withReferenceKeys} from './reference-edit.mjs?v=reference-masks-1';
+import {referenceKeys,withReferenceKeys,validateReferenceKeys} from './reference-edit.mjs?v=reference-masks-1';
 
 export function stabilizationSteps({$,context,attempt,updateReference,seekOriginal,process,configureAnchors,selectRegion,draw}) {
     const steps=new Map(),images=new Map();let brush=null,request=null,error='',lastRegion=null;
     const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
     const current=()=>{const c=context();return c.region?{...c,mask:c.region.reference.point_mask,step:steps.get(c.region.id)||(c.region.reference.points?.length?'track':'mask')}:null;};
     const ready=c=>!!c?.entry&&!!c.mask&&c.entry.region.start_ms===c.region.start_ms&&c.entry.region.end_ms===c.region.end_ms&&equal(c.entry.mask,maskGeometry(c.mask));
-    const setStep=name=>{const c=current();if(!c)return;steps.set(c.region.id,name);brush=null;if(name==='mask')seekOriginal(c.mask?.frame??Math.max(0,Math.min(c.frame,c.frameCount-1)));render();draw();};
+    const setStep=name=>{const c=current();if(!c)return;steps.set(c.region.id,name);brush=null;$('maskTool').value='review';if(name==='mask')seekOriginal(c.mask?.frame??Math.max(0,Math.min(c.frame,c.frameCount-1)));render();draw();};
     const emptyMask=c=>({frame:c.frame,spacing:12,limit:500,model:'sam2.1_base_plus',strokes:[]});
     const change=mask=>updateReference({...current().region.reference,point_mask:mask});
     const generate=()=>{
@@ -21,11 +21,11 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
     $('maskSeed').onclick=()=>attempt(()=>{
         const c=current();if(c.frame<0||c.frame>=c.frameCount)throw new Error('Seek inside this region first.');
         if(c.mask?.strokes.length&&c.mask.frame!==c.frame)throw new Error('Clear the mask before painting a different seed frame. Your numbered points will stay.');
-        change({...c.mask||emptyMask(c),frame:c.frame});seekOriginal(c.frame);
+        change({...c.mask||emptyMask(c),frame:c.frame});seekOriginal(c.frame);$('maskTool').value='paint';draw();
     });
     $('maskGoSeed').onclick=()=>{const c=current();if(c?.mask)seekOriginal(c.mask.frame);};
     $('showReferenceMask').onchange=draw;
-    $('maskTool').onchange=()=>{const c=current();if(c?.mask)seekOriginal(c.mask.frame);};
+    $('maskTool').onchange=()=>{const c=current();if(c?.mask&&$('maskTool').value!=='review')seekOriginal(c.mask.frame);draw();};
     $('clearMask').onclick=()=>attempt(()=>{const ref={...current().region.reference};delete ref.point_mask;updateReference(ref);});
     $('undoMaskStroke').onclick=()=>attempt(()=>{const c=current();change({...c.mask,strokes:c.mask.strokes.slice(0,-1)});});
     for(const [id,field,convert] of [['maskSpacing','spacing',Number],['maskLimit','limit',Number],['maskModel','model',String],['maskMargin','margin',Number]])$(id).onchange=()=>attempt(()=>{
@@ -43,11 +43,23 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
     $('cancelMask').onclick=()=>$('cancel').click();
     $('addStabilizedAnchors').onclick=()=>attempt(configureAnchors);
     $('extractStabilizedAnchors').onclick=()=>process('extract_anchors');
+    function problem(){
+        const c=current();if(!c)return 'Select a stabilization region.';
+        if(c.region.enabled===false)return 'Enable this region first.';
+        try{validateReferenceKeys(c.region.reference,c.frameCount);}catch(e){return e.message;}
+        if(c.mask?.strokes.length&&!ready(c))return 'Propagate the updated mask before tracking.';
+        return '';
+    }
     function render() {
         const c=current();if(!c)return;
         if(!steps.has(c.region.id))steps.set(c.region.id,c.step);
         if(lastRegion!==c.region.id){lastRegion=c.region.id;$('replaceMaskPoints').checked=false;error='';}
         const disabled=c.busy||c.region.locked,hasMask=!!c.mask?.strokes.length;
+        const issue=problem();
+        $('maskReadiness').textContent=hasMask?(ready(c)?'Ready':'Needs propagation'):'Optional';
+        $('trackReadiness').textContent=issue?'Needs setup':c.tracked?'Ready · rendered':'Ready to track';
+        $('anchorsReadiness').textContent=c.tracked?'Ready to extract':'Track first';
+        $('trackRequirement').textContent=issue||(c.tracked?'Current preview ready.':'Reference ready · track this region.');
         for(const name of ['mask','track','anchors']){
             $(name+'Step').hidden=c.step!==name;$(name+'StepTab').disabled=false;
             $(name+'StepTab').setAttribute('aria-current',c.step===name?'step':'false');
@@ -64,14 +76,16 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
         $('propagateMask').textContent=running?'Propagating…':'Propagate mask';
         $('cancelMask').hidden=!running;$('cancelMask').disabled=$('cancel').disabled;
         $('maskStatus').textContent=running?$('progressText').textContent:error||(!hasMask?'Optional · paint an area, or continue with manual points.':ready(c)?`${c.entry.frames} masks ready · propagated in both directions`:'Mask changed · propagate to update all frames');
+        if(hasMask&&c.region.reference.points.length)$('maskStatus').textContent+=' · Existing points are kept. Use Generate points with Replace to sample the painted area again.';
         const overlaps=c.tracking.filter(r=>r.enabled!==false&&r.start_ms<c.region.end_ms&&r.end_ms>c.region.start_ms);
         $('stabilizedAnchorRegions').replaceChildren(...overlaps.map(r=>{
             const b=document.createElement('button');b.type='button';b.textContent=`${r.name} · ${r.anchor.replaceAll('_',' ')}${r.additional_anchors?.length?` + ${r.additional_anchors.length}`:''}`;b.disabled=c.busy;b.onclick=()=>selectRegion(r.id);return b;
         }));
-        $('extractStabilizedAnchors').disabled=c.busy||!overlaps.length||c.region.enabled===false;
+        $('extractStabilizedAnchors').disabled=c.busy||!overlaps.length||!!issue||!c.tracked;
+        $('extractStabilizedAnchors').title=!overlaps.length?'Create an anchor region first.':issue||(!c.tracked?'Track the current reference settings first.':'Extract anchors for the full stabilization region.');
     }
     function pointerDown(point){
-        const c=current();if(c?.step!=='mask')return false;
+        const c=current();if(c?.step!=='mask'||$('maskTool').value==='review')return false;
         if(!c.editable)return true;
         if(c.mask&&c.mask.frame!==c.frame){$('maskStatus').textContent='Go to the mask frame to paint. Clear the mask to choose a new seed frame.';return true;}
         const radius=Number($('maskRadius').value);
@@ -97,5 +111,5 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
         }).catch(e=>{images.set(key,null);error=e.message;}).finally(()=>{request=null;render();if(!error)draw();});
     }
     function validate(){const c=current();if(c?.mask?.strokes.length&&!ready(c))throw new Error('Propagate the updated reference mask before tracking.');}
-    return {render,setStep,overlay,pointerDown,pointerMove,pointerUp,cancel:()=>{brush=null;},validate,reset:()=>{images.clear();error='';}};
+    return {render,setStep,overlay,pointerDown,pointerMove,pointerUp,cancel:()=>{brush=null;},problem,validate,reset:()=>{images.clear();error='';}};
 }

@@ -11,7 +11,7 @@ let attached,prepared=0,notified=0,queued;
 class API extends EventTarget{
  fetchApi=async()=>({ok:true,json:async()=>({editor_session:'b'.repeat(32),project:'authored'})});
  async queuePrompt(number,prompt,options){
-  queued={prompt,options};const detail={prompt_id:'synthetic',node:'1',output:{s3f_timeline:[session],s3f_timeline_status:['Tracking complete']}};
+  queued={prompt,options};const detail={prompt_id:'synthetic',node:'1',output:{s3f_timeline:[session],s3f_timeline_status:['Tracking complete'],s3f_anchor_preview:[{frame:3,anchors:[{name:'pelvis'}]}]}};
   this.dispatchEvent(new CustomEvent('executed',{detail}));this.dispatchEvent(new CustomEvent('execution_success',{detail}));
   return {prompt_id:'synthetic'};
  }
@@ -47,3 +47,29 @@ for(const operation of ['propagate_mask','extract_anchors']){
  else {assert.equal(prepared,1);assert.equal(notified,1);}
 }
 console.log('Mask propagation bypasses motion editors; anchor extraction targets the same region and updates motion');
+
+const previewPlan={...plan,tracking:[{id:'t',start_ms:0,end_ms:2000,locked:true}]},request={region_id:'t',at_ms:100};
+const preparedBefore=prepared,notifiedBefore=notified;
+await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'preview',operation:'preview_anchor',anchor_preview:request,revision:4,plan:previewPlan}});
+assert.equal(replies.at(-1).state,'complete');assert.equal(replies.at(-1).anchor_preview.frame,3);
+assert.deepEqual(queued.options.partialExecutionTargets,['1']);
+assert.equal(queued.prompt.output[1].inputs.operation,'preview_anchor');
+assert.deepEqual(JSON.parse(queued.prompt.output[1].inputs.plan_json),{revision:4,plan:previewPlan,anchor_preview:request});
+assert.deepEqual(JSON.parse(node.widgets[0].value),{revision:4,plan:previewPlan},'frame request does not get saved as a workflow operation');
+assert.equal(prepared,preparedBefore);assert.equal(notified,notifiedBefore);
+for(const bad of [{region_id:'missing',at_ms:100},{region_id:'t',at_ms:2000},{region_id:'t',at_ms:NaN}]){
+ queued=null;await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'bad-preview',operation:'preview_anchor',anchor_preview:bad,plan:previewPlan}});
+ assert.equal(queued,null);assert.match(replies.at(-1).error,/enabled tracking region/);
+}
+console.log('Anchor preview: locked-region inspection, exact one-shot frame, no motion editor refresh, and invalid-frame rejection passed');
+for(const processing_scope of [{kind:'range',range:[1000,2000]},{kind:'regions',ids:['s1']}]){
+ await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'scope',operation:'scoped_selected',processing_scope,revision:4,plan}});
+ assert.equal(replies.at(-1).state,'complete');
+ assert.equal(queued.prompt.output[1].inputs.operation,'selected');
+ assert.deepEqual(JSON.parse(queued.prompt.output[1].inputs.plan_json),{revision:4,plan,processing_scope});
+ assert.deepEqual(JSON.parse(node.widgets[0].value),{revision:4,plan},'one-shot scope does not alter the saved marks');
+}
+console.log('Explicit range/region scopes reach execution without changing workflow selection');
+queued=null;
+await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'missing-scope',operation:'scoped_selected',revision:4,plan}});
+assert.equal(queued,null);assert.match(replies.at(-1).error,/marked range or selected regions/);

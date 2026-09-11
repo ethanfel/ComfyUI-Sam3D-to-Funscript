@@ -12,7 +12,7 @@ import numpy as np
 
 from sam3d_funscript.core import AXES, PoseSequence, validate_actions
 from sam3d_funscript.processing_timeline import (
-    normalize_plan, compile_jobs, run_timeline, _original_sequence, _assembled_actions,
+    normalize_plan, compile_jobs, run_timeline, _original_sequence, _assembled_actions, apply_processing_scope,
 )
 from sam3d_funscript.video import video_frames
 from sam3d_funscript.reference import source_info
@@ -47,6 +47,21 @@ def fake_extract(source, model_file, cache_dir, **kwargs):
 
 
 class PlanTests(unittest.TestCase):
+    def test_explicit_scope_ignores_other_selection_and_preserves_saved_plan(self):
+        plan = normalize_plan({'tracking': [region('a', 0, 2000), region('b', 2000, 4000)],
+                               'selection': [200, 400], 'selected_ids': ['b']}, info())
+        before = deepcopy(plan)
+        scoped = apply_processing_scope(plan, {'kind': 'regions', 'ids': ['b']}, info())
+        self.assertEqual(scoped['selection'], [200, 200])
+        scoped = apply_processing_scope(plan, {'kind': 'range', 'range': [500, 1500]}, info())
+        self.assertEqual(scoped['selection'], [500, 1500])
+        self.assertEqual(scoped['selected_ids'], [])
+        self.assertEqual(plan, before)
+        for scope in ({'kind': 'regions', 'ids': ['missing']}, {'kind': 'range', 'range': [True, 1000]},
+                      {'kind': 'range', 'range': [1000, 5000]}, {'kind': 'unknown'}):
+            with self.assertRaises(ValueError):
+                apply_processing_scope(plan, scope, info())
+
     def test_source_switch_resets_region_points_and_trim_defines_default_bounds(self):
         current = info(start=2, end=5000)
         plan = normalize_plan({"source_id": "old", "tracking": [region()],

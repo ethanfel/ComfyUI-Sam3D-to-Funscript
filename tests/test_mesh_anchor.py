@@ -137,12 +137,13 @@ class PipelineTests(unittest.TestCase):
                     person=mesh_person();person['focal_length']=20.
                     people.append([person])
                 return people
-            with patch.dict(sys.modules,modules),patch('sam3d_funscript.inference.predict_rgb',side_effect=predict) as seed_predict,patch('sam3d_funscript.video.predict_rgb',side_effect=predict) as streamed,patch('sam3d_funscript.video.mouth_regressor',return_value=None):
+            with patch.dict(sys.modules,modules),patch('sam3d_funscript.video.predict_rgb',side_effect=predict) as streamed,patch('sam3d_funscript.video.mouth_regressor',return_value=None):
                 bound=prepare_patch(current,r,'test',root)
                 self.assertEqual(bound['vertices'],[0,1,2,3])
                 cached=prepare_patch(current,r,'test',root)
-                self.assertEqual(seed_predict.call_count,1)
+                self.assertEqual(streamed.call_count,1)
                 self.assertEqual(cached,bound)
+                streamed.reset_mock()
                 sequence=extract_video(source,'test',root/'poses',sample_fps=0,batch_size=2,mesh_anchor=bound)
                 self.assertEqual(sequence.points.shape[2],73)
                 np.testing.assert_allclose(sequence.points[:,0,72],np.tile([0,0,2],(len(sequence.times_ms),1)))

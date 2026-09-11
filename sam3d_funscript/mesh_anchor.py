@@ -4,7 +4,6 @@ Only the patch's centroid is retained per frame. Visibility is tested when
 binding, not used to reselect a different surface on subsequent frames.
 """
 from bisect import bisect_left
-from contextlib import closing
 import json
 from pathlib import Path
 
@@ -109,12 +108,10 @@ def seed_time(region, index):
 
 def prepare_patch(info, region, model_file, root, use_cache=True, mask_video_range=None, interrupt=None):
     from .frame_index import frame_index
-    from .inference import predict_rgb
-    from .masks import MaskVideoReader, timestamp_seconds
     from .reference import atomic_json, digest
-    from .video import fingerprint, video_frames
+    from .video import fingerprint, predict_frame
     import folder_paths
-    from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
+    from comfy_extras.nodes_sam3d_body import SAM3DBody_Predict
 
     paint = region.get("mask_anchor")
     if not paint or not paint.get("strokes"):
@@ -134,24 +131,10 @@ def prepare_patch(info, region, model_file, root, use_cache=True, mask_video_ran
         return json.loads(path.read_text())
     if interrupt:
         interrupt()
-    with closing(video_frames(info["source"]["path"], sample_fps=0, start_seconds=at/1000, max_frames=2)) as frames:
-        rgb, timing = next(frames)
-    if abs(timing["time_ms"]-at) > .002:
-        raise ValueError("Could not decode the mask anchor's exact reference frame")
-    height, width = rgb.shape[:2]
-    if (height, width) != (info["height"], info["width"]):
-        raise ValueError("The source dimensions changed; prepare the timeline again")
-    boxes = [{"x": x*width, "y": y*height, "width": w*width, "height": h*height} for x,y,w,h in region["rois"]]
-    masks = None
-    if mask_video_range is not None:
-        with MaskVideoReader(*mask_video_range) as reader:
-            packed, _ = reader.at(timestamp_seconds(timing), (height, width))
-        if packed is None:
-            raise ValueError("The supplied person mask is empty on the mask anchor reference frame")
-        masks = [packed]
-    model = SAM3DBody_Loader.execute(model_file).result[0]
-    person = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=max(1, len(boxes)), include_mesh=True)[0][region["person"]]
-    patch = bind_patch(person, model.model.head_pose.faces_np(), paint, (height, width), interrupt)
+    geometry, people = predict_frame(info, at, model_file, region['rois'], use_cache=use_cache,
+                                 mask_video_range=mask_video_range, include_mesh=True, interrupt=interrupt)
+    patch = bind_patch(people[region['person']], geometry['faces'], paint,
+                       (info['height'], info['width']), interrupt)
     patch.update(id=path.stem, person=region["person"], seed_time_ms=at, identity=identity)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(path, patch)

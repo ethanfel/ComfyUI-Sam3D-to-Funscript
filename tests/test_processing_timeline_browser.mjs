@@ -29,7 +29,7 @@ const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript'
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
  if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
  if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
  if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='propagate_mask'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id),mask=region.reference.point_mask;renderedState={...renderedState,source_id:state.info.source_id,masks:{[region.id]:{id:'b'.repeat(24),region:structuredClone(region),mask:{frame:mask.frame,strokes:mask.strokes,model:mask.model},frames:5}}};res.end('{}');return;}if(seenProcess.operation==='stabilize'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id);renderedState={...renderedState,source_id:state.info.source_id,stabilization:{[region.id]:{region:structuredClone(region),video_path:`/output/sam3d_funscript/processing/${session}/reference/${'a'.repeat(24)}/stabilized.mp4`}}};res.end('{}');return;}if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
@@ -119,7 +119,7 @@ try{
  // Real shift-drag establishes range with the same clock in both lanes.
  await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:lane.x+lane.w*.25,y:lane.y+70,button:'left',modifiers:8,clickCount:1});await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:lane.x+lane.w*.6,y:lane.y+70,buttons:1,modifiers:8});await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:lane.x+lane.w*.6,y:lane.y+70,button:'left',modifiers:8,clickCount:1});
  const range=await page.evaluate('[Number(document.querySelector("#selectionIn").value),Number(document.querySelector("#selectionOut").value)]');assert.ok(range[1]>range[0]);
- await page.evaluate('document.querySelector("#processSelected").click()');await until(()=>page.evaluate('document.querySelector("#progressText").textContent==="Processing complete"'),'process complete');assert.equal(seenProcess.operation,'selected');assert.ok(seenProcess.plan.selection[1]>seenProcess.plan.selection[0]);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/neutral_test/);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/session=shared-motion-session/);assert.equal(seenProcess.editor_session,'shared-motion-session');
+ await page.evaluate('document.querySelector("#processSelected").click()');await until(()=>page.evaluate('document.querySelector("#progressText").textContent==="Processing complete"'),'process complete');assert.equal(seenProcess.operation,'scoped_selected');assert.ok(seenProcess.plan.selection[1]>seenProcess.plan.selection[0]);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/neutral_test/);assert.match(await page.evaluate('document.querySelector("#openStudio").href'),/session=shared-motion-session/);assert.equal(seenProcess.editor_session,'shared-motion-session');
  // Scene guides annotate the original clock without changing motion regions/results.
  const beforeCuts=JSON.stringify({plan:state.plan,report:state.report,project:state.project,revision:state.revision});
  await parent.evaluate('window.rejectCuts=true');await page.evaluate('document.querySelector("#detectCuts").click()');
@@ -170,29 +170,29 @@ try{
  await page.evaluate('document.querySelector("#wideLayout").click()');await wait(80);
  assert.ok(await page.evaluate('document.querySelector("main").getBoundingClientRect().width<=1900'),'centered mode remains available');
  await page.evaluate('document.querySelector("#wideLayout").click()');await wait(80);
- assert.ok(await page.evaluate('document.querySelector("#sourcePreview").getBoundingClientRect().width<300'),'portrait preview avoids a wide fixed box');
+ assert.ok(await page.evaluate('document.querySelector(".inspector").getBoundingClientRect().width<=480'),'default inspector stays bounded on a wide screen');
  await until(()=>page.evaluate('document.querySelector("#thumbnails img")?.naturalHeight===320'),'uncropped portrait thumbnails');
  assert.equal(await page.evaluate('getComputedStyle(document.querySelector("#thumbnails img")).objectFit'),'contain');
  const rect=selector=>page.evaluate(`(()=>{document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height}})()`);
  async function resizePanel(key,dx,dy){const r=await rect(`[data-resize="${key}"]`);await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:r.x+r.w/2,y:r.y+r.h/2,button:'left',clickCount:1});await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:r.x+r.w/2+dx,y:r.y+r.h/2+dy,buttons:1});await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:r.x+r.w/2+dx,y:r.y+r.h/2+dy,button:'left',clickCount:1});await wait(80);}
- const left=await rect('#sourcePreview');await resizePanel('split',220,0);assert.ok((await rect('#sourcePreview')).w>left.w+180);
+ const left=await rect('#sourcePreview');await resizePanel('split',-220,0);assert.ok((await rect('#sourcePreview')).w<left.w-180);
  const stage=await rect('#previewWorkspace'),canvas=await rect('#sourceCanvas');await resizePanel('stage',0,120);assert.ok((await rect('#previewWorkspace')).h>stage.h+100);assert.ok((await rect('#sourceCanvas')).h>canvas.h+100);
  const thumbs=await rect('#thumbnails');await resizePanel('thumbnails',0,70);assert.ok((await rect('#thumbnails')).h>thumbs.h+60);
- await resizePanel('tracking',0,90);assert.ok((await rect('#trackingLane')).h>=178);
- await resizePanel('overview',0,40);assert.ok((await rect('#overview')).h>=80);
+ await resizePanel('tracking',0,90);assert.ok((await rect('#trackingLane')).h>=150);
+ await resizePanel('overview',0,40);assert.ok((await rect('#overview')).h>=73);
  await page.evaluate('document.querySelector("[data-resize=stabilization]").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true}))');await wait(80);
- assert.ok((await rect('#stabilizationLane')).h>=100);
+ assert.ok((await rect('#stabilizationLane')).h>=74);
  assert.equal(JSON.stringify(state.plan),originalPlan);assert.equal(state.revision,originalRevision);
- const preferences=await page.evaluate('localStorage.getItem("s3f-processing-layout:1")');
+ const preferences=await page.evaluate('localStorage.getItem("s3f-processing-layout:2")');
  const oldPage=await page.evaluate('performance.timeOrigin');await page.call('Page.reload',{ignoreCache:true});await until(()=>page.evaluate(`performance.timeOrigin!==${oldPage}&&document.querySelector('#source')?.readyState>=2&&!!document.querySelector('#trackingLane').style.height`),'restored layout');
- assert.equal(await page.evaluate('localStorage.getItem("s3f-processing-layout:1")'),preferences);
- assert.ok((await rect('#trackingLane')).h>=178);assert.ok((await rect('#thumbnails')).h>=158);
+ assert.equal(await page.evaluate('localStorage.getItem("s3f-processing-layout:2")'),preferences);
+ assert.ok((await rect('#trackingLane')).h>=150);assert.ok((await rect('#thumbnails')).h>=158);
  await page.evaluate('document.querySelector("#fullscreenLayout").click()');await until(()=>page.evaluate('!!document.fullscreenElement'),'full-screen entry');
  await page.evaluate('document.querySelector("#fullscreenLayout").click()');await until(()=>page.evaluate('!document.fullscreenElement'),'full-screen exit');
- await page.evaluate('document.querySelector("#fitVideoLayout").click()');await wait(80);assert.ok((await rect('#sourcePreview')).w<350);
+ await page.evaluate('document.querySelector("#fitVideoLayout").click()');await wait(80);assert.ok((await rect('#sourcePreview')).w<600);
  await until(()=>page.evaluate('!!document.querySelector("#thumbnails .thumbnail")'),'resized filmstrip');
  const thumbnailTime=await page.evaluate('(()=>{const b=document.querySelector("#thumbnails .thumbnail");b.click();return b.getAttribute("aria-label")})()');assert.match(thumbnailTime,/Seek to/);
- await page.evaluate('document.querySelector("#resetLayout").click()');await wait(80);assert.equal((await rect('#trackingLane')).h,90);
+ await page.evaluate('document.querySelector("#resetLayout").click()');await wait(80);assert.equal((await rect('#trackingLane')).h,64);
  fs.mkdirSync('development/timeline-layout-browser',{recursive:true});await page.evaluate('window.scrollTo(0,0)');await wait(100);
  fs.writeFileSync('development/timeline-layout-browser/portrait.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
@@ -313,6 +313,7 @@ try{
  fs.mkdirSync('development/timeline-tools-browser',{recursive:true});
  await page.evaluate('document.querySelector("#browseAnchors").click();document.querySelector("#anchorSearch").value="left index";document.querySelector("#anchorSearch").dispatchEvent(new Event("input"));window.scrollTo(0,0)');await wait(100);
  fs.writeFileSync('development/timeline-tools-browser/detailed-anchors.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ await page.evaluate('document.querySelector("#showPersonRegions").checked=false;document.querySelector("#showPersonRegions").dispatchEvent(new Event("change"))');
  // Frame stepping retains the last painted image while seeking, then paints
  // exactly the latest decoded frame even when several steps arrive together.
  await page.evaluate('document.querySelector("#timelineUnit").value="frames";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=3;document.querySelector("#seekTime").click()');
@@ -441,7 +442,7 @@ try{
  const painted=state.plan.stabilization.find(r=>r.id===stable.id);
  assert.equal(painted.reference.point_mask.strokes.length,1);assert.equal(painted.reference.point_mask.frame,1);assert.equal(painted.reference.points.length,24);assert.deepEqual(painted.reference.keyframes.map(k=>k.frame),[1]);
  await page.evaluate('document.querySelector("#trackStepTab").click();document.querySelector("#trackStabilization").click()');
- await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Propagate the updated")'),'stale mask blocks tracking');
+ assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),true);assert.match(await page.evaluate('document.querySelector("#trackRequirement").textContent'),/Propagate the updated/);
  await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#propagateMask").click()');
  await until(()=>page.evaluate('!document.querySelector("#cancelMask").hidden'),'mask progress feedback');
  await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Mask propagation complete")'),'mask complete');
@@ -461,6 +462,10 @@ try{
  await page.evaluate('document.querySelector("#anchorsStepTab").click();document.querySelector("#addStabilizedAnchors").click();document.querySelector("#apply").click()');
  await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'section anchors configured');
  assert.equal(state.plan.tracking.length,1);assert.equal(state.plan.tracking[0].start_ms,stable.start_ms);assert.equal(state.plan.tracking[0].end_ms,stable.end_ms);assert.deepEqual(state.plan.selection,[7000,8000]);
+ await page.evaluate(`document.querySelector('#stabilizationLane [data-id="${stable.id}"]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:200,pointerId:1}));document.querySelector('#anchorsStepTab').click()`);
+ assert.equal(await page.evaluate('document.querySelector("#extractStabilizedAnchors").disabled'),true,'track current references before extracting anchors');
+ await page.evaluate('document.querySelector("#trackStepTab").click();document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Tracking complete")'),'current references tracked');
  await page.evaluate(`document.querySelector('#stabilizationLane [data-id="${stable.id}"]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:200,pointerId:1}));document.querySelector('#anchorsStepTab').click();document.querySelector('#extractStabilizedAnchors').click()`);
  await until(()=>seenProcess.operation==='extract_anchors','anchor operation targeted');
  await until(()=>page.evaluate('!document.querySelector("#apply").disabled'),'anchor processing finished');

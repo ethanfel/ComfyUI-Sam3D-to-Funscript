@@ -77,7 +77,7 @@ class S3F_ProcessingTimeline:
             "sample_fps": ("FLOAT", {"default": 0, "min": 0, "max": 120, "step": 1, "tooltip": "0 analyzes every source frame. Original timestamps are retained."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "tracker_model": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
-            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor. Stabilize tracks selected stabilization regions without SAM3D. Detect cuts only adds timeline guides."}),
+            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor. Preview anchor inspects one source frame. Stabilize tracks selected stabilization regions without SAM3D. Detect cuts only adds timeline guides."}),
             "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here with the workflow."}),
             "use_cache": ("BOOLEAN", {"default": True}),
         }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."}),
@@ -102,7 +102,7 @@ class S3F_ProcessingTimeline:
         from server import PromptServer
         from .sam3d_funscript.processing_timeline import run_timeline
 
-        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors"):
+        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"):
             raise ValueError("Unknown timeline processing operation")
         path, start, duration = video_input_range(video)
         info = source_info(path, start, duration)
@@ -119,6 +119,16 @@ class S3F_ProcessingTimeline:
             if submitted["revision"] != prior["revision"]:
                 raise PlanConflict("This plan changed after the job was queued. Reload the latest timeline and process again.")
         state = store.prepare(session, info, plan_json)
+        if operation == 'preview_anchor':
+            from .sam3d_funscript.anchor_preview import preview_anchor
+            preview = preview_anchor(info, state['plan'], submitted.get('anchor_preview'), model_file,
+                store.directory(session), use_cache=use_cache,
+                mask_video_range=video_input_range(mask_video) if mask_video is not None else None,
+                interrupt=throw_exception_if_processing_interrupted,
+                progress=lambda event: PromptServer.instance.send_sync('s3f_timeline_progress', {'session': session, **event}))
+            return {'ui': {'s3f_timeline': [session], 's3f_timeline_status': [f"Anchor preview ready · frame {preview['frame']}"],
+                           's3f_anchor_preview': [preview], 's3f_timeline_project': [state.get('project')]},
+                    'result': (ExecutionBlocker(None), str(store.directory(session) / 'timeline.json'))}
         if operation == "detect_cuts":
             from .sam3d_funscript.scene_cuts import detect_cuts
 
@@ -168,6 +178,9 @@ class S3F_ProcessingTimeline:
         editor_session = motion_editor_session(workflow, unique_id, session)
         state = bind_motion_editor(store, state, editor_session, output_root)
         revision, plan = state["revision"], state["plan"]
+        if operation == "selected" and submitted.get("processing_scope") is not None:
+            from .sam3d_funscript.processing_timeline import apply_processing_scope
+            plan = apply_processing_scope(plan, submitted["processing_scope"], info)
         if operation == "extract_anchors":
             ids = submitted.get("stabilization_ids", [])
             if not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str):

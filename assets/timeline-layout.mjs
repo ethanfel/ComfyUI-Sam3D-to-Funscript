@@ -1,6 +1,6 @@
 // View preferences only: these never change region times, source crops or jobs.
-export const LAYOUT_DEFAULTS = {wide:true, split:null, stage:500, thumbnails:90, tracking:90, stabilization:90, overview:43};
-const LIMITS = {stage:[280,1100], thumbnails:[40,240], tracking:[90,600], stabilization:[90,600], overview:[35,180]};
+export const LAYOUT_DEFAULTS = {wide:true, split:null, stage:null, thumbnails:90, tracking:64, stabilization:64, overview:35};
+const LIMITS = {stage:[240,1100], thumbnails:[40,240], tracking:[55,600], stabilization:[55,600], overview:[25,180]};
 const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 export function layoutSettings(value={}) {
     const result={...LAYOUT_DEFAULTS};
@@ -12,26 +12,27 @@ export function layoutSettings(value={}) {
 }
 export function previewWidth(width,height,aspect,split=null) {
     const available=Math.max(1,width-12), low=Math.min(240,available*.45), high=Math.max(low,available-330);
-    const ratio=Number.isFinite(aspect)&&aspect>0?aspect:1;
-    return clamp(split===null?(height-110)*ratio+28:available*split,low,high);
+    return clamp(split===null?available-clamp(available*.33,370,480):available*split,low,high);
 }
+export const stageHeight=(viewport,top,settings)=>settings.stage??clamp(viewport-top-420,280,720);
 export function thumbnailCount(width,height,aspect) {
     const ratio=Number.isFinite(aspect)&&aspect>0?aspect:1;
     return clamp(Math.round(width/Math.max(24,height*ratio)),2,40);
 }
 export function createTimelineLayout({aspect,changed}) {
-    const $=id=>document.getElementById(id),storageKey="s3f-processing-layout:1",workspace=$("previewWorkspace");
+    const $=id=>document.getElementById(id),storageKey="s3f-processing-layout:2",workspace=$("previewWorkspace");
     let saved;try{saved=JSON.parse(localStorage.getItem(storageKey));}catch{/* Local storage is optional. */}
     let settings=layoutSettings(saved),drag=null,queued=false;
     const save=()=>{try{localStorage.setItem(storageKey,JSON.stringify(settings));}catch{/* View still works in private browsers. */}};
     function apply(persist=false) {
         document.body.classList.toggle("wide-layout",settings.wide);$("wideLayout").checked=settings.wide;
         const style=document.documentElement.style;
-        for(const key of ["stage","thumbnails","overview"])style.setProperty(`--${key}-height`,`${settings[key]}px`);
-        const width=workspace.getBoundingClientRect().width,left=previewWidth(width,settings.stage,aspect(),settings.split);
+        const stage=stageHeight(window.innerHeight,workspace.getBoundingClientRect().top+window.scrollY,settings);
+        for(const key of ["stage","thumbnails","overview"])style.setProperty(`--${key}-height`,`${key==='stage'?stage:settings[key]}px`);
+        const width=workspace.getBoundingClientRect().width,left=previewWidth(width,stage,aspect(),settings.split);
         workspace.style.setProperty("--preview-width",`${left}px`);
         $("splitPreview").setAttribute("aria-valuenow",String(Math.round(left/Math.max(1,width)*100)));
-        for(const key of Object.keys(LIMITS))document.querySelector(`[data-resize="${key}"]`)?.setAttribute("aria-valuenow",String(Math.round(settings[key])));
+        for(const key of Object.keys(LIMITS))document.querySelector(`[data-resize="${key}"]`)?.setAttribute("aria-valuenow",String(Math.round(key==='stage'?stage:settings[key])));
         if(persist)save();
         if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;changed();});}
     }
@@ -58,7 +59,7 @@ export function createTimelineLayout({aspect,changed}) {
             if(event.button!==0)return;event.preventDefault();event.stopPropagation();handle.focus();
             const width=workspace.getBoundingClientRect().width;
             const value=horizontal?$("sourcePreview").getBoundingClientRect().width/Math.max(1,width-12):
-                key==="tracking"||key==="stabilization"?$(key+"Lane").getBoundingClientRect().height:settings[key];
+                key==="tracking"||key==="stabilization"?$(key+"Lane").getBoundingClientRect().height:key==='stage'?workspace.getBoundingClientRect().height:settings[key];
             drag={handle,key,x:event.clientX,y:event.clientY,value,width,pointer:event.pointerId};handle.setPointerCapture(event.pointerId);document.body.classList.add(horizontal?"resizing-columns":"resizing-rows");
         };
         handle.ondblclick=()=>set(key,LAYOUT_DEFAULTS[key]);
@@ -71,7 +72,7 @@ export function createTimelineLayout({aspect,changed}) {
         };
     }
     $("wideLayout").onchange=()=>set("wide",$("wideLayout").checked);
-    $("fitVideoLayout").onclick=()=>set("split",null);
+    $("fitVideoLayout").onclick=()=>set("split",((workspace.clientHeight-85)*aspect()+28)/Math.max(1,workspace.clientWidth-12));
     $("resetLayout").onclick=()=>{settings={...LAYOUT_DEFAULTS};apply(true);};
     let fullscreenDocument=document;
     try{if(window.parent!==window&&window.parent.location.origin===location.origin&&window.parent.location.pathname.endsWith("/workspace.html"))fullscreenDocument=window.parent.document;}catch{/* Standalone/cross-origin frame uses its own document. */}

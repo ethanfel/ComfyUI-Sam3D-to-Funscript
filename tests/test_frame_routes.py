@@ -73,9 +73,27 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get('/sam3d_funscript/assets/frame-clock.mjs')
         self.assertEqual(response.status, 200)
 
+    async def test_timeline_import_graph_is_served(self):
+        import re
+        from urllib.parse import urljoin, urlsplit
+        pending = ['/sam3d_funscript/assets/processing-timeline.js']
+        visited = set()
+        while pending:
+            url = pending.pop()
+            if url in visited:
+                continue
+            visited.add(url)
+            response = await self.client.get(url)
+            self.assertEqual(response.status, 200, url)
+            source = await response.text()
+            for relative in re.findall(r'''(?:from\s*|import\s*\()\s*["'](\./[^"']+)["']''', source):
+                pending.append(urlsplit(urljoin(url, relative)).path)
+        self.assertIn('/sam3d_funscript/assets/timeline-restore.mjs', visited)
+
     async def test_editor_assets_revalidate_after_updates(self):
         for name in ('processing-timeline.html', 'processing-timeline.js',
                      'processing-timeline-edit.mjs', 'cut-markers.mjs', 'reference-mask.mjs', 'stabilization-steps.mjs',
+                     'processing-state.mjs', 'timeline-restore.mjs', 'timeline-subject.mjs',
                      'processing-timeline.css', 'workspace.js',
                      'device-previews/device-wireframes.mjs'):
             url = '/sam3d_funscript/assets/' + name
@@ -104,6 +122,8 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities['timeline_stabilize'], 1)
         self.assertEqual(capabilities['reference_masks'], 1)
         self.assertEqual(capabilities['mask_anchors'], 1)
+        self.assertEqual(capabilities['anchor_preview'], 1)
+        self.assertEqual(capabilities['timeline_scope'], 1)
         asset = await self.client.get('/sam3d_funscript/assets/mesh-anchor.mjs')
         self.assertEqual(asset.status, 200)
         self.assertIn('meshAnchorEditor', await asset.text())

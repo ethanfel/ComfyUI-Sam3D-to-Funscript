@@ -32,8 +32,8 @@ loading or Motion Studio's curve editor.
    **Additional anchors in this section** to generate alternative tracks alongside it.
    Add a **Stabilization** region separately wherever a reference needs to stay
    still. Stabilization is optional.
-5. Apply the plan, then use a processing button in the timeline to run all, selected
-   or unfinished work. These buttons queue the timeline and its upstream inputs;
+5. Use **Process marked range**, **Process selected regions**, **Process all**, or
+   **Process unfinished**. Each action applies the plan and queues the timeline and its upstream inputs;
    they do not repeatedly run the downstream Motion Studio export nodes.
 6. After processing completes, run the workflow normally to pass the latest
    completed motion project into Motion Studio. `prepare` can pass this existing
@@ -43,6 +43,12 @@ loading or Motion Studio's curve editor.
 The plan is stored in the node's `plan_json` widget. Save the ComfyUI workflow after
 editing it. The standalone Motion Studio and the embedded preview in this example
 share one editing session through the `editor_session` connection.
+
+**Download plan** saves a JSON backup. **Restore plan** checks that the backup
+belongs to this source and previews its region counts before you restore it as a
+draft. Review the restored plan, then **Apply to node** and save the workflow.
+Locked regions must be unlocked before a restore can replace their settings.
+Opening a backup alone does not change the plan.
 
 The timeline's **Open Motion Studio** link uses that same saved editing session
 when there is one directly connected standalone owner. With no sole owner, the
@@ -75,11 +81,22 @@ on Stabilize.
    before tracking. Manual point placement, deletion and online/offline modes stay
    available.
 3. **Anchors.** Open an overlapping tracking region to edit its main and additional
-   anchors. **Configure this section’s anchors** creates a tracking region in an
+   anchors. **Create / isolate this section’s anchor region** creates a tracking region in an
    empty gap, or isolates this range within one existing unlocked region.
    **Extract anchors** processes this gold region’s full time range, reusing its
    completed stabilization and running SAM3D for the anchor tracks. It preserves
    any unrelated marked selection on the timeline.
+
+Each stage shows its readiness. Missing or unconfirmed points and masks needing
+propagation are explained beside **Track region** before it can run. **Extract
+anchors** becomes available when the current stabilization has been rendered and
+an enabled tracking region overlaps it. After configuring anchors, **Back to
+stabilization** returns to the originating section.
+
+The preview shows the active editing tool. **Review** permits inspection without
+painting or placing points. Opening Timeline tools, selecting another region, or
+switching stabilization stages returns the hidden tools to Review. To paint again,
+choose Paint explicitly; **Use this frame** also enters Paint.
 
 Each processing action applies the current plan and uses the normal ComfyUI queue
 with progress and cancellation. Masks, points and keyframes save with the workflow;
@@ -105,14 +122,18 @@ settings. The timeline's **Timeline tools ↗** button returns to the controls.
 The filmstrip sits directly below the preview, without control rows between them.
 On narrow screens the tools panel follows the timeline instead.
 
-**Wide layout** uses the full browser width; turn it off for a centered workspace.
+Open **Layout** for sizing options. **Wide layout** uses the full browser width by
+default; turn it off for a centered workspace.
 **Full screen** expands the workspace, including its tool tabs when present. Press
 Escape or click **Exit full screen** to return.
 
-The preview column initially follows the source video's aspect ratio. Portrait
-video uses a narrow column and landscape video a wider one. **Fit video shape**
-restores this automatic width after manual resizing. Frames remain proportional
-inside the available area; neither this layout nor its dividers crop the source.
+The default layout bounds the settings column and gives the remaining width to
+the preview. Its height adapts to the window, leaving room for the filmstrip and
+both region lanes. **Fit video shape** explicitly sizes the preview column to the
+source aspect ratio. **Reset layout** returns to the balanced defaults. Frames
+remain proportional inside the available area; the dividers do not crop the source.
+The marked range and selected-region count remain visible above the timeline;
+processing controls and progress stay at the bottom of the desktop workspace.
 
 Drag the visible dividers to resize:
 
@@ -162,8 +183,22 @@ sections retain every completed anchor track until you unlock them.
 
 ## Painted mask as a 3D anchor
 
+**Preview anchor on this frame**, below **Main anchor**, inspects the current
+source frame without processing the tracking region. It pauses playback and
+switches to **Original**, showing the main anchor in gold and additional anchors
+in blue. A painted anchor also highlights the selected mesh vertices. Use
+**Show anchor** to hide or show the overlay; it appears only on the frame and
+settings it was calculated for. Previewing is available on locked regions and
+does not replace their completed motion.
+
+The preview runs through ComfyUI's queue and has progress and **Cancel preview**
+controls. Painted references on a different frame may require that reference
+frame plus the current frame. With **Use cache** enabled, repainting or changing
+anchors on the same frame can reuse its CPU prediction. Only the most recent
+frame is retained; full-region tracking and mask propagation are not run.
+
 In a **Tracking** region, choose **Main anchor → Painted mask · 3D**. Set the
-correct **Person** / ROI, pause on a clear frame inside the region, and use the
+correct **Subject** / ROI, pause on a clear frame inside the region, and use the
 **Original** preview. Click **Mark reference frame**, then paint the visible body
 patch. Paint/Erase, brush radius, **Undo stroke**, and **Clear paint** edit that
 reference. **Go to reference** returns to its exact source frame.
@@ -174,7 +209,8 @@ painting and rebases its frame number; editing the anchor does not alter the
 stabilization mask or its tracking points. Painting an anchor does not require
 SAM2 or CoTracker weights.
 
-Process the region with the usual **Process selection** or **Process all** controls.
+Process the region with **Process selected regions** or **Process all**. Use
+**Process marked range** when you only want the marked interval.
 SAM3D first reconstructs the reference frame. The painted area selects the visible
 surface of that person's mesh; the same vertex IDs are then averaged in 3D on
 every processed frame and across every chunk. Mask propagation is not required:
@@ -194,8 +230,10 @@ not retained in the pose cache. Paint and the exact reference frame survive save
 workflow reloads and restarts. Changing the paint rebinds the patch and invalidates
 that region's pose results. Locks preserve completed output. Splitting keeps the
 paint only on the side containing its reference frame, rebasing it on the right;
-the other side needs a new reference. Duplicating or moving/resizing a region
-clears its painting to avoid applying it to the wrong frame. Undo restores it.
+the other side needs a new reference. Moving or resizing retains the painting if
+its original source frame remains inside the region, rebasing its local frame
+number. Excluding that frame removes the painting; the editor reports this and
+Undo restores it. Duplicating into other footage requires a new painting.
 
 After installing this feature, restart ComfyUI and reopen the timeline so the
 Python backend and editor assets are updated together.
@@ -226,6 +264,14 @@ and calibration settings. This first version uses SAM3D Body for pose extraction
 it does not offer interchangeable pose-estimation models under one generic
 tracking menu. L0 starts with automatic direction and adaptive calibration. The
 advanced settings accept the same motion configuration used by the anchor node.
+
+**Subject** lists the configured person regions. Expand **Edit person rectangles** to
+redraw the selected person's rectangle or add another directly on the paused
+Original preview. The rectangles are normalized to source dimensions; their
+numbers identify the SAM3D person slots. **Show regions** controls their overlay.
+Output-axis checkboxes and **Invert L0** cover common output settings. Raw ROI and
+axis JSON remain in **Advanced person coordinates** and **Advanced axis settings**
+for less common configurations.
 
 Enabled regions on the same lane must not overlap. Select a region, seek to the
 change, and use **Split selected · S** above the timeline (or **Split at playhead**
@@ -262,7 +308,9 @@ no reference frame needs new points or a new painted mask. Each piece can then
 use its own crop, reference, and tracker mode without changing the other piece.
 Re-propagate retained masks and track the new intervals before extracting anchors;
 the old full-region result is not a newly processed split result. Directly moving
-region bounds still clears references rather than moving coordinates to wrong frames.
+region bounds follows the same rule: references inside the new bounds remain on
+their original source frames, and only excluded references are removed. The editor
+reports what was retained or removed. Undo restores the original bounds and references.
 
 Use **Track region** in the stabilization inspector to track the entire selected
 gold region and render its preview, without running SAM3D. It saves and applies
@@ -272,7 +320,7 @@ required; the marked In/Out selection does not shorten this operation.
 
 Existing motion curves and pose results remain intact. Locked regions cannot be
 retracked from the editor. Completed reference results are cached for subsequent
-**Process all / selection / unfinished** runs, which extract poses using stabilization
+**Process all / marked range / selected regions / unfinished** runs, which extract poses using stabilization
 where the lanes overlap. Changed references invalidate affected pose caches on the
 next Process run. Failed or cancelled tracking retains previously completed clips.
 
@@ -390,6 +438,8 @@ The **Timeline tools** panel groups **Scale / Zoom**, **Playhead**, and **Select
 Mark buttons sit next to their In/Out values; selection actions follow them.
 The **Scene cuts** section expands when needed, keeping detection settings out of
 the main editing row. Its header shows the latest scan status even when collapsed.
+Entering In beyond Out moves Out up to meet it; entering Out before In moves In
+down to meet it. The boundary you entered stays where you put it.
 
 - The default **Frames** scale shows original source frame numbers, starting at
   **0**. **Go to** accepts a frame number; Enter seeks and focuses the ruler so
@@ -418,8 +468,11 @@ the main editing row. Its header shows the latest scan status even when collapse
 - The region inspector exposes its name, **In/Out** boundaries, enabled state and lock.
   Duplicate a region into the selection, split it at the playhead, or delete it.
 
-Region positions and time selections serve different purposes. Selecting an
-interval limits a processing request; it does not trim or shift the original video.
+Region positions and marked ranges serve different purposes. Selecting a region
+does not clear an existing marked range. Use the separate processing buttons to
+choose which scope to run; neither changes the source video. **Create / isolate**
+uses a marked range consistently: an empty gap creates a region, a range inside
+one region isolates it, and an exact match selects that region.
 
 Frame navigation uses decoded presentation timestamps, not average FPS or the pose
 sampling rate. On first open, the backend streams the source through bounded CPU
@@ -429,15 +482,32 @@ cached and shared across sessions and trims of that file. Trims retain original
 source frame numbers. Variable-frame-rate frames retain their actual spacing on
 the timeline. Plans and exported actions still store original-video milliseconds;
 changing display scale does not rewrite existing regions or locked results.
+If loading stalls, the recovery panel offers Retry after 15 seconds, including
+during frame indexing. An indexing request times out after two minutes instead of
+leaving the workspace disabled indefinitely.
 
 ## Process only the work you need
+
+**Process marked range** runs enabled tracking coverage between In and Out.
+**Process selected regions** runs the selected regions independently of those
+marks. Selecting a stabilization region processes its overlapping tracking
+coverage; **Track region** remains the CoTracker-only action. Both scope buttons
+preserve the saved marks and region selection. The processing bar shows which
+scope each button will use; advanced chunk, join, gap and report controls are
+under **Options & report**.
+
+After an update, restart ComfyUI, refresh its main browser tab, then reopen the
+timeline. Scope requests check backend support and use a distinct bridge action
+so an outdated main tab cannot silently fall back to the old selection behavior.
+
+The node's operations remain available for normal workflow runs:
 
 | Operation | Use |
 | --- | --- |
 | `detect_cuts` | Scan the source for hard-cut guides without pose extraction or motion output. |
 | `prepare` | Open or refresh the planning interface and pass an existing completed project downstream. |
 | `all` | Process the eligible tracking regions in the plan. |
-| `selected` | Process the selected scope, clipping retained output to its time selection. |
+| `selected` | In a normal node run, use the marked range if nonempty, otherwise selected regions. Editor buttons submit their explicit scope for that run only. |
 | `unfinished` | Resume eligible work without repeating valid completed chunks. |
 
 Completed chunk results are saved persistently after each successful chunk, so a
@@ -447,6 +517,11 @@ completed chunks remain available for the next run. The default chunk duration i
 available region coverage rather than independently resetting at every chunk.
 
 A changed region requires processing again; unchanged work can be reused.
+Completed lane badges and report rows change to **needs processing** when their
+anchor, person, ROI, smoothing, axis, painting, or overlapping stabilization
+settings change. Existing results remain available for review. Older cached
+results without enough configuration metadata are labeled **previous result**
+rather than being asserted current.
 **Use cache = false** requests fresh processing for eligible unlocked work. Keep
 this enabled for normal iteration. Changing an anchor or calibration setting can
 reuse the existing pose extraction when its inputs are unchanged.

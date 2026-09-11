@@ -122,6 +122,30 @@ def normalize_plan(raw, info):
     return plan
 
 
+def apply_processing_scope(plan, scope, info):
+    """One-shot UI scope never rewrites the saved editor selection."""
+    if not isinstance(scope, dict):
+        raise ValueError("Choose a marked range or selected regions")
+    scoped = deepcopy(plan)
+    if scope.get("kind") == "range":
+        times = scope.get("range")
+        if not isinstance(times, list) or len(times) != 2:
+            raise ValueError("Marked range needs two boundaries")
+        a, b = (_number(t, "Marked boundary") for t in times)
+        if not float(Fraction(info["start"]) * 1000) <= a < b <= info["end_ms"]:
+            raise ValueError("Mark a nonempty range inside the video")
+        scoped.update(selection=[a, b], selected_ids=[])
+    elif scope.get("kind") == "regions":
+        ids = scope.get("ids")
+        enabled = {r["id"] for lane in ("tracking", "stabilization") for r in plan[lane] if r["enabled"]}
+        if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in enabled for i in ids):
+            raise ValueError("Select enabled regions from this plan")
+        scoped.update(selection=[plan["selection"][0]] * 2, selected_ids=list(dict.fromkeys(ids)))
+    else:
+        raise ValueError("Unknown processing scope")
+    return scoped
+
+
 def compile_jobs(plan, info):
     """Split tracking at independent stabilization boundaries and bounded chunks.
 
@@ -574,6 +598,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             retained = entry.get("jobs", []) if entry and entry.get("pose_signature") == pose_signature else []
             entry = {"signature": signature, "pose_signature": pose_signature, "jobs": retained, "region": deepcopy(region)}
             state["regions"][region["id"]] = entry
+        entry["stabilization_regions"] = [deepcopy(stabilizers[k]) for k in sorted(dependencies)]
+        row.update(region=deepcopy(entry["region"]), stabilization_regions=deepcopy(entry["stabilization_regions"]))
         pending = region_jobs
         if operation == "selected":
             if plan["selection"][1] > plan["selection"][0]:

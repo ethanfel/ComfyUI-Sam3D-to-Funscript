@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {LAYOUT_DEFAULTS,layoutSettings,previewWidth,thumbnailCount} from "../assets/timeline-layout.mjs";
+import {LAYOUT_DEFAULTS,layoutSettings,previewWidth,thumbnailCount,stageHeight} from "../assets/timeline-layout.mjs";
 
 test("Saved view sizes are bounded and tolerate invalid or older local storage",()=>{
     for(const value of [undefined,null,"broken",{},[]])assert.deepEqual(layoutSettings(value),LAYOUT_DEFAULTS);
@@ -9,10 +9,12 @@ test("Saved view sizes are bounded and tolerate invalid or older local storage",
     assert.deepEqual(layoutSettings(JSON.parse(JSON.stringify(saved))),saved);
     assert.equal(layoutSettings({...saved,split:null}).split,null);
 });
-test("Automatic preview sizing follows video shape and preserves room for settings",()=>{
+test("Automatic preview sizing bounds the inspector for portrait and landscape clips",()=>{
     const portrait=previewWidth(1800,500,9/16),landscape=previewWidth(1800,500,16/9);
-    assert.ok(portrait<300&&landscape>700);
-    assert.ok(previewWidth(1800,700,9/16)>portrait);
+    assert.equal(portrait,landscape);assert.ok(portrait>1200);
+    assert.equal(previewWidth(1800,700,9/16),portrait);
+    assert.ok(stageHeight(1080,100,LAYOUT_DEFAULTS)>stageHeight(768,100,LAYOUT_DEFAULTS));
+    assert.equal(stageHeight(768,100,{stage:600}),600,'explicit resizing remains available');
     for(const width of [320,560,760,1200,3840])for(const aspect of [.3,9/16,1,16/9,4,NaN]){
         const actual=previewWidth(width,500,aspect);assert.ok(actual>0&&actual<width);
         if(width>=760)assert.ok(width-actual>=330);
