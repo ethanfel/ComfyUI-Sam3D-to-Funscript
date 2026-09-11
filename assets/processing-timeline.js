@@ -2,13 +2,14 @@ import {workflowHost,openWorkspacePage} from "./workflow-host.mjs";
 import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as basePanView, followView as baseFollowView, sliderSpan as baseSliderSpan, spanSlider as baseSpanSlider, formatTime, rulerTicks} from "./viewport.mjs";
 // These exports were added together. Bypass helper URLs cached by older servers;
 // updated servers revalidate all editor assets on subsequent loads.
-import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection} from "./processing-timeline-edit.mjs?v=reference-masks-1";
+import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection} from "./processing-timeline-edit.mjs?v=mesh-anchor-1";
 import {cutIndex,neighboringCut,snapCut,shotRange,cutSideRange,visibleCuts} from "./cut-markers.mjs?v=cut-selection-2";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs";
 import {frameClock} from "./frame-clock.mjs";
 import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-masks-1";
 import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason} from "./video-preview.mjs?v=reference-masks-1";
 
+import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
 import {stabilizationSteps} from './stabilization-steps.mjs?v=reference-masks-1';
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
@@ -61,9 +62,18 @@ const maskSteps=stabilizationSteps({$,context:()=>{
     $('referenceMode').value='review';$('previewVariant').value='original';pause();seek(frames.at(frames.ceil(selected().region.start_ms)+frame));
 },process,selectRegion,draw:drawSource,configureAnchors:()=>{
     const r=selected().region;
-    const next=regionFromSelection({...plan,selection:[r.start_ms,r.end_ms]},'tracking',uuid,state.info);
+    const next=regionFromSelection({...plan,selection:[r.start_ms,r.end_ms]},'tracking',uuid,state.info,frames);
     const id=next.selected_ids[0];edit({...next,selection:plan.selection});selectRegion(id);
 }});
+const meshEditor=meshAnchorEditor({$,context:()=>{
+    const r=selected()?.lane==='tracking'?selected().region:null;
+    return {region:r,clock:frames,first:r?frames.ceil(r.start_ms):0,frame:r?activeFrame()-frames.ceil(r.start_ms):0,
+        frameCount:r?frames.ceil(r.end_ms)-frames.ceil(r.start_ms):0,busy:busy||!!startingOperation,
+        stabilized:!!previewClip,editable:!previewClip&&!previewLoading&&requestedSeek===null&&!video.seeking&&video.readyState>=2&&video.paused,
+        stabilization:plan?.stabilization||[]};
+},attempt,update:mask_anchor=>updateRegion({mask_anchor}),seekOriginal:frame=>{
+    $('previewVariant').value='original';pause();seek(frames.at(frames.ceil(selected().region.start_ms)+frame));
+},draw:drawSource});
 const bridge = workflowHost;
 function status(text) { $("status").textContent = text; }
 function fail(error) { $("error").textContent = error.message || String(error); $("error").hidden = false; }
@@ -116,6 +126,7 @@ function updateRegion(patch) {
     edit(changeRegion(plan, before.region.id, patch, state.info), changedStart||changedEnd ? "Bounds changed · mark reference frames again for this section" : undefined);
 }
 function selectRegion(id, additive = false, seekAt = null) {
+    meshEditor.cancel();$("meshAnchorTool").value="review";
     activeId = id;
     showInspectorTab("region");
     for(const control of $("regionForm").querySelectorAll("input,textarea,select"))control.setCustomValidity("");
@@ -285,6 +296,7 @@ function drawSource() {
     sourceMap = {crop,scale,ox,oy};
     if (video.readyState >= 2) ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
     maskSteps.overlay(ctx,sourceMap,w,h);
+    meshEditor.overlay(ctx,sourceMap,w,h);
     const point = p => [ox+(p[0]-crop[0])*scale, oy+(p[1]-crop[1])*scale];
     if (reference) {
         const key = referenceKeys(reference).find(k=>k.frame===frames.containing(playhead)-frames.ceil(found.region.start_ms));
@@ -348,12 +360,18 @@ function renderNavigation() {
     $("markOut").title=selectedCut!==null?"End the selection exactly at this cut, before its first frame (O)":"End the selection after the displayed frame, including it (O)";
     $("selectionHint").textContent=selectedCut!==null?"Cut selected: In / Out use the boundary before this frame.":"Mark Out includes the displayed frame. Out is the boundary after the selection.";
     $("cutActions").hidden=selectedCut===null;
+    const active=selected()?.region;
+    for(const id of ['timelineSplit','split'])$(id).disabled=busy||!active||active.locked||playhead<=active.start_ms+1||playhead>=active.end_ms-1;
+    $("timelineSplit").title=active?`Split ${active.name} at ${positionLabel(playhead)} (S)`:'Select a region, then seek to the frame where it changes';
     if(selectedCut!==null){
         $("selectedCutLabel").textContent=`Cut ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}`;
         for(const [id,direction]of [["cutBefore",-1],["cutAfter",1]]){const range=cutSideRange(cuts(),selectedCut,direction,...sourceBounds());$(id).disabled=!range||range[1]-range[0]<1;}
         $("cutRegion").disabled=busy||!cutRangeReady||b-a<1;
         $("cutRegionRange").textContent=cutRangeReady&&b>a?`${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:"Select a shot, set In / Out, or Shift-click another cut";
         $("cutPrevious").disabled=neighboringCut(cuts(),selectedCut,-1)===null;$("cutNext").disabled=neighboringCut(cuts(),selectedCut,1)===null;
+        const lane=$("cutSplitLane").value,targets=(lane==='both'?LANES:[lane]).flatMap(name=>plan[name].filter(r=>r.enabled!==false&&r.start_ms<selectedCut&&r.end_ms>selectedCut));
+        $("cutSplit").disabled=busy||!targets.length||targets.some(r=>r.locked);
+        $("cutSplit").title=targets.some(r=>r.locked)?'Unlock the regions at this frame before splitting.':targets.length?`Split ${targets.map(r=>r.name).join(' and ')} into independent left and right regions.`:'No region crosses this cut in the chosen lane.';
     }
 }
 function reportMap() { return new Map((state?.report?.regions || []).map(item => [item.id,item])); }
@@ -389,18 +407,21 @@ function renderTimelines() {
             bar.style.left=`${Math.max(0,left)}%`;bar.style.width=`${Math.max(.05,Math.min(100,right)-Math.max(0,left))}%`;bar.style.top=`${12+rows.positions.get(region.id)*pitch}px`;bar.style.height=`${Math.min(160,pitch-9)}px`;
             bar.classList.toggle("selected",(plan.selected_ids||[]).includes(region.id));bar.classList.toggle("locked",!!region.locked);bar.classList.toggle("disabled-region",region.enabled===false);
             bar.querySelector(".region-title").textContent=`${region.locked?"🔒 ":""}${region.name}${lane==="tracking"?" · "+region.anchor.replaceAll("_"," ")+(region.additional_anchors?.length?` +${region.additional_anchors.length}`:""):""}`;
-            bar.querySelector(".region-state").textContent=states.get(region.id)?.state||"";
+            const result=states.get(region.id),changedBounds=result&&['start_ms','end_ms'].some(key=>result[key]!==undefined&&result[key]!==region[key]);
+            bar.querySelector(".region-state").textContent=changedBounds?'needs processing':result?.state||"";
             bar.title=`${region.name} · ${positionLabel(region.start_ms)} – ${positionLabel(region.end_ms)} (exclusive)${region.locked?" · Locked":""}`;
-            const health=lane==='stabilization'?trackingDetails.get(renderedClips.find(r=>r.id===region.id)?.url)?.health:null;
+            const rendered=lane==='stabilization'?renderedClips.find(r=>r.id===region.id):null,health=trackingDetails.get(rendered?.url)?.health;
             bar.querySelector('.region-state').dataset.held=String(!!health?.counts.held);
             if(health){bar.querySelector('.region-state').textContent=health.counts.held?`${(health.counts.held/health.total*100).toFixed(0)}% held`:'tracked';bar.title+=' · '+trackingSummary(health);}
+            if(rendered&&!timelineRenderCurrent(rendered,region)){bar.querySelector('.region-state').textContent='previous result';bar.title+=' · Settings changed; track this interval again';}
             bar.setAttribute("aria-label",bar.title);bar.setAttribute("aria-pressed",String((plan.selected_ids||[]).includes(region.id)));
             bar.querySelectorAll('.reference-keyframe').forEach(mark=>mark.remove());
-            if(lane==='stabilization')for(const [i,key]of referenceKeys(region.reference).entries()){
+            const markedKeys=lane==='stabilization'?referenceKeys(region.reference):region.anchor==='mask_anchor'&&region.mask_anchor?.strokes.length?[{frame:region.mask_anchor.frame,points:[1]}]:[];
+            for(const [i,key]of markedKeys.entries()){
                 const frame=frames.ceil(region.start_ms)+key.frame,at=frames.at(frame);
                 if(!key.points.length||at<view.start_ms||at>=Math.min(region.end_ms,view.start_ms+view.span_ms))continue;
                 const mark=document.createElement('span');mark.className='reference-keyframe';mark.textContent='◆';
-                mark.dataset.referenceFrame=frame;mark.title=`Reference ${i+1} · F ${frame} · click to seek`;
+                mark.dataset.referenceFrame=frame;mark.title=`${lane==='tracking'?'Mask anchor':'Reference '+(i+1)} · F ${frame} · click to seek`;
                 mark.style.left=`${100*(at-Math.max(region.start_ms,view.start_ms))/(Math.min(region.end_ms,view.start_ms+view.span_ms)-Math.max(region.start_ms,view.start_ms))}%`;
                 bar.append(mark);
             }
@@ -458,11 +479,12 @@ function drawOverview() {
 }
 function renderInspector() {
     const found=selected();$("regionForm").hidden=!found;$("noRegion").hidden=!!found;$("regionKind").textContent=found?found.lane==="tracking"?"SAM3D tracking":"CoTracker3 stabilization":"";
+    meshEditor.render();
     if(!found)return;
     const {region,lane}=found, disabled=busy||!!region.locked;
     if(lane==="tracking"){
         $("anchor").querySelector("[data-detailed]")?.remove();
-        if(!ANCHORS.includes(region.anchor)){
+        if(region.anchor!=="mask_anchor"&&!ANCHORS.includes(region.anchor)){
             const option=new Option(`${region.anchor.replaceAll("_"," ")} · detailed`,region.anchor);option.dataset.detailed="true";$("anchor").append(option);
         }
     }
@@ -474,6 +496,7 @@ function renderInspector() {
     $("trackingSettings").hidden=lane!=="tracking";$("stabilizationSettings").hidden=lane!=="stabilization";
     for(const control of $("regionForm").querySelectorAll("input,textarea,select,button"))control.disabled=disabled;
     for(const id of ["regionLock","regionRange","referenceFirst","cropZoom","referenceKeyframes"])$(id).disabled=busy;
+    $("split").disabled=disabled||playhead<=region.start_ms+1||playhead>=region.end_ms-1;
     $("referenceMode").disabled=disabled;
     if(disabled)$("referenceMode").value="review";
     if(lane==='stabilization'){renderReferenceKeys(region);maskSteps.render();}
@@ -494,6 +517,7 @@ function renderInspector() {
             extra.checked=(region.additional_anchors||[]).includes(row.dataset.anchor);extra.disabled=disabled||main;
         }
         filterDetailedAnchors();
+        meshEditor.render();
     }
 }
 function filterDetailedAnchors(){
@@ -608,7 +632,9 @@ function referenceEditable() {
     return true;
 }
 $("sourceCanvas").onpointerdown=event=>{
-    if(event.button!==0||!referenceEditable())return;
+    if(event.button!==0)return;
+    if(meshEditor.pointerDown(sourcePosition(event))){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
+    if(!referenceEditable())return;
     const p=sourcePosition(event);if(!p)return;
     if(maskSteps.pointerDown(p)){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
     if($("referenceMode").value==="crop"){sourceDrag={start:p,end:p};$("sourceCanvas").setPointerCapture(event.pointerId);}
@@ -617,14 +643,14 @@ $("sourceCanvas").onpointerdown=event=>{
         updateRegion({reference:putReferencePoint(region.reference,frame,slot,p)});
     });
 };
-$("sourceCanvas").onpointermove=event=>{if(maskSteps.pointerMove(sourcePosition(event)))return;if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
+$("sourceCanvas").onpointermove=event=>{if(meshEditor.pointerMove(sourcePosition(event))||maskSteps.pointerMove(sourcePosition(event)))return;if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
 $("sourceCanvas").onpointerup=()=>{
-    if(maskSteps.pointerUp())return;
+    if(meshEditor.pointerUp()||maskSteps.pointerUp())return;
     if(!sourceDrag)return;const {start:a,end:b}=sourceDrag;sourceDrag=null;
     const crop=[Math.floor(Math.min(a[0],b[0])),Math.floor(Math.min(a[1],b[1])),Math.round(Math.abs(a[0]-b[0])),Math.round(Math.abs(a[1]-b[1]))];
     if(crop[2]>=2&&crop[3]>=2)attempt(()=>{const reference=clone(selected().region.reference);reference.crop_xywh=crop;updateRegion({reference});});else drawSource();
 };
-$("sourceCanvas").onpointercancel=()=>{maskSteps.cancel();sourceDrag=null;drawSource();};
+$("sourceCanvas").onpointercancel=()=>{meshEditor.cancel();maskSteps.cancel();sourceDrag=null;drawSource();};
 $("sourceCanvas").oncontextmenu=event=>{
     if($("referenceMode").value!=="points"||!referenceEditable())return;event.preventDefault();const p=sourcePosition(event);if(!p)return;
     const region=selected().region,reference=region.reference,key=referenceKeys(reference).find(k=>k.frame===activeFrame()-frames.ceil(region.start_ms));let best=-1,distance=12/sourceMap.scale;
@@ -692,11 +718,17 @@ $("cutIn").onclick=()=>$("markIn").click();$("cutOut").onclick=()=>$("markOut").
 $("cutBefore").onclick=()=>selectCutSide(-1);$("cutAfter").onclick=()=>selectCutSide(1);
 $("cutRegion").onclick=()=>attempt(()=>{
     if(!cutRangeReady)return;
-    const lane=$("cutRegionLane").value,next=regionFromSelection(plan,lane,uuid,state.info);
+    const lane=$("cutRegionLane").value,next=regionFromSelection(plan,lane,uuid,state.info,frames);
     activeId=next.selected_ids[0];edit(next,"Region ready · choose its anchor or stabilization reference points");
     showInspectorTab("region");
     if(lane==="stabilization")seek(regionById(plan,activeId).region.start_ms);
     clearCut();
+});
+$("cutSplitLane").onchange=renderNavigation;
+$("cutSplit").onclick=()=>attempt(()=>{
+    if(selectedCut===null)return;
+    const lane=$("cutSplitLane").value;
+    finishSplit(splitAtTime(plan,lane==='both'?LANES:[lane],selectedCut,uuid,state.info,frames));
 });
 document.addEventListener("pointerdown",event=>{if(selectedCut!==null&&!event.target.closest(".ruler-track,#markIn,#markOut"))clearCut();});
 let overviewDrag=null;
@@ -741,10 +773,19 @@ $("duplicate").onclick=()=>attempt(()=>{
     const [a,b]=selectionRange(plan,state.info);if(b-a<1)throw new Error("Select the destination time range before duplicating.");
     const region={...clone(found.region),id:uuid(),name:`${found.region.name} · copy`,start_ms:a,end_ms:b,locked:false};
     if(found.lane==="stabilization"){region.reference.points=[];region.reference.sections=[];delete region.reference.keyframes;delete region.reference.point_mask;}
+    delete region.mask_anchor;
     validateInterval(plan,found.lane,region.id,a,b,state.info);activeId=region.id;edit({...plan,[found.lane]:[...plan[found.lane],region],selected_ids:[region.id]});
 });
-$("split").onclick=()=>attempt(()=>{const next=splitRegion(plan,activeId,playhead,uuid(),state.info);activeId=next.selected_ids[0];edit(next);});
-$("isolateSelection").onclick=()=>attempt(()=>{const next=isolateSelection(plan,activeId,uuid,state.info);activeId=next.selected_ids[0];edit(next,"Selected range is now its own region · choose its anchor and settings");});
+function finishSplit(next){
+    const lane=selected()?.lane;
+    activeId=next.selected_ids.find(id=>regionById(next,id).lane===lane)||next.selected_ids[0];
+    const hasReference=next.selected_ids.some(id=>regionById(next,id).lane==='stabilization');
+    edit(next,'Split into independent regions · right side selected.'+(hasReference?' Reference marks stay on their own side; propagate masks and track the new intervals.':''));
+    clearCut();showInspectorTab('region');$("referenceMode").value='review';
+}
+$("split").onclick=()=>attempt(()=>finishSplit(splitRegion(plan,activeId,frames.at(activeFrame()),uuid(),state.info,frames)));
+$("timelineSplit").onclick=()=>$("split").click();
+$("isolateSelection").onclick=()=>attempt(()=>{const next=isolateSelection(plan,activeId,uuid,state.info,frames);activeId=next.selected_ids[0];edit(next,"Selected range is now its own region · choose its anchor and settings");});
 $("undo").onclick=()=>attempt(()=>{
     if(!history.length||busy)return;const previous=history.at(-1);
     for(const lane of LANES)for(const region of plan[lane])if(region.locked){const old=regionById(previous,region.id)?.region;if(!old||!equal({...old,locked:true},region))throw new Error("Undo would change a locked region. Unlock it first.");}
@@ -780,6 +821,7 @@ window.addEventListener("keydown",event=>{
     if(event.code==="Space"&&!event.target.closest("button")){event.preventDefault();togglePlay();}
     if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();seek(frames.step(frames.at(activeFrame()),(event.key==="ArrowLeft"?-1:1)*(event.shiftKey?10:1)));}
     if(event.key==="Home"||event.key==="End"){event.preventDefault();seek(frames.at(event.key==="Home"?frames.first:frames.end-1));}
+    if(event.key.toLowerCase()==="s"&&!event.repeat){event.preventDefault();$("timelineSplit").click();}
     if(event.key.toLowerCase()==="i"){event.preventDefault();$("markIn").click();}if(event.key.toLowerCase()==="o"){event.preventDefault();$("markOut").click();}
 });
 video.onloadeddata=()=>{finishSourceSeek();draw();};video.onseeked=finishSourceSeek;
@@ -818,6 +860,10 @@ async function save() {
     if(!dirty)return;
     const sent=clone(plan),sentRevision=revision;
     savePromise=(async()=>{
+        if(sent.tracking.some(r=>r.anchor==='mask_anchor'||r.mask_anchor)){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+            if(capabilities.mask_anchors!==1)throw new Error('Restart ComfyUI to enable painted 3D anchors, then refresh its main tab and reopen this timeline. Your edits are kept.');
+        }
         if(sent.stabilization.some(r=>r.reference.point_mask))await requireMaskBackend();
         if(sent.stabilization.some(r=>r.reference.keyframes||r.reference.tracking_mode==='offline'))await requireReferenceBackend(location.href);
         const next=await jsonResponse(await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:sentRevision,plan:sent})}));
@@ -975,6 +1021,7 @@ function drawThumbnails() {
     }
     target.replaceChildren(fragment);
 }
+$("anchor").append(new Option("Painted mask · 3D","mask_anchor"));
 for(const anchor of ANCHORS){const option=document.createElement("option");option.value=anchor;option.textContent=anchor.replaceAll("_"," ");$("anchor").append(option);}
 async function initialize() {
     if(!session)throw new Error("No timeline session was supplied. Open this editor from the Processing timeline node.");

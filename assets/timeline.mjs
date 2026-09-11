@@ -1,4 +1,4 @@
-import {AXES, evaluate, roundEven, validateReference, autoFitAxis, rebuildAxis} from "./curve.mjs";
+import {AXES, evaluate, roundEven, validateReference, autoFitAxis, rebuildAxis, reduceActions} from "./curve.mjs";
 
 const geometryFields = ["points", "pixels", "times_ms", "segments"];
 const sourceFields = ["metadata", "config", "scripts", "metrics", "warnings", "valid", "raw", "processed", "orientation_hints", "anchor_indices", "references"];
@@ -177,6 +177,18 @@ export function sceneCutTimes(project) {
     return [...new Set(times.filter(t=>Number.isFinite(t)&&t>=0&&t<=project.metadata.duration_ms))].sort((a,b)=>a-b);
 }
 
+// Existing knots on each side are pinned when a boundary falls between them;
+// no rounded boundary sample is inserted into an authored curve.
+export function reductionBoundaries(project, track, axis, extraCuts=[]) {
+    const data=track?trackProject(project,track):project,target=track||project.timeline.main[axis];
+    const times=[...sceneCutTimes(project),...extraCuts,...(track?trackCoverage(project,track):[0,project.metadata.duration_ms])];
+    for(const r of target.regions||[])times.push(r.start,r.end,r.start+(r.blend_ms||0),r.end-(r.blend_ms||0));
+    for(const p of target.patterns||[])times.push(p.start-1,p.start,p.end,p.end+1);
+    const region=data.metadata.processing_region;if(region)times.push(region.start_ms,region.end_ms);
+    for(let i=1;i<data.times_ms.length;i++)if(data.segments[i]!==data.segments[i-1]||data.valid[i]!==data.valid[i-1]||data.times_ms[i]-data.times_ms[i-1]>data.config.max_gap_ms)times.push(data.times_ms[i-1],data.times_ms[i]);
+    return [...new Set(times.filter(Number.isFinite))];
+}
+
 function windowProject(project, sourceId, window) {
     const source = sourceProject(project, sourceId);
     if (!window) return source;
@@ -227,7 +239,7 @@ export function fitSelectionTrack(project, track, window) {
 
 // Blend inside the selection. Outside it, preserve the authored main exactly
 // (up to integer position rounding at newly introduced boundary samples).
-export function spliceActions(main, source, start, end, method = "blend", blendMs = 200) {
+export function spliceActions(main, source, start, end, method = "blend", blendMs = 200, protectedTimes=[]) {
     if (![start, end, blendMs].every(Number.isFinite) || start < 0 || end <= start || blendMs < 0) throw new Error("Select a nonempty time range and a nonnegative join duration");
     if (!["blend", "cut"].includes(method)) throw new Error("Unknown join method");
     start = Math.round(start); end = Math.round(end);
@@ -255,7 +267,8 @@ export function spliceActions(main, source, start, end, method = "blend", blendM
         if (start > 0) outside.push({at: start - 1, pos: roundEven(evaluate(main, start - 1))});
         outside.push({at: end + 1, pos: roundEven(evaluate(main, end + 1))});
     }
-    return [...new Map([...outside, ...inside].map(a => [a.at, a])).values()].sort((a, b) => a.at - b.at);
+    return reduceActions([...new Map([...outside, ...inside].map(a => [a.at, a])).values()].sort((a,b)=>a.at-b.at),
+        {start,end,protectedTimes:[...protectedTimes,start+width,end-width]}).actions;
 }
 
 export function applyTrack(project, track, outputAxis, {start, end, method = "blend", blendMs = 200, whole = false} = {}) {
@@ -264,7 +277,8 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
     const coverage = trackCoverage(project, track);
     if (!whole && (start < coverage[0] || end > coverage[1])) throw new Error(`Select within this track’s analysis: ${(coverage[0] / 1000).toFixed(3)}–${(coverage[1] / 1000).toFixed(3)} s`);
     const script = whole ? copy(track.script) : {...project.scripts[outputAxis], actions:
-        spliceActions(project.scripts[outputAxis].actions, track.script.actions, start, end, method, blendMs).filter(a => a.at <= duration)};
+        spliceActions(project.scripts[outputAxis].actions, track.script.actions, start, end, method, blendMs, reductionBoundaries(project,null,outputAxis)).filter(a => a.at <= duration)};
+    if(whole)script.actions=reduceActions(script.actions,{protectedTimes:reductionBoundaries(project,track,track.axis)}).actions;
     start = whole ? 0 : Math.round(start); end = whole ? duration : Math.round(end);
     const regions = whole ? [] : main.regions.flatMap(region => {
         if (region.end <= start || region.start >= end) return [region];

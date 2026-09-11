@@ -7,6 +7,7 @@ import path from 'node:path';
 import http from 'node:http';
 import {spawn,spawnSync} from 'node:child_process';
 import {copyTrackToMain} from '../assets/timeline.mjs';
+import {evaluate as curveValue} from '../assets/curve.mjs';
 
 const root=path.resolve('.'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'s3f-motion-tracks-'));
 const output=path.resolve(process.argv[2]||'development/motion-tracks-browser');fs.mkdirSync(output,{recursive:true});
@@ -28,6 +29,9 @@ for i,(start,end,anchor) in enumerate([(36145.833333,46125,'mouth'),(19041.66666
     sequence.metadata['source']['path']='neutral-fixture.mp4'
     projects[f'project_{i}']=build_project(sequence,{'target_anchor':anchor})
 project=combine_projects(projects)
+track=project['timeline']['tracks'][0]
+track['script']['actions']=[{'at':0,'pos':10}]+[{'at':36146+i*100,'pos':10+i*2} for i in range(11)]+[{'at':t,'pos':p} for t,p in [(38146,40),(38244,50),(38348,60),(38446,70),(38544,80),(38646,90),(38746,90),(38846,90),(39046,70),(39900,60),(40000,50),(40001,40),(42000,20),(46146,10)]]
+track['edited']=True
 project['metadata']['duration_ms']=60000
 for script in project['scripts'].values(): script['actions'].append({'at':60000,'pos':50})
 project['timeline'].update(active='track_0',selection_track='track_0',selection_lane='track_0',selection=[36411,46165])
@@ -94,6 +98,36 @@ try{
     await select('#selectionStart','36.411');await select('#selectionEnd','46.165');
     assert.deepEqual(await range(),[36411,46146]);assert.equal(await evaluate(`document.querySelector('${lane} .copy-selection').disabled`),false);
     await until(()=>evaluate('document.querySelector("#sceneCutCount").textContent==="5 cuts"'),'linked cut scan');await flush();
+    const dense=structuredClone(draft.project),denseActions=dense.timeline.tracks[0].script.actions;
+    await evaluate('document.querySelector("#reductionPanel").open=true');await select('#reductionScope','whole');
+    await click('#previewReduction');await flush();assert.deepEqual(draft.project,dense,'preview is non-destructive');
+    assert.match(await evaluate('document.querySelector("#reductionStatus").textContent'),/exactly the same linear curve/);
+    assert.equal(await evaluate('document.querySelector("#applyReduction").disabled'),false);
+    await click('#cancelReduction');await flush();assert.deepEqual(draft.project,dense);
+    await click('#previewReduction');await select('#reductionScope','selection');
+    assert.equal(await evaluate('document.querySelector("#applyReduction").disabled'),true,'scope changes invalidate preview');
+    await select('#reductionScope','whole');await click('#previewReduction');await click(lane+' .track-lock');
+    assert.equal(await evaluate('document.querySelector("#applyReduction").disabled'),true,'lock blocks applying a preview');
+    await click(lane+' .track-lock');await click('#previewReduction');await click('#applyReduction');await flush();
+    const exact=draft.project.timeline.tracks[0].script.actions;
+    assert.ok(exact.length<denseActions.length);
+    for(const p of denseActions)assert.ok(Math.abs(curveValue(exact,p.at)-p.pos)<1e-9);
+    assert.deepEqual(draft.project.scripts,dense.scripts,'source reduction does not change main axes');
+    assert.deepEqual(draft.project.timeline.tracks[1],dense.timeline.tracks[1],'other sources are untouched');
+    await click('#undo');await flush();assert.deepEqual(draft.project.timeline.tracks[0].script.actions,denseActions);
+    await select('#reductionMode','tolerance');await select('#reductionTolerance','0.5');await click('#previewReduction');
+    await evaluate('document.querySelector("#reductionPanel").scrollIntoView({block:"center"})');
+    fs.writeFileSync(output+'/reduce-points-preview.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await click('#applyReduction');await flush();const approximate=draft.project.timeline.tracks[0].script.actions;
+    const error=Math.max(...denseActions.map(p=>Math.abs(curveValue(approximate,p.at)-p.pos)));
+    assert.ok(error>0&&error<=.5,`tolerance error ${error}`);assert.ok(approximate.length<exact.length);
+    for(const at of [38646,38846,40000,40001])assert.ok(approximate.some(p=>p.at===at),'holds and cuts preserved');
+    await click('#undo');await flush();assert.deepEqual(draft.project.timeline.tracks[0].script.actions,denseActions);
+    await select('#reductionMode','exact');await select('#reductionScope','selection');await click('#previewReduction');await click('#applyReduction');await flush();
+    assert.deepEqual(draft.project.timeline.tracks[0].script.actions.filter(p=>p.at<36411),denseActions.filter(p=>p.at<36411),'selection preserves outside commands');
+    await click('#undo');await flush();assert.deepEqual(draft.project.timeline.tracks[0].script.actions,denseActions);
+    await evaluate('document.querySelector("#reductionPanel").open=false');
+    checks.push('Reduction: exact and 0.5 tolerance, preview/cancel, selection boundaries, locks, invalidation, counts and full Undo; other axes remain untouched');
     const before=structuredClone(draft.project),expected=structuredClone(before);
     copyTrackToMain(expected,expected.timeline.tracks[0],{start:36411,end:46146,blendMs:200});
     await click(lane+' .copy-selection');await flush();assert.deepEqual(draft.project.scripts,expected.scripts);
@@ -119,6 +153,47 @@ try{
     await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:x(40000.25),y:rect.y+5,button:'left',buttons:0,clickCount:1});
     assert.equal(await evaluate('Number(document.querySelector("#time").dataset.ms)'),40000.25);
     checks.push('Detected gold markers align on all curves, toggle visibility and seek at their exact timestamp');
+    const cutMenu=()=>evaluate('!document.querySelector("#sceneCutActions").hidden');
+    async function marker(selector,time,modifiers=0,count=1){
+        await evaluate(`(async()=>{document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));})()`);
+        const point=await evaluate(`(()=>{const c=document.querySelector(${JSON.stringify(selector)}),r=c.getBoundingClientRect();return {x:r.x+42+${time}/60000*(r.width-54),y:r.y+5}})()`);
+        for(const [type,buttons]of [['mousePressed',1],['mouseReleased',0]])await call('Input.dispatchMouseEvent',{type,...point,button:'left',buttons,clickCount:count,modifiers});
+    }
+    assert.equal(await cutMenu(),true);
+    assert.match(await evaluate('document.querySelector("#selectedSceneCutLabel").textContent'),/Cut 3/);
+    await click('#sceneCutIn');await click('#sceneCutNext');await click('#sceneCutOut');assert.deepEqual(await range(),[40000,45000]);
+    await click('#sceneCutAfter');assert.deepEqual(await range(),[45000,46146],'following shot clips at source end');
+    await click('#sceneCutBefore');assert.deepEqual(await range(),[40000,45000]);
+    await click('#lockMain');await marker(lane+' canvas',40000.25);await click('#sceneCutAfter');await flush();
+    const lockedBefore=structuredClone(draft.project),menuExpected=structuredClone(lockedBefore);
+    copyTrackToMain(menuExpected,menuExpected.timeline.tracks[0],{start:40000,end:45000,blendMs:200});
+    await click('#sceneCutCopy');await flush();assert.deepEqual(draft.project.scripts,menuExpected.scripts);
+    assert.deepEqual(draft.project.scripts.L0,lockedBefore.scripts.L0,'popup copy preserves locked main axis');
+    await click('#undo');await click('#lockMain');
+    await marker(lane+' canvas',45000);await marker(lane+' canvas',40000.25,8);assert.deepEqual(await range(),[40000,45000]);
+    await click('#editPoints');await flush();const pointScripts=structuredClone(draft.project.scripts),sourceScripts=draft.project.timeline.tracks.map(t=>structuredClone(t.script));
+    await marker(lane+' canvas',40000.25,0,2);assert.deepEqual(await range(),[40000,45000]);await flush();
+    assert.deepEqual(draft.project.scripts,pointScripts);assert.deepEqual(draft.project.timeline.tracks.map(t=>t.script),sourceScripts,'double-click cut never adds a curve point');
+    await click('#editPoints');
+    await marker('#curve',40000.25);assert.match(await evaluate('document.querySelector("#sceneCutTrack").textContent'),/^Main/);await click('#sceneCutBefore');assert.deepEqual(await range(),[35000,40000]);
+    assert.equal(await evaluate('document.querySelector("#sceneCutCopy").hidden'),true,'main menu does not copy a remembered source');
+    await marker('#curve',45000);await marker('#curve',35000,8);assert.deepEqual(await range(),[35000,45000]);
+    await evaluate('document.querySelector("#sceneCutActions").dispatchEvent(new KeyboardEvent("keydown",{key:"i",bubbles:true}))');assert.equal((await range())[0],35000);
+    await select('#zoom','10000');
+    await click('#sceneCutNext');await click('#sceneCutNext');assert.equal(await cutMenu(),true,'next cut remains reachable beyond previous zoom');
+    assert.match(await evaluate('document.querySelector("#selectedSceneCutLabel").textContent'),/Cut 4/);
+    await evaluate('document.querySelector("#sceneCutNext").dispatchEvent(new KeyboardEvent("keydown",{key:"o",bubbles:true}))');assert.equal((await range())[1],45000);
+    await evaluate('document.querySelector("#sceneCutActions").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');assert.equal(await cutMenu(),false);
+    assert.equal(await evaluate('document.activeElement.id'),'curve');
+    await select('#zoom','0');await marker(lane+' canvas',35000);assert.equal(await evaluate('document.querySelector("#sceneCutIn").disabled'),true,'cut outside source cannot mark In');
+    await click('#showSceneCuts');assert.equal(await cutMenu(),false);await click('#showSceneCuts');
+    await marker(lane+' canvas',40000.25);
+    const menuRect=await evaluate('(()=>{const r=document.querySelector("#sceneCutActions").getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}})()');
+    assert.ok(menuRect.left>=0&&menuRect.right<=1500&&menuRect.top>=0&&menuRect.bottom<=1250);
+    fs.writeFileSync(output+'/cut-menu.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await evaluate('document.body.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}))');assert.equal(await cutMenu(),false);
+    checks.push('Cut popup: In/Out, clipped shots, main/source ownership, Shift-click, keyboard navigation, locked-axis copying, zoom, dismissal and point-edit protection');
+
 
     await click(lane+' .track-lock');await click(lane+' .collapse-track');await click('#collapseMain');await flush();
     assert.equal(draft.project.timeline.tracks[0].collapsed,true);assert.equal(draft.project.timeline.tracks[0].locked,true);
@@ -151,12 +226,40 @@ try{
     assert.equal(await evaluate(`document.querySelector('${lane} canvas').getBoundingClientRect().height`),0);
     await click(lane+' .collapse-track');await click('#collapseMain');
     assert.ok(await evaluate(`document.querySelector('${lane} canvas').getBoundingClientRect().height>0`));
+    await click(lane+' .track-lock');await click(lane+' .select-track-range');
+    await evaluate('document.querySelector("#reductionPanel").open=true');await select('#reductionScope','whole');await click('#previewReduction');
+    assert.equal(await evaluate('document.querySelector("#applyReduction").disabled'),false,'reduction works in bundled offline viewer');
+    const reducedDownloads=temp+'/reduced-downloads';fs.mkdirSync(reducedDownloads);
+    await call('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:reducedDownloads});
+    await click('#applyReduction');await click('#save');
+    await until(()=>fs.readdirSync(reducedDownloads).some(n=>n.endsWith('.zip')),'reduced offline ZIP');
+    const reducedZip=fs.readdirSync(reducedDownloads).find(n=>n.endsWith('.zip')),reducedFiles=unzip(reducedDownloads+'/'+reducedZip);
+    const reducedProject=JSON.parse(reducedFiles['project.json']),reducedActions=reducedProject.timeline.tracks[0].script.actions;
+    assert.ok(reducedActions.length<exported.timeline.tracks[0].script.actions.length);
+    for(const p of exported.timeline.tracks[0].script.actions)assert.ok(Math.abs(curveValue(reducedActions,p.at)-p.pos)<1e-9);
+    assert.deepEqual(reducedProject.scripts,exported.scripts);
+    await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});
+    await evaluate('document.querySelector("#reductionPanel").scrollIntoView({block:"center"})');await pause(100);
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,'reduction controls wrap on narrow screens');
+    fs.writeFileSync(output+'/reduce-points-narrow.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await click('#undo');await click(lane+' .track-lock');await evaluate('document.querySelector("#reductionPanel").open=false');
+    await call('Emulation.setDeviceMetricsOverride',{width:1500,height:1250,deviceScaleFactor:1,mobile:false});
+    checks.push('Offline reduction preview, apply, export, restored main scripts, Undo and narrow layout');
     await evaluate('document.querySelector(".curves").scrollIntoView({block:"start"})');
     fs.writeFileSync(output+'/tracks.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
     await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});await pause(100);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
     fs.writeFileSync(output+'/narrow.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
     checks.push('Offline ZIP reopens with saved guides and collapsed state; expand works and narrow layout fits');
+    await select('#zoom','0');await marker(lane+' canvas',40000.25);assert.equal(await cutMenu(),true);
+    const narrowMenu=await evaluate('(()=>{const r=document.querySelector("#sceneCutActions").getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}})()');
+    assert.ok(narrowMenu.left>=0&&narrowMenu.right<=await evaluate('document.documentElement.clientWidth')&&narrowMenu.top>=0&&narrowMenu.bottom<=1100);
+    await click('#sceneCutAfter');assert.deepEqual(await range(),[40000,45000]);
+    fs.writeFileSync(output+'/cut-menu-narrow.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await evaluate('(()=>{const tracks=document.querySelector("#tracks");tracks.style.maxHeight="250px";tracks.scrollTop=tracks.scrollHeight;tracks.dispatchEvent(new Event("scroll"));})()');assert.equal(await cutMenu(),false,'popup closes when its source marker scrolls out of view');
+    await evaluate('document.querySelector("#tracks").style.maxHeight=""');
+    checks.push('Cut popup works in offline exports, stays inside narrow viewports and closes when the source marker scrolls away');
+
     // Video stays in the same DOM node while floating, dragging and resizing.
     await call('Emulation.setDeviceMetricsOverride',{width:1500,height:1000,deviceScaleFactor:1,mobile:false});
     assert.deepEqual(await evaluate('[...document.querySelector(".stage").children].map(e=>e.querySelector("video,#robot,#skeleton")?.id)'),['video','robot','skeleton']);

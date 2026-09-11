@@ -187,7 +187,7 @@ class S3F_BuildMotion:
             "reference_person": ("INT", {"default": -1, "min": -1, "max": 7, "tooltip": "-1 uses camera coordinates."}),
             "reference_anchor": (list(GENERAL_ANCHORS), {"tooltip": "General anchor on the reference person. Hands average all 21 hand points. A connected reference_anchor_override takes precedence. Ignored when reference_person is -1."}),
             "frame": (["camera", "reference_body"],),
-            "smoothing_ms": ("FLOAT", {"default": 80, "min": 0, "max": 2000}),
+            "smoothing_ms": ("FLOAT", {"default": 30, "min": 0, "max": 2000}),
             "enabled_axes": ("STRING", {"default": "L0,L1,L2,R0,R1,R2"}),
             "settings_json": ("STRING", {"default": "{}", "multiline": True,
                 "tooltip": "Optional max_gap_ms, neutral_window_ms, tolerance and axis_settings. L0 Auto adapts direction, origin and range to this anchor over time. Set calibration to clip for a single whole-clip fit. Explicit component/range/center keeps manual calibration unless auto_fit is true. Translation ranges in metres; rotations in degrees."}),

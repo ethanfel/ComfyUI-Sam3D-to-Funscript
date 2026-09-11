@@ -110,3 +110,5 @@ body.resizing-columns,body.resizing-columns *{cursor:col-resize!important;user-s
 .stabilization-steps{display:flex;gap:5px;margin:12px 0}.stabilization-steps button{flex:1;white-space:normal}.stabilization-steps button[aria-current="step"]{border-color:#7fdabe;background:#2e534b}.stabilization-steps small{display:block;color:#acc0ca;font-weight:normal}#maskStep fieldset{border:1px solid #3c5360;border-radius:6px;margin:12px 0;padding:10px}#maskStep input[type=number]{width:70px}#maskStatus{color:#93deca}#replaceMaskPointsLabel{display:flex;gap:6px;font-size:12px;margin:8px 0}#maskStep p,#anchorsStep p{line-height:1.5}.stabilization-steps button:disabled{opacity:.8}
 
 .stabilization-steps{position:sticky;top:0;z-index:4;background:#1f303a;padding:5px 0}
+
+.cut-split{margin-bottom:10px}#timelineSplit{border-color:#8b7854;color:#f1dca5}

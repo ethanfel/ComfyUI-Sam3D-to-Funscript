@@ -77,7 +77,7 @@
       "reference_person": -1,
       "reference_anchor": "pelvis",
       "frame": "camera",
-      "smoothing_ms": 80.0,
+      "smoothing_ms": 30.0,
       "enabled_axes": "L0,L1,L2,R0,R1,R2",
       "settings_json": "{}"
     }

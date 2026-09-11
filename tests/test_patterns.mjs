@@ -45,7 +45,8 @@ test("All supplied shapes generate valid bounded curves without changing outside
     const actions=wave(),snapshot=JSON.stringify(actions);
     for(const shape of PATTERNS){
         const result=generatePattern(actions,4000,7000,{shape});preserved(actions,result.actions,4000,7000,false);
-        assert.ok(result.inside.length>100);assert.match(result.summary,new RegExp(shape));
+        assert.ok(result.inside.length>=2);
+        assert.equal(result.inside[0].at,4000);assert.equal(result.inside.at(-1).at,7000);assert.match(result.summary,new RegExp(shape));
     }
     assert.equal(JSON.stringify(actions),snapshot);
     assert.deepEqual(generatePattern(actions,4000,7000,{shape:"Heartbeat"}).actions,generatePattern(actions,4000,7000,{shape:"Sine Wave"}).actions);

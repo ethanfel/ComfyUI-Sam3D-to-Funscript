@@ -1,5 +1,6 @@
 """Geometry, temporal processing and portable project files. Distances are metres."""
 
+from bisect import bisect_left
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation
 
 from .anchors import ANCHORS
+from .mesh_anchor import MASK_ANCHOR, MASK_ANCHOR_INDEX
 from .standalone import standalone_html
 from .mouth import MOUTH_NOTE
 from .direction import auto_motion, adaptive_motion, fit_range
@@ -23,7 +25,7 @@ SCHEMA = "sam3d-funscript/1"
 @dataclass
 class PoseSequence:
     times_ms: np.ndarray
-    points: np.ndarray  # N,P,70 or 72,3; optional right/left mouth corners after MHR70
+    points: np.ndarray  # N,P,70/72/73,3; optional mouth corners and painted mesh anchor after MHR70
     pixels: np.ndarray  # Matching original-video pixel coordinates
     valid: np.ndarray  # N,P; presence supplied by adapter, NOT model confidence
     segments: np.ndarray  # N; filters never cross a segment boundary
@@ -35,8 +37,8 @@ class PoseSequence:
             raise ValueError("At least two strictly increasing, finite timestamps are required")
         if self.times_ms[0] < 0:
             raise ValueError("Video timestamps must be nonnegative")
-        if self.points.ndim != 4 or self.points.shape[0] != n or self.points.shape[2] not in (70, 72) or self.points.shape[3] != 3:
-            raise ValueError("Expected N × people × 70 or 72 × 3 keypoints (MHR70 plus optional mouth corners)")
+        if self.points.ndim != 4 or self.points.shape[0] != n or self.points.shape[2] not in (70, 72, 73) or self.points.shape[3] != 3:
+            raise ValueError("Expected N × people × 70, 72 or 73 × 3 keypoints (MHR70, optional mouth and mask anchor)")
         if self.pixels.shape != self.points.shape[:-1] + (2,) or self.valid.shape != self.points.shape[:2]:
             raise ValueError("Pose, projection and visibility shapes disagree")
         if self.segments.shape != (n,) or np.any(np.diff(self.segments) < 0):
@@ -75,12 +77,21 @@ def body_basis(points):
     return np.stack((right, up, np.cross(right, up)), axis=-1), good
 
 
-def anchor(points, name):
+def anchor_indices(name):
+    if name == MASK_ANCHOR:
+        return (MASK_ANCHOR_INDEX,)
     if name not in ANCHORS:
         raise ValueError(f"Unknown anchor {name}; choose {', '.join(ANCHORS)}")
-    if max(ANCHORS[name]) >= points.shape[1]:
+    return ANCHORS[name]
+
+
+def anchor(points, name):
+    indices = anchor_indices(name)
+    if name == MASK_ANCHOR and (points.shape[1] <= MASK_ANCHOR_INDEX or not np.isfinite(points[:, MASK_ANCHOR_INDEX]).all(axis=1).any()):
+        raise ValueError("This person has no painted mask anchor in the pose cache. Paint its reference frame and reprocess the tracking region.")
+    if max(indices) >= points.shape[1]:
         raise ValueError("This pose cache has no mouth corners. Re-run SAM3D extraction with the updated node, or connect the native model to the core pose adapter.")
-    result = points[:, ANCHORS[name]].mean(axis=1)
+    result = points[:, indices].mean(axis=1)
     if name == "mouth" and not np.isfinite(result).all(axis=1).any():
         raise ValueError("No mouth corners are available for this person. For body-only core poses, connect the same SAM3D model to the pose adapter and queue again.")
     return result
@@ -142,9 +153,32 @@ def validate_actions(actions):
     return actions
 
 
+def remove_redundant_actions(actions, protected_times=()):
+    """Lossless cleanup of final integer commands, preserving boundary knots."""
+    validate_actions(actions)
+    times = [p["at"] for p in actions]
+    protected = {0, len(actions)-1}
+    for time in protected_times:
+        i = bisect_left(times, time)
+        if i < len(times):
+            protected.add(i)
+        if i > 0 and (i == len(times) or times[i] != time):
+            protected.add(i-1)
+    kept = []
+    for i, c in enumerate(actions):
+        while len(kept) > 1 and kept[-1] not in protected:
+            a, b = actions[kept[-2]], actions[kept[-1]]
+            # Python integers keep this exact even on very long timelines.
+            if (b["pos"]-a["pos"])*(c["at"]-b["at"]) != (c["pos"]-b["pos"])*(b["at"]-a["at"]):
+                break
+            kept.pop()
+        kept.append(i)
+    return [dict(actions[i]) for i in kept]
+
+
 def default_config():
     return {"target_person": 0, "target_anchor": "pelvis", "reference_person": -1,
-            "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 80.0,
+            "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 30.0,
             "max_gap_ms": 250.0, "neutral_window_ms": 500.0, "tolerance": 0.75,
             "enabled_axes": list(AXES), "axis_settings": {
                 axis: {"component": "auto" if i == 0 else i % 3, "range": 0.2 if i < 3 else 60.0,
@@ -280,6 +314,9 @@ def build_project(sequence, overrides=None):
         duration_ms = round(sequence.metadata.get("duration_ms", times[-1]))
         if duration_ms > actions[-1]["at"]:
             actions.append({"at": duration_ms, "pos": actions[-1]["pos"]})
+        boundaries = [int(rounded_times[i]) for start, end in ranges for i in (start, end-1)]
+        boundaries += [int(rounded_times[start])-1 for start, _ in ranges]
+        actions = remove_redundant_actions(actions, boundaries)
         scripts[axis] = {"version": "1.0", "inverted": False, "range": 100, "actions": validate_actions(actions)}
         metrics[axis] = {"actions": len(actions), "clipped_fraction": float(np.mean((positions[valid] < 0) | (positions[valid] > 100))),
                          "raw_span": float(np.ptp(source_raw[valid])), "units": "deg" if rotational else "m"}
@@ -302,8 +339,8 @@ def build_project(sequence, overrides=None):
     if comparison:
         metadata["reference_stabilization"] = comparison
     return {"schema": SCHEMA, "metadata": metadata, "config": config, "scripts": scripts,
-            "anchor_indices": {"target": list(ANCHORS[config["target_anchor"]]),
-                               "reference": list(ANCHORS[config["reference_anchor"]]) if reference >= 0 else None},
+            "anchor_indices": {"target": list(anchor_indices(config["target_anchor"])),
+                               "reference": list(anchor_indices(config["reference_anchor"])) if reference >= 0 else None},
             "metrics": metrics, "warnings": warnings, "times_ms": times.tolist(), "valid": valid.tolist(),
             "segments": sequence.segments.tolist(), "orientation_hints": orientation_hints,
             "raw": nullable(raw), "processed": nullable(processed),

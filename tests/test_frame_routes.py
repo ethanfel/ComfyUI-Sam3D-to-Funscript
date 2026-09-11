@@ -103,6 +103,10 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities['keyframes'], 1)
         self.assertEqual(capabilities['timeline_stabilize'], 1)
         self.assertEqual(capabilities['reference_masks'], 1)
+        self.assertEqual(capabilities['mask_anchors'], 1)
+        asset = await self.client.get('/sam3d_funscript/assets/mesh-anchor.mjs')
+        self.assertEqual(asset.status, 200)
+        self.assertIn('meshAnchorEditor', await asset.text())
         self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
         identifier = 'b'*24
         manifest = self.root/'sam3d_funscript'/'reference'/identifier/'reference.json'

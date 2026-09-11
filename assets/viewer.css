@@ -31,3 +31,12 @@ body.video-floating .stage{grid-template-columns:1fr 1fr}.video-panel.floating{p
 .video-panel.floating>.curve-head{flex-shrink:0;cursor:move;touch-action:none;user-select:none}.video-panel.floating h2{font-size:12px}.video-panel.floating .video-wrap{flex:1;min-height:0;overflow:hidden}.video-panel.floating .video-wrap video{height:100%;max-height:none;object-fit:contain}
 #videoResize{position:absolute;right:0;bottom:0;padding:0 2px;border:0;border-radius:0;background:#263e4fcc;cursor:nwse-resize;touch-action:none;color:#91bbcc;width:20px;height:20px;line-height:20px}
 @media(max-width:600px){body.video-floating .stage{grid-template-columns:1fr}}
+
+.scene-cut-actions{position:fixed;z-index:60;box-sizing:border-box;width:min(480px,calc(100% - 16px));max-height:calc(100% - 16px);overflow:auto;padding:11px;border:1px solid #9c885c;border-radius:7px;background:#20333f;box-shadow:0 5px 20px #0009;font-size:12px;color:#e6eef6}
+.scene-cut-actions[hidden]{display:none}.scene-cut-actions:focus-visible{outline:2px solid #e8c777;outline-offset:2px}
+.scene-cut-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#f1dca5}.scene-cut-heading strong{min-width:0;overflow-wrap:anywhere}
+.scene-cut-buttons{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.scene-cut-actions button{font-size:12px;padding:6px 8px}.scene-cut-heading .scene-cut-buttons{flex-wrap:nowrap}.scene-cut-heading button{font-size:16px;padding:2px 9px}
+.scene-cut-actions p{font-size:11px;line-height:1.5;color:#a9bece;margin:8px 0;overflow-wrap:anywhere}.scene-cut-actions kbd{font:10px ui-monospace,monospace;opacity:.65;margin-left:5px}
+.scene-cut-footer{border-top:1px solid #49606b;padding-top:9px}#sceneCutCopy{background:#245748;border-color:#34765f}#sceneCutCopy[hidden]{display:none}
+
+.reduction-panel{margin:12px 0;padding:12px;border:1px solid #53615d;border-radius:7px;background:#1c2b32}.reduction-panel summary{cursor:pointer;color:#ffd08a}.reduction-panel .controls{margin:12px 0;flex-wrap:wrap}.reduction-panel p{margin:10px 0;color:#a9bbc9}.reduction-panel #reductionStatus{color:#ffd08a}.reduction-panel input{width:80px}.reduction-panel [hidden]{display:none!important}.reduction-panel button{max-width:100%;white-space:normal}.reduction-panel label{max-width:100%;flex-wrap:wrap}

@@ -156,9 +156,49 @@ below the general extra-anchor choices; changing a general checkbox retains them
 These choices save with the section, respect its lock and use the same extracted
 poses as the general anchors. Left/right refer to the person's anatomical sides.
 
-Adding or changing anchors with **Use cache** enabled reuses the already processed
+Adding or changing anatomical anchors with **Use cache** enabled reuses the already processed
 pose coverage. Split and duplicate retain the section's anchor choices. Locked
 sections retain every completed anchor track until you unlock them.
+
+## Painted mask as a 3D anchor
+
+In a **Tracking** region, choose **Main anchor → Painted mask · 3D**. Set the
+correct **Person** / ROI, pause on a clear frame inside the region, and use the
+**Original** preview. Click **Mark reference frame**, then paint the visible body
+patch. Paint/Erase, brush radius, **Undo stroke**, and **Clear paint** edit that
+reference. **Go to reference** returns to its exact source frame.
+
+**Use stabilization mask** copies the first matching stabilization region's painted
+reference when its seed frame falls inside this tracking region. It copies the
+painting and rebases its frame number; editing the anchor does not alter the
+stabilization mask or its tracking points. Painting an anchor does not require
+SAM2 or CoTracker weights.
+
+Process the region with the usual **Process selection** or **Process all** controls.
+SAM3D first reconstructs the reference frame. The painted area selects the visible
+surface of that person's mesh; the same vertex IDs are then averaged in 3D on
+every processed frame and across every chunk. Mask propagation is not required:
+the surface identities stay fixed instead of following a changing mask centroid.
+A painting that misses the mesh produces an actionable error, with no fallback to
+a different anatomical anchor.
+
+Motion Studio receives this patch's position as the main anchor on all enabled
+axes, with the usual additional anatomical source tracks. Linear axes use the
+patch's position; rotational axes continue to use the torso orientation. This is
+an estimated body surface: painting cannot add geometry absent from the SAM3D
+mesh, and occluded positions remain model estimates. Check the projected anchor
+and curves before using the result.
+
+Only one extra 3D point and its projection are stored per frame; full meshes are
+not retained in the pose cache. Paint and the exact reference frame survive saves,
+workflow reloads and restarts. Changing the paint rebinds the patch and invalidates
+that region's pose results. Locks preserve completed output. Splitting keeps the
+paint only on the side containing its reference frame, rebasing it on the right;
+the other side needs a new reference. Duplicating or moving/resizing a region
+clears its painting to avoid applying it to the wrong frame. Undo restores it.
+
+After installing this feature, restart ComfyUI and reopen the timeline so the
+Python backend and editor assets are updated together.
 
 ## Connected tools in one browser tab
 
@@ -187,8 +227,12 @@ it does not offer interchangeable pose-estimation models under one generic
 tracking menu. L0 starts with automatic direction and adaptive calibration. The
 advanced settings accept the same motion configuration used by the anchor node.
 
-Enabled regions on the same lane must not overlap. Use **Split at playhead** to
-divide the initial region, or create regions inside unassigned gaps. Tracking and
+Enabled regions on the same lane must not overlap. Select a region, seek to the
+change, and use **Split selected · S** above the timeline (or **Split at playhead**
+in region settings). At a scene-cut diamond, **Split here** can split tracking,
+stabilization, or both lanes at the same frame. Both pieces remain; the right side
+is selected for editing. Locked regions block the split, and Undo restores both
+lanes together. You can also create regions inside unassigned gaps. Tracking and
 stabilization regions may overlap each other because their lanes have different
 purposes. Stabilization boundaries divide processing even when one tracking region
 crosses them.
@@ -211,9 +255,14 @@ silently accepted as a reliable reference. See [reference-stabilization.md](refe
 for memory behavior and installation.
 
 Keys and mode are saved in the plan, workflow, and recoverable local draft. Locked
-regions protect them. Changing the start, splitting, or changing the end of a
-region with keyframes clears its references; choose the bounds before marking.
-The editor reports this reset instead of reusing point coordinates on wrong frames.
+regions protect them. Splitting and isolating a range keep reference keyframes and
+the painted mask on the side containing their source frames, rebasing right-side
+frame numbers. Manual correction sections are clipped to each piece. A side with
+no reference frame needs new points or a new painted mask. Each piece can then
+use its own crop, reference, and tracker mode without changing the other piece.
+Re-propagate retained masks and track the new intervals before extracting anchors;
+the old full-region result is not a newly processed split result. Directly moving
+region bounds still clears references rather than moving coordinates to wrong frames.
 
 Use **Track region** in the stabilization inspector to track the entire selected
 gold region and render its preview, without running SAM3D. It saves and applies
@@ -249,8 +298,15 @@ One mask identifies one person, exposed as person slot 0.
 
 Motion Studio also shows the connected timeline's detected cuts: gold diamonds
 and faint vertical guides align across main and every source curve. Click a
-diamond at the top of a curve to seek, or toggle **Scene cuts** beside the zoom
-controls. New scans appear without rerunning pose extraction. The source video
+diamond at the top of a curve to seek and open its floating actions. Use
+**Use as In / Out**, **Shot before / after**, or Shift-click another cut to select
+between boundaries. Double-click selects the following shot. The popup follows
+the clicked main or source curve; source selections stop at that track's coverage.
+**Copy selection · all axes** uses the existing copy operation and preserves locked
+main axes. **Fit selection** zooms to the marked range. Previous/next buttons or
+arrow keys navigate cuts; I/O mark boundaries and Escape closes the popup. The
+same controls work in downloaded offline viewers. Toggle **Scene cuts** beside the
+zoom controls to hide the guides. New scans appear without rerunning pose extraction. The source video
 and editing session must match; downloaded projects retain their cut markers.
 
 Motion Studio's toolbar has **Wide layout** (on by default) to use the full tab
@@ -471,6 +527,29 @@ the amount of processed footage.
 Analysis includes context around chunk boundaries and keeps output inside the
 requested coverage. Context does not cross stabilization boundaries. Mark scene
 cuts with separate tracking regions so they remain explicit in the plan.
+
+## Reducing curve points
+
+Motion Studio's **Reduce points…** panel works on the active main axis or source
+track. Choose **Selected range** or **Whole curve**, then **Preview reduction**.
+The gold overlay shows the remaining points, with before/after counts and the
+maximum position change. **Apply reduction** commits that axis; **Cancel preview**
+leaves it unchanged and **Undo** restores the original points after applying.
+Locked curves cannot be reduced. Changing the curve, range or settings requires
+a fresh preview.
+
+**Exact · no curve change** removes only points that lie exactly on the line
+between their neighbours. It preserves linear playback, including between
+timestamps, but may remove few points on a curved passage. **Small tolerance**
+allows a specified position error (initially **0.5 out of 100**, not milliseconds).
+It retains reversals, hold endpoints, cut steps and section boundaries. Points
+outside a selected range remain untouched. Reduction never shifts timestamps or
+smooths the source signal.
+
+Exact cleanup also runs automatically on newly generated scripts and after
+smoothing, source joins and pattern insertion. Existing projects can use the
+panel without rerunning tracking. The controls and reduced curves are included
+in offline project exports.
 
 ## Loading after an update or restart
 

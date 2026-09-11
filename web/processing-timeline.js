@@ -99,7 +99,7 @@ app.registerExtension({
                         value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
                 }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
-                const text=[({stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
+                const text=[({mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
                 job.reply({state:"running",text,value:data.total_frames?data.frames:done,max:data.total_frames||total});
             }
         });

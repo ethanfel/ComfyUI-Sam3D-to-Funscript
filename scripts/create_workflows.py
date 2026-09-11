@@ -12,7 +12,7 @@ API = {
         "rois_json": "[[0,0,1,1]]", "batch_size": 8, "fov": 0.0, "use_cache": True}},
     "2": {"class_type": "S3F_BuildMotion", "inputs": {
         "poses": ["1", 0], "target_person": 0, "target_anchor": "pelvis", "reference_person": -1,
-        "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 80.0,
+        "reference_anchor": "pelvis", "frame": "camera", "smoothing_ms": 30.0,
         "enabled_axes": "L0,L1,L2,R0,R1,R2", "settings_json": "{}"}},
     "3": {"class_type": "S3F_PreviewExport", "inputs": {"project": ["2", 0], "filename": "rcowgirl_6"}},
     "4": {"class_type": "LoadVideo", "inputs": {"file": "videos/nsfw/rcowgirl_6.mp4"}},

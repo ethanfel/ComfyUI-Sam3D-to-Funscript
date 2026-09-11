@@ -1,4 +1,4 @@
-import {evaluate, roundEven, validateReference} from "./curve.mjs";
+import {evaluate, roundEven, validateReference, reduceActions} from "./curve.mjs";
 
 // Shape names/formulas from the user-supplied Pattern_Generation/main.lua
 // (Pattern Generator by Nerfarious837). Editor integration is independent of OFS.
@@ -37,7 +37,7 @@ function join(a, b, ma, mb, u) {
     if (norm > 3) {ma *= 3 / norm; mb *= 3 / norm;}
     return hermite(a, b, ma, mb, u);
 }
-function replace(actions, start, end, value, joinMs, stepMs) {
+function replace(actions, start, end, value, joinMs, stepMs, protectedTimes=[]) {
     number(joinMs, "Join duration (ms)", 0, 60000); number(stepMs, "Point spacing (ms)", 1, 1000);
     const width = Math.min(joinMs, (end - start) / 2);
     const count = Math.ceil((end - start) / stepMs);
@@ -62,7 +62,8 @@ function replace(actions, start, end, value, joinMs, stepMs) {
         if(before.length&&before.at(-1).at<start-1)before.push({at:start-1,pos:roundEven(evaluate(actions,start-1))});
         if(after.length&&after[0].at>end+1)after.unshift({at:end+1,pos:roundEven(evaluate(actions,end+1))});
     }
-    return {actions:[...before,...inside,...after].map(p=>({...p})), inside};
+    const cleaned=reduceActions([...before,...inside,...after],{start,end,protectedTimes:[...protectedTimes,start+width,end-width]}).actions;
+    return {actions:cleaned,inside:cleaned.filter(p=>p.at>=start&&p.at<=end)};
 }
 function random(seed, index) {
     let x = (seed ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0;
@@ -101,7 +102,7 @@ export function generatePattern(actions, start, end, options = {}) {
         samples++; if(pos<0||pos>100)clipped++;
         return clamp(pos,0,100);
     };
-    const result=replace(actions,start,end,value,joinMs,spacing);
+    const result=replace(actions,start,end,value,joinMs,spacing,options.protectedTimes);
     const edges=joinMs?`${Math.min(joinMs,duration/2)} ms blends inside selection edges`:"full selection · no edge blend";
     return {...result, summary:`${shape} · ${(cycleMs/1000).toFixed(3)} s cycle control · ${edges} · ${result.inside.length} points${clipped?` · ${(clipped/samples*100).toFixed(1)}% of samples clipped; reduce amplitude or move center`:""}`};
 }
@@ -214,6 +215,6 @@ export function continuePattern(actions, start, end, options = {}) {
         }
         return clamp(v,0,100);
     };
-    const result=replace(actions,start,end,value,joinMs,Math.min(stepMs,left.period/64,right.period/64));
+    const result=replace(actions,start,end,value,joinMs,Math.min(stepMs,left.period/64,right.period/64),options.protectedTimes);
     return {...result, summary:`Continued ${found.join(" · ")}. Synthesized motion; review the join.`, periods:found, quality:Math.min(left.quality,right.quality)};
 }

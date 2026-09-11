@@ -85,7 +85,7 @@
         -1,
         "pelvis",
         "camera",
-        80.0,
+        30.0,
         "L0,L1,L2,R0,R1,R2",
         "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
       ],
@@ -140,7 +140,7 @@
         -1,
         "pelvis",
         "camera",
-        80.0,
+        30.0,
         "L0,L1,L2,R0,R1,R2",
         "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
       ],
@@ -195,7 +195,7 @@
         -1,
         "pelvis",
         "camera",
-        80.0,
+        30.0,
         "L0,L1,L2,R0,R1,R2",
         "{\"axis_settings\": {\"L0\": {\"component\": \"auto\", \"auto_fit\": true}}}"
       ],

@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from .anchors import ANCHORS
-from .core import AXES, PoseSequence, build_project, default_config, validate_actions
+from .mesh_anchor import MASK_ANCHOR, normalize_paint, prepare_patch, VERSION as MESH_ANCHOR_VERSION
+from .core import AXES, PoseSequence, build_project, default_config, validate_actions, remove_redundant_actions
 from .reference import atomic_json, config_for_source, digest, run_reference, source_info
 from .reference_tracker import resolve_checkpoint
 from .timeline import combine_projects, GEOMETRY
@@ -83,7 +84,7 @@ def normalize_plan(raw, info):
                     raise ValueError("The supported pose tracking method is sam3d")
                 anchor, person = source.get("anchor", "pelvis"), source.get("person", 0)
                 rois = parse_rois(source.get("rois", [[0, 0, 1, 1]]))
-                if anchor not in ANCHORS:
+                if anchor != MASK_ANCHOR and anchor not in ANCHORS:
                     raise ValueError(f"Unknown tracking anchor: {anchor}")
                 extra_anchors = source.get("additional_anchors", [])
                 if not isinstance(extra_anchors, list) or any(not isinstance(a, str) or a not in ANCHORS for a in extra_anchors):
@@ -98,7 +99,9 @@ def normalize_plan(raw, info):
                 if unknown:
                     raise ValueError(f"Unknown calibration settings: {sorted(unknown)}")
                 region.update(method=method, anchor=anchor, additional_anchors=extra_anchors, person=person, rois=rois,
-                              smoothing_ms=_number(source.get("smoothing_ms", 80), "Smoothing"), settings=deepcopy(settings))
+                              smoothing_ms=_number(source.get("smoothing_ms", 30), "Smoothing"), settings=deepcopy(settings))
+                if source.get("mask_anchor") is not None:
+                    region["mask_anchor"] = normalize_paint(source["mask_anchor"], info["width"], info["height"])
             else:
                 reference = deepcopy(source.get("reference", {}))
                 if not isinstance(reference, dict):
@@ -295,6 +298,7 @@ def _merge_sequences(records, region, info):
 def _assembled_actions(parts, axis, duration, join_ms, gap_policy):
     """Join into the incoming section, retaining the previous value at its edge."""
     values = {0: 50}
+    protected = []
     cursor, previous = 0, 50
     for start, end, project in parts:
         start, end = round(start), round(end)
@@ -307,6 +311,7 @@ def _assembled_actions(parts, axis, duration, join_ms, gap_policy):
             values[max(cursor, start-1)] = gap_value
             previous = gap_value
         width = 0 if cursor == start == 0 else min(round(join_ms), end-start)
+        protected.extend([cursor, start-1, start, end, start+width])
         times = {start, end, *(a["at"] for a in actions if start <= a["at"] <= end)}
         if width:
             times.update(range(start, start+width, max(1, min(10, width))))
@@ -323,7 +328,7 @@ def _assembled_actions(parts, axis, duration, join_ms, gap_policy):
     if cursor < duration:
         values[cursor] = previous if gap_policy == "hold" else 50
         values[duration] = values[cursor]
-    return validate_actions([{"at": int(at), "pos": int(pos)} for at, pos in sorted(values.items()) if at <= duration])
+    return remove_redundant_actions([{"at": int(at), "pos": int(pos)} for at, pos in sorted(values.items()) if at <= duration], protected)
 
 
 def assemble_projects(region_projects, plan, info):
@@ -548,6 +553,9 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
         if mask_dependencies:
             signature = digest([signature, mask_dependencies])
             pose_signature = digest([pose_signature, mask_dependencies])
+        if region["anchor"] == MASK_ANCHOR:
+            signature = digest([signature, "mesh_anchor", MESH_ANCHOR_VERSION])
+            pose_signature = digest([pose_signature, "mesh_anchor", MESH_ANCHOR_VERSION])
         entry = state["regions"].get(region["id"])
         row = {"id": region["id"], "start_ms": region["start_ms"], "end_ms": region["end_ms"], "state": "pending"}
         report["regions"].append(row)
@@ -593,6 +601,7 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                                     "id": digest([job["region_id"], a, b, job["stabilization_id"]])})
             pending = missing
         report["total_jobs"] += len(pending)
+        mesh_patch = None
         for job in pending:
             emit("poses", region["id"], job_id=job["id"])
             existing = next((r for r in entry["jobs"] if r["id"] == job["id"] and Path(r["path"]).is_file()), None)
@@ -606,6 +615,10 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             rois = region["rois"]
             sid = job["stabilization_id"]
             try:
+                if region["anchor"] == MASK_ANCHOR and mesh_patch is None:
+                    emit("mask_anchor", region["id"])
+                    mesh_patch = prepare_patch(info, region, model_file, root, use_cache=use_cache,
+                        mask_video_range=mask_video_range, interrupt=interrupt)
                 if sid:
                     stabilization = stabilizers[sid]
                     if sid not in manifests:
@@ -622,7 +635,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                     # Average FPS cannot bound a VFR interval's actual count.
                     # Duration bounds decoded memory; never silently truncate it.
                     max_frames=2**31-1,
-                    rois_json=rois, batch_size=batch_size, use_cache=use_cache, mask_video_range=mask_video_range)
+                    rois_json=rois, batch_size=batch_size, use_cache=use_cache, mask_video_range=mask_video_range,
+                    **({"mesh_anchor": mesh_patch} if mesh_patch else {}))
                 sequence = _original_sequence(sequence, info, manifest)
                 path = directory / (digest([signature, job["id"]])+".npz")
                 sequence.save(path)

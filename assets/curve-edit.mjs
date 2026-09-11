@@ -1,8 +1,8 @@
-import {evaluate, roundEven, validateReference} from "./curve.mjs";
+import {evaluate, roundEven, validateReference, reduceActions} from "./curve.mjs";
 
 // Integrate the piecewise-linear script in time, so smoothing does not depend
 // on how densely its author happened to place points. Outside values are held.
-export function smoothActions(actions, start, end, windowMs) {
+export function smoothActions(actions, start, end, windowMs, protectedTimes=[]) {
     validateReference({actions});
     if (![start, end, windowMs].every(Number.isFinite) || start < 0 || end <= start || windowMs <= 0) throw new Error("Select a nonempty range and a positive smoothing duration in ms.");
     start = roundEven(start); end = roundEven(end);
@@ -35,5 +35,6 @@ export function smoothActions(actions, start, end, windowMs) {
     }
     for (let i=1;i<times.length;++i) segment(times[i-1],times[i]);
     inside.push({at:end,pos:roundEven(evaluate(actions,end))});
-    return [...actions.filter(p=>p.at<start),...inside,...actions.filter(p=>p.at>end)].map(p=>({...p}));
+    return reduceActions([...actions.filter(p=>p.at<start),...inside,...actions.filter(p=>p.at>end)],
+        {start,end,protectedTimes:[...protectedTimes,start+fade,end-fade]}).actions;
 }

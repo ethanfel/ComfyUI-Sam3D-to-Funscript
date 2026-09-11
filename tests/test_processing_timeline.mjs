@@ -48,3 +48,56 @@ const added=regionFromSelection(fullPlan,'stabilization',()=>`stable${id++}`,inf
 assert.deepEqual(added.stabilization.map(r=>[r.start_ms,r.end_ms]),[[45000,75000]]);
 assert.deepEqual(added.stabilization[0].reference.points,[]);
 assert.deepEqual(added.tracking,fullPlan.tracking);
+
+// Split on presentation timestamps, including VFR and a trim between frames.
+const {frameClock}=await import('../assets/frame-clock.mjs');
+const {splitAtTime}=await import('../assets/processing-timeline-edit.mjs');
+const clock=frameClock({first_frame:17,end_frame:25,times_ms:[30000,30035,30090,30130,30210,30255,30330,30400],end_ms:30490});
+const shortInfo={...info,end_ms:30490};
+const a=[[10,10],[20,20],[30,30]],b=a.map(p=>p.map(v=>v+1)),c=a.map(p=>p.map(v=>v+2));
+const marked=createRegion('stabilization','marked',30010,30490,shortInfo);
+marked.reference={crop_xywh:[0,0,100,100],tracking_mode:'offline',points:a,keyframes:[{frame:0,points:a},{frame:3,points:b},{frame:5,points:c,unconfirmed:[1]}],
+    point_mask:{frame:1,strokes:[{radius:8,erase:false,points:[[20,20]]}],model:'sam2.1_base_plus',spacing:7,limit:100},
+    sections:[{id:'correction',keys:[{at_ms:0,xy:[0,0]},{at_ms:365,xy:[365,730]}]}]};
+const markedPlan={tracking:[createRegion('tracking','poses',30010,30490,shortInfo)],stabilization:[marked],selection:[30010,30490],selected_ids:['marked']};
+const untouched=structuredClone(markedPlan);
+const pieces=splitRegion(markedPlan,'marked',30210,'right',shortInfo,clock),[left,right]=pieces.stabilization;
+assert.equal(left.id,'marked');assert.equal(left.end_ms,right.start_ms);assert.equal(right.start_ms,30210);
+assert.deepEqual(left.reference.keyframes,[{frame:0,points:a}]);
+assert.deepEqual(right.reference.keyframes,[{frame:0,points:b},{frame:2,points:c,unconfirmed:[1]}]);
+assert.deepEqual(right.reference.points,b);assert.deepEqual(left.reference.point_mask,marked.reference.point_mask);assert.equal(right.reference.point_mask,undefined);
+assert.deepEqual(left.reference.sections[0].keys,[{at_ms:0,xy:[0,0]},{at_ms:95,xy:[95,190]}]);
+assert.deepEqual(right.reference.sections[0].keys,[{at_ms:0,xy:[175,350]},{at_ms:190,xy:[365,730]}]);
+assert.equal(right.reference.tracking_mode,'offline');
+right.reference.crop_xywh[0]=9;right.reference.keyframes[0].points[0][0]=99;
+assert.equal(left.reference.crop_xywh[0],0);assert.deepEqual(markedPlan,untouched,'split and subsequent right-side edits preserve the original/left data');
+const seedAtCut=structuredClone(markedPlan);seedAtCut.stabilization[0].reference.point_mask.frame=3;
+const maskPieces=splitRegion(seedAtCut,'marked',30210,'right',shortInfo,clock).stabilization;
+assert.equal(maskPieces[0].reference.point_mask,undefined);assert.equal(maskPieces[1].reference.point_mask.frame,0,'mask on boundary belongs only to the right side');
+const noRightKeys=structuredClone(markedPlan);noRightKeys.stabilization[0].reference.keyframes=[{frame:0,points:a}];
+assert.deepEqual(splitRegion(noRightKeys,'marked',30210,'right',shortInfo,clock).stabilization[1].reference.points,[],'never copy point coordinates to an unmarked frame');
+let serial=0;const both=splitAtTime(markedPlan,['tracking','stabilization'],30210,()=>`both${serial++}`,shortInfo,clock);
+assert.deepEqual(both.tracking.map(r=>[r.start_ms,r.end_ms]),[[30010,30210],[30210,30490]]);
+assert.deepEqual(both.stabilization.map(r=>[r.start_ms,r.end_ms]),[[30010,30210],[30210,30490]]);
+assert.equal(both.selected_ids.length,2);
+const protectedPlan=structuredClone(markedPlan);protectedPlan.stabilization[0].locked=true;
+assert.throws(()=>splitAtTime(protectedPlan,['tracking','stabilization'],30210,()=>`locked${serial++}`,shortInfo,clock),/Unlock/);
+assert.equal(protectedPlan.tracking.length,1,'both lanes split atomically, including lock rejection');
+assert.throws(()=>splitAtTime(markedPlan,['tracking'],30000,()=>'',shortInfo,clock),/No region/);
+assert.throws(()=>splitRegion(markedPlan,'marked',NaN,'invalid',shortInfo,clock),/inside/);
+const isolatedReference=isolateSelection({...markedPlan,selection:[30130,30255]},'marked',()=>`isolate${serial++}`,shortInfo,clock);
+assert.deepEqual(isolatedReference.stabilization.map(r=>r.reference.keyframes.filter(k=>k.points.length).map(k=>clock.ceil(r.start_ms)+k.frame)),[[18],[21],[23]]);
+assert.equal(isolatedReference.stabilization[0].reference.point_mask.frame,1);
+assert.equal(isolatedReference.stabilization[1].reference.point_mask,undefined);
+console.log('Independent splits: exact VFR boundaries, retained mask/keyframe ownership, correction clipping, right-side rebasing, atomic lane splits, isolation and locks passed');
+const meshPlan=structuredClone(markedPlan);
+meshPlan.tracking[0].anchor='mask_anchor';meshPlan.tracking[0].mask_anchor={frame:3,strokes:[{erase:false,radius:8,points:[[20,20]]}]};
+const meshId=meshPlan.tracking[0].id;
+const meshSides=splitRegion(meshPlan,meshId,30210,'mask-right',shortInfo,clock).tracking;
+assert.equal(meshSides[0].mask_anchor,undefined);
+assert.equal(meshSides[1].mask_anchor.frame,0);
+assert.deepEqual(meshSides[1].mask_anchor.strokes,meshPlan.tracking[0].mask_anchor.strokes);
+assert.throws(()=>splitRegion(meshPlan,meshId,30210,'mask-right',shortInfo),/frame index/);
+assert.equal(changeRegion(meshPlan,meshId,{end_ms:30210},shortInfo).tracking[0].mask_anchor,undefined);
+assert.deepEqual(changeRegion(meshPlan,meshId,{name:'renamed'},shortInfo).tracking[0].mask_anchor,meshPlan.tracking[0].mask_anchor);
+console.log('Painted anchors retain exact reference-frame ownership on splits and reset on bounds changes');

@@ -8,7 +8,7 @@ The core Predict node remains the route for full meshes and render attributes.
 import time
 
 
-def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0, timings=None):
+def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0, timings=None, include_mesh=False):
     import torch
     import comfy.model_management as management
     import comfy.utils
@@ -75,6 +75,8 @@ def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0,
             keys.append("pred_face_keypoints_3d")
         else:
             keys.extend(["pred_vertices", "pred_joint_coords"])
+        if include_mesh and "pred_vertices" not in keys:
+            keys.append("pred_vertices")
         compact = {key: output[key].float().cpu().numpy() for key in keys if output.get(key) is not None}
         finished = time.perf_counter()
         progress.update(len(images))

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SAM3D Motion Studio</title><link rel="stylesheet" href="viewer.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SAM3D Motion Studio</title><link rel="stylesheet" href="viewer.css?v=reduce-points-1"></head>
 <body>
 <header><div><span class="badge">SAM3D</span><strong>Motion Studio</strong><span id="name"></span></div><span id="status" role="status">Open a project to begin</span></header>
 <main>
@@ -25,6 +25,13 @@
     <div class="controls selection-controls"><button id="markIn" title="Set selection start at the playhead (I)">Mark in</button><label>In <input id="selectionStart" type="number" min="0" step="0.001" value="0"> s</label><button id="markOut" title="Set selection end at the playhead (O)">Mark out</button><label>Out <input id="selectionEnd" type="number" min="0" step="0.001" value="0"> s</label><button id="selectTrack">Select track range</button><button id="playSelection" disabled>Play selection</button><label title="Repeat playback between the marked In and Out points"><input id="loopSelection" type="checkbox"> Loop selection</label><label>Join <select id="join"><option value="blend">Blend</option><option value="cut">Cut · manual join</option></select></label><label>Blend <input id="blendMs" type="number" min="0" step="20" value="200"> ms</label><button id="applySection">Use selection in main · all axes</button><button id="promoteTrack">Use whole track as main · all axes</button></div>
     <p id="selectionStatus" role="status">Choose a source row and a time range to copy all available axes into main.</p>
     <div class="controls"><label>Smoothing <input id="smoothMs" type="number" min="1" max="60000" step="10" value="200"> ms</label><button id="smoothSelection" disabled>Smooth selected range</button><span id="smoothTarget"></span></div>
+    <details id="reductionPanel" class="reduction-panel">
+      <summary>Reduce points…</summary>
+      <p>Exact cleanup removes redundant points after smoothing, blending and pattern insertion. Use this tool on existing curves or allow a small position error for stronger reduction.</p>
+      <div class="controls"><label>Scope <select id="reductionScope"><option value="selection">Selected range</option><option value="whole">Whole curve</option></select></label><label>Mode <select id="reductionMode"><option value="exact">Exact · no curve change</option><option value="tolerance">Small tolerance</option></select></label><label id="reductionToleranceLabel" hidden>Maximum error <input id="reductionTolerance" type="number" min="0" max="100" step="0.1" value="0.5"> / 100</label></div>
+      <div class="controls"><button id="previewReduction" disabled>Preview reduction</button><button id="applyReduction" disabled>Apply reduction</button><button id="cancelReduction" disabled>Cancel preview</button><span id="reductionTarget"></span></div>
+      <p id="reductionStatus" role="status">Endpoints, reversals, holds and section boundaries are retained. Exact mode may remove few points on a curved passage.</p>
+    </details>
     <details id="patternPanel" class="pattern-panel">
       <summary>Fill gaps & generate patterns</summary>
       <p>Mark a range on the curve you want to edit. Preview the replacement, then apply it to that axis. Video timing stays fixed.</p>
@@ -58,5 +65,13 @@
     <div class="controls"><label>Reference offset <input id="referenceOffset" type="number" step="20" value="0" disabled> ms</label><span id="referenceMetrics">No reference loaded for this axis</span></div>
   </section>
   <details class="panel"><summary>Analysis notes & provenance</summary><ul id="warnings"></ul><pre id="provenance"></pre></details>
-</main><script type="importmap">{"imports":{"./timeline.mjs":"./timeline.mjs?v=pattern-records-1","./patterns.mjs":"./patterns.mjs?v=selection-edges-removal-1"}}</script><script type="module" src="viewer.js"></script>
+</main>
+<div id="sceneCutActions" class="scene-cut-actions" role="group" aria-label="Selected scene cut actions" tabindex="-1" hidden>
+  <div class="scene-cut-heading"><strong id="selectedSceneCutLabel"></strong><div class="scene-cut-buttons"><button id="sceneCutPrevious" aria-label="Select previous scene cut" title="Previous cut (←)">‹</button><button id="sceneCutNext" aria-label="Select next scene cut" title="Next cut (→)">›</button><button id="sceneCutClose" aria-label="Close scene cut actions" title="Close (Escape)">×</button></div></div>
+  <p id="sceneCutTrack"></p>
+  <div class="scene-cut-buttons"><button id="sceneCutIn">Use as In <kbd>I</kbd></button><button id="sceneCutOut">Use as Out <kbd>O</kbd></button><button id="sceneCutBefore">Shot before</button><button id="sceneCutAfter">Shot after</button></div>
+  <p id="sceneCutScope"></p><p id="sceneCutSelection" role="status"></p>
+  <div class="scene-cut-buttons scene-cut-footer"><button id="sceneCutFit">Fit selection</button><button id="sceneCutCopy">Copy selection · all axes</button></div>
+</div>
+<script type="importmap">{"imports":{"./curve.mjs":"./curve.mjs?v=reduce-points-1","./curve-edit.mjs":"./curve-edit.mjs?v=reduce-points-1","./timeline.mjs":"./timeline.mjs?v=reduce-points-1","./patterns.mjs":"./patterns.mjs?v=reduce-points-1"}}</script><script type="module" src="viewer.js?v=reduce-points-1"></script>
 </body></html>

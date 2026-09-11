@@ -58,6 +58,68 @@ export function simplify(times, values, tolerance) {
     return [...kept].sort((a, b) => a - b);
 }
 
+// Reduce commands on the final integer, piecewise-linear curve. A zero budget
+// uses integer cross products: floating interpolation noise cannot alter motion.
+// Nonzero budgets are vertical position errors at the ORIGINAL timestamps.
+export function reduceActions(input, {tolerance=0, start=0, end=input.at(-1)?.at??0, protectedTimes=[]}={}) {
+    const actions=validateReference({actions:input}), n=actions.length;
+    if(!Number.isFinite(tolerance)||tolerance<0||tolerance>100||!Number.isFinite(start)||!Number.isFinite(end)||start<0||end<start)
+        throw new Error("Reduction needs a valid range and a position tolerance between 0 and 100.");
+    if(!Array.isArray(protectedTimes)||protectedTimes.some(t=>!Number.isFinite(t)))throw new Error("Protected boundaries must be finite timestamps.");
+    const protectedIndices=new Uint8Array(n);protectedIndices[0]=protectedIndices[n-1]=1;
+    const pin=time=>{
+        let lo=0,hi=n;while(lo<hi){const m=(lo+hi)>>1;if(actions[m].at<time)lo=m+1;else hi=m;}
+        if(lo<n)protectedIndices[lo]=1;
+        if(lo>0&&(lo===n||actions[lo].at!==time))protectedIndices[lo-1]=1;
+    };
+    for(const time of [start,end,...protectedTimes])pin(time);
+    for(let i=0;i<n;i++){
+        if(actions[i].at<start||actions[i].at>end)protectedIndices[i]=1;
+        if(tolerance>0&&i>0&&actions[i].at-actions[i-1].at<=1&&actions[i].pos!==actions[i-1].pos)protectedIndices[i-1]=protectedIndices[i]=1;
+        if(i>0&&i<n-1){
+            const before=actions[i].pos-actions[i-1].pos,after=actions[i+1].pos-actions[i].pos;
+            // Retain both ends of holds and every change of motion direction.
+            if(before*after<0||(before===0)!==(after===0))protectedIndices[i]=1;
+        }
+    }
+    const kept=[];
+    for(let i=0;i<n;i++){
+        while(kept.length>1){
+            const middle=kept.at(-1);if(protectedIndices[middle])break;
+            const a=actions[kept.at(-2)],b=actions[middle],c=actions[i];
+            if(BigInt(b.pos-a.pos)*BigInt(c.at-b.at)!==BigInt(c.pos-b.pos)*BigInt(b.at-a.at))break;
+            kept.pop();
+        }
+        kept.push(i);
+    }
+    let indices=kept;
+    if(tolerance>0&&kept.length>2){
+        const chosen=new Uint8Array(kept.length),stack=[];let left=0;chosen[0]=1;
+        for(let i=1;i<kept.length;i++)if(protectedIndices[kept[i]]){chosen[i]=1;stack.push([left,i]);left=i;}
+        while(stack.length){
+            const [a,b]=stack.pop(),from=actions[kept[a]],to=actions[kept[b]];let error=tolerance,split=-1;
+            for(let i=a+1;i<b;i++){
+                const p=actions[kept[i]],expected=from.pos+(to.pos-from.pos)*(p.at-from.at)/(to.at-from.at),difference=Math.abs(p.pos-expected);
+                if(difference>error){error=difference;split=i;}
+            }
+            if(split>=0){chosen[split]=1;stack.push([a,split],[split,b]);}
+        }
+        indices=kept.filter((_,i)=>chosen[i]);
+    }
+    const result=indices.map(i=>actions[i]);let maxError=0,segment=0;
+    if(tolerance>0)for(const p of actions){
+        while(segment+1<result.length&&result[segment+1].at<p.at)segment++;
+        const a=result[segment],b=result[Math.min(segment+1,result.length-1)];
+        const value=a.at===b.at?a.pos:a.pos+(b.pos-a.pos)*(p.at-a.at)/(b.at-a.at);
+        maxError=Math.max(maxError,Math.abs(value-p.pos));
+    }
+    // Since retained knots are a subset, differences are linear between input
+    // knots. Checking all of them also bounds error between those timestamps.
+    if(maxError>tolerance+1e-9)throw new Error("Reduced curve exceeded its error budget; no changes applied.");
+    const count=list=>list.filter(p=>p.at>=start&&p.at<=end).length;
+    return {actions:result,before:count(actions),after:count(result),removed:n-result.length,maxError,tolerance,start,end};
+}
+
 const dot = (a,b) => a.reduce((sum,x,i)=>sum+x*b[i],0);
 const length = v => Math.sqrt(dot(v,v));
 const identity = () => [[1,0,0],[0,1,0],[0,0,1]];
@@ -270,7 +332,8 @@ export function rebuildAxis(project, axis) {
     if (actions[0].at > 0) actions.unshift({at: 0, pos: actions[0].pos});
     const end = roundEven(project.metadata.duration_ms);
     if (end > actions.at(-1).at) actions.push({at: end, pos: actions.at(-1).pos});
-    return {version: "1.0", inverted: false, range: 100, actions};
+    const protectedTimes=runs.flatMap(([a,b])=>[times[a]-1,times[a],times[b-1]]);
+    return {version: "1.0", inverted: false, range: 100, actions:reduceActions(actions,{protectedTimes}).actions};
 }
 
 // Small dependency-free ZIP writer (stored entries, UTF-8 filenames).

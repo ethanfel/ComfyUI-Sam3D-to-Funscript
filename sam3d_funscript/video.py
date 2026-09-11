@@ -15,6 +15,7 @@ from .core import PoseSequence
 from .masks import MaskVideoReader, timestamp_seconds
 from .mouth import mouth_corners, mouth_regressor
 from .inference import predict_rgb
+from .mesh_anchor import MASK_ANCHOR_INDEX, NOTE as MASK_ANCHOR_NOTE, patch_position
 
 CACHE_VERSION = 2
 
@@ -122,7 +123,7 @@ def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0,
 
 def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seconds=0.0,
                   duration_seconds=0.0, max_frames=2000, rois_json="[[0,0,1,1]]",
-                  batch_size=8, fov=0.0, use_cache=True, mask_video_range=None):
+                  batch_size=8, fov=0.0, use_cache=True, mask_video_range=None, mesh_anchor=None):
     # Imports stay here so the geometry/editor can run without ComfyUI or CUDA.
     import folder_paths
     import comfy.model_management
@@ -139,6 +140,10 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         mask_path, mask_start, mask_duration = mask_video_range
         key["mask_video"] = {"version": 1, "source": fingerprint(mask_path),
             "start_seconds": float(mask_start), "duration_seconds": float(mask_duration), "threshold": 128}
+    if mesh_anchor is not None:
+        if not 0 <= mesh_anchor["person"] < people_count:
+            raise ValueError("Mask anchor person is outside the extracted ROI slots")
+        key["mesh_anchor"] = mesh_anchor
     digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:24]
     cache = Path(cache_dir).resolve() / f"{digest}.npz"
     if use_cache and cache.exists():
@@ -172,13 +177,13 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
             bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
             prediction = predict_rgb(model, [images[i] for i in active], bboxes,
                 packed_masks=[batch_masks[i] for i in active] if mask_video_range is not None else None,
-                fov=fov, batch_size=batch_size, timings=performance)
+                fov=fov, batch_size=batch_size, timings=performance, **({"include_mesh": True} if mesh_anchor else {}))
             if len(prediction) != len(active):
                 raise ValueError("SAM3D returned a different number of frames than the input batch")
             predictions = dict(zip(active, prediction))
         for i in range(len(images)):
-            points = np.full((people_count, 72, 3), np.nan, dtype=np.float32)
-            pixels = np.full((people_count, 72, 2), np.nan, dtype=np.float32)
+            points = np.full((people_count, 73 if mesh_anchor else 72, 3), np.nan, dtype=np.float32)
+            pixels = np.full((people_count, 73 if mesh_anchor else 72, 2), np.nan, dtype=np.float32)
             valid = np.zeros(people_count, dtype=bool)
             people = predictions.get(i, [])
             if i in predictions and len(people) != people_count:
@@ -187,7 +192,9 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                 points[slot, :70] = np.asarray(person["pred_keypoints_3d"]) + np.asarray(person["pred_cam_t"])
                 pixels[slot, :70] = person["pred_keypoints_2d"]
                 valid[slot] = np.isfinite(points[slot, :70]).all() and np.isfinite(pixels[slot, :70]).all()
-                points[slot, 70:], pixels[slot, 70:] = mouth_corners(person, (height, width), regressor)
+                points[slot, 70:72], pixels[slot, 70:72] = mouth_corners(person, (height, width), regressor)
+                if mesh_anchor and slot == mesh_anchor["person"]:
+                    points[slot, MASK_ANCHOR_INDEX], pixels[slot, MASK_ANCHOR_INDEX] = patch_position(person, mesh_anchor, (height, width))
             rows.append((points, pixels, valid))
         timestamps.extend(batch_times)
         print(f"SAM3D Funscript: extracted {len(rows)} samples", flush=True)
@@ -239,6 +246,10 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
                         missing_mask_samples=sum(boxes[0] is None for boxes in mask_boxes))
         metadata["warnings"][0] = "Person 0 follows the supplied mask video. Mask identity switches are not detected; review overlap and occlusion."
         metadata["warnings"].append("Black mask frames are missing samples; output holds across gaps. One mask video must identify one person.")
+    if mesh_anchor:
+        metadata["mask_anchor"] = mesh_anchor
+        metadata["extra_landmarks"][str(MASK_ANCHOR_INDEX)] = "painted_mesh_anchor"
+        metadata["warnings"].append(MASK_ANCHOR_NOTE)
     if len(rows) >= max_frames:
         metadata["warnings"].append("Sample limit reached; the analysed interval may stop before the video ends.")
     sequence = PoseSequence(times, np.stack([r[0] for r in rows]), np.stack([r[1] for r in rows]),
