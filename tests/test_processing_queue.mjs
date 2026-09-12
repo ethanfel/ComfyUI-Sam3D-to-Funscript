@@ -73,3 +73,13 @@ console.log('Explicit range/region scopes reach execution without changing workf
 queued=null;
 await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'missing-scope',operation:'scoped_selected',revision:4,plan}});
 assert.equal(queued,null);assert.match(replies.at(-1).error,/marked range or selected regions/);
+
+const beforeAutomatic={prepared,notified};
+await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'auto',operation:'automatic',revision:4,plan,automatic_options:{people:'all'},cut_sensitivity:'high'}});
+assert.equal(replies.at(-1).state,'complete',JSON.stringify(replies.at(-1)));
+assert.equal(queued.prompt.output[1].inputs.operation,'automatic');
+assert.equal(queued.prompt.output[1].inputs.cut_sensitivity,'high');
+assert.deepEqual(JSON.parse(queued.prompt.output[1].inputs.plan_json),{revision:4,plan,automatic_options:{people:'all'}});
+assert.deepEqual(JSON.parse(node.widgets[0].value),{revision:4,plan});
+assert.equal(prepared,beforeAutomatic.prepared+1);assert.equal(notified,beforeAutomatic.notified+1);
+console.log('Automatic pass forwards people and cut settings, flushes edits, and preserves the saved selection');

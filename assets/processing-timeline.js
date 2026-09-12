@@ -9,9 +9,9 @@ import {frameClock} from "./frame-clock.mjs";
 import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-masks-1";
 import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason} from "./video-preview.mjs?v=reference-masks-1";
 
-import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=1";
-import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=1";
-import {subjectEditor} from "./timeline-subject.mjs?v=1";
+import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=automatic-scenes-1";
+import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=subject-crop-1";
+import {subjectEditor} from "./timeline-subject.mjs?v=subject-crop-1";
 import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
 import {stabilizationSteps} from './stabilization-steps.mjs?v=timeline-audit-1';
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
@@ -80,8 +80,11 @@ const meshEditor=meshAnchorEditor({$,context:()=>{
     $('previewVariant').value='original';pause();seek(frames.at(frames.ceil(selected().region.start_ms)+frame));
 },draw:drawSource});
 const subject=subjectEditor({$,context:()=>({region:selected()?.lane==='tracking'?selected().region:null,visible:!$('regionSettingsPane').hidden,
-    busy:busy||!!startingOperation,stabilized:!!previewClip,editable:!previewClip&&!previewLoading&&!video.seeking&&video.readyState>=2&&video.paused,
-    size:state?[state.info.width,state.info.height]:[1,1]}),update:updateRegion,attempt,draw:drawSource});
+    busy:busy||!!startingOperation,stabilized:!!previewClip,editable:!previewClip&&!previewLoading&&requestedSeek===null&&!video.seeking&&video.readyState>=2&&video.paused,
+    size:state?[state.info.width,state.info.height]:[1,1]}),update:updateRegion,attempt,draw:drawSource,prepareOriginal:()=>{
+        const r=selected().region;$('previewVariant').value='original';$('meshAnchorTool').value='review';pause();
+        seek(playhead>=r.start_ms&&playhead<r.end_ms?playhead:r.start_ms);
+    }});
 timelineRestore({$,context:()=>({info:state.info,clock:frames,plan}),fail,restore:async candidate=>{
     if(busy||startingOperation)throw new Error('Finish or cancel processing before restoring a plan.');
     const latest=await jsonResponse(await fetch(api,{cache:'no-store',signal:AbortSignal.timeout(15000)}));
@@ -122,7 +125,7 @@ function feedback(kind, text) {
     $("applyStatus").textContent = text || "";
 }
 function draft() {
-    try { if (dirty) localStorage.setItem(draftKey, JSON.stringify({revision, plan})); else localStorage.removeItem(draftKey); } catch (_) { /* Storage can be disabled; Download plan still works. */ }
+    try { if (dirty) localStorage.setItem(draftKey, JSON.stringify({revision, plan, base: savedPlan})); else localStorage.removeItem(draftKey); } catch (_) { /* Storage can be disabled; Download plan still works. */ }
 }
 function edit(next, message = "Plan changed · Apply to node to keep it") {
     if (busy||startingOperation) throw new Error("Wait for processing to finish, or cancel it before editing the plan.");
@@ -144,6 +147,9 @@ function updateRegion(patch) {
     const before = selected();
     if (!before) return;
     const changedBounds=['start_ms','end_ms'].some(k=>patch[k]!==undefined&&patch[k]!==before.region[k]);
+    if(before.region.automatic&&('anchor' in patch||'person' in patch))patch={...patch,automatic:{...before.region.automatic,suggest:false}};
+    if(before.region.automatic&&patch.anchor&&patch.anchor!==before.region.anchor&&patch.additional_anchors===undefined)patch.additional_anchors=[...new Set([before.region.anchor,...(before.region.additional_anchors||[])])].filter(a=>a!==patch.anchor&&a!=='mask_anchor');
+    if(before.region.automatic&&patch.rois)patch={...patch,candidate_people:patch.rois.map((_,i)=>i),automatic:{...(patch.automatic||before.region.automatic),review:[],people:[]}};
     const next=changeRegion(plan,before.region.id,patch,state.info,frames);
     const after=regionById(next,before.region.id).region;
     const marks=r=>r.reference?referenceKeys(r.reference).filter(k=>k.points.length).length+(r.reference.point_mask?1:0):(r.mask_anchor?1:0);
@@ -330,7 +336,8 @@ function drawSource() {
     const [ctx,w,h] = prepare($("sourceCanvas"));
     const found = selected(), reference = !previewClip&&found?.lane === "stabilization" ? found.region.reference : null;
     const zoom = reference && $("cropZoom").checked && $("referenceMode").value !== "crop";
-    const crop = zoom ? reference.crop_xywh : [0,0,previewClip?video.videoWidth:state.info.width,previewClip?video.videoHeight:state.info.height];
+    const personCrop=subject.previewCrop();
+    const crop = zoom ? reference.crop_xywh : personCrop || [0,0,previewClip?video.videoWidth:state.info.width,previewClip?video.videoHeight:state.info.height];
     const scale = Math.min(w / crop[2], h / crop[3]), ox = (w - crop[2] * scale) / 2, oy = (h - crop[3] * scale) / 2;
     sourceMap = {crop,scale,ox,oy};
     if (video.readyState >= 2) ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
@@ -345,7 +352,7 @@ function drawSource() {
             const [px,py]=point(p);ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.strokeStyle=key.unconfirmed?.includes(i)?"#ffb870":"#92efd0";ctx.stroke();ctx.fillStyle=ctx.strokeStyle;ctx.font="12px system-ui";ctx.fillText(String(i+1),px+8,py-7);
         }
         $("previewStatus").textContent = key ? `${key.points.length} reference points · marked frame` : "Choose a clear frame and click Mark reference frame";
-    } else $("previewStatus").textContent = "One source clock for every region";
+    } else $("previewStatus").textContent = personCrop?`Person ${found.region.person} · zoomed preview`:'One source clock for every region';
     if(previewClip){const region=plan.stabilization.find(r=>r.id===previewClip.id);$("previewStatus").textContent=`${region.name} · ${timelineRenderCurrent(previewClip,region)?'rendered stabilization':'previous render · settings changed'} · no audio`;}
     else if($("previewVariant").value==='stabilized')$("previewStatus").textContent=previewFailures.size?'Original · stabilized clip unavailable':catalogError||'Original · no rendered stabilization at this frame';
     const reviewed=previewClip||selectedRender(),health=trackingDetails.get(reviewed?.url)?.health,index=trackingFrame(health,playhead);
@@ -370,7 +377,7 @@ function drawSource() {
 }
 function anchorPreviewKey() {
     const r=selected()?.lane==='tracking'?selected().region:null;
-    return r?JSON.stringify([state.info.source_id,r.id,r.start_ms,r.end_ms,r.anchor,r.additional_anchors||[],r.person,r.rois,r.mask_anchor||null]):null;
+    return r?JSON.stringify([state.info.source_id,r.id,r.start_ms,r.end_ms,r.anchor,r.additional_anchors||[],r.person,r.rois,!!r.isolate_subject,r.mask_anchor||null]):null;
 }
 function renderAnchorPreviewControls() {
     if(!state||!frames)return;
@@ -435,6 +442,7 @@ function renderNavigation() {
     $('selectedRegionsSummary').title=enabledSelected.map(r=>r.name).join(', ');
     $('processSelected').title=b>a?`Process only ${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:'Mark In and Out first';
     $('processRegions').title=enabledSelected.length?`Process full regions: ${enabledSelected.map(r=>r.name).join(', ')}`:'Select enabled regions first';
+    $("processAutomatic").disabled=busy;$("automaticPeople").disabled=busy;
     $("detectCuts").disabled=busy;$("cutSensitivity").disabled=busy;
     $("previousCut").disabled=neighboringCut(cuts(),playhead,-1)===null;
     $("nextCut").disabled=neighboringCut(cuts(),playhead,1)===null;
@@ -585,6 +593,8 @@ function renderInspector() {
         }
     }
     const values={regionName:region.name,regionIn:positionValue(region.start_ms),regionOut:positionValue(region.end_ms)};
+    $('automaticRegionReview').hidden=!region.automatic;$('automaticSuggestionLabel').hidden=!region.automatic;
+    if(region.automatic){$('automaticRegionReview').textContent=autoReviews().find(row=>row.region.id===region.id)?.reasons.join(' · ')||'Automatic scene · review the suggested anchor in Motion Studio.';$('automaticSuggestion').checked=region.automatic.suggest;}
     if(lane==="tracking")Object.assign(values,{anchor:region.anchor,person:region.person,smoothing:region.smoothing_ms,rois:JSON.stringify(region.rois),axisSettings:JSON.stringify(region.settings||{},null,2)});
     else Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh),trackingMode:region.reference.tracking_mode||'online'});
     for(const [id,value] of Object.entries(values))if(document.activeElement!==$(id))$(id).value=value;
@@ -645,13 +655,17 @@ $("browseAnchors").onclick=()=>{
     $("anchorSearch").focus({preventScroll:true});
 };
 function renderReport() {
-    const report=state.report||{},target=$("report");target.replaceChildren();
+    const reviewRows=autoReviews();$('nextAutoReview').disabled=busy||!reviewRows.length;
+    const autoCount=plan.tracking.filter(r=>r.automatic).length;
+    $('automaticSummary').textContent=autoCount?`${autoCount} automatic scenes · ${reviewRows.length} need review`:'';
+    const report=state.report||{},target=$('report');target.replaceChildren();
     for(const item of report.regions||[]) {
         const region=regionById(plan,item.id)?.region,row=document.createElement("div");row.className=`report-row ${item.state||"pending"}`;
         const name=document.createElement("span");name.className="name";name.textContent=region?.name||item.id;
         const range=document.createElement("span");range.className="muted";range.textContent=`${formatTime(item.start_ms||0,1)} – ${formatTime(item.end_ms||0,1)}`;
         const label=document.createElement("span");label.className="report-state";label.textContent=item.error||(region&&regionById(plan,item.id)?.lane==='tracking'?resultState(region,item):item.state)||"pending";
         const button=document.createElement("button");button.textContent="Show";button.onclick=()=>{if(region){selectRegion(region.id);fitRange(region.start_ms,region.end_ms);seek(region.start_ms);}};
+        if(item.review?.length){label.textContent+=' · Needs review';label.title=item.review.join(' · ');}
         row.append(name,range,label,button);target.append(row);
     }
     for(const warning of report.warnings||[]){const p=document.createElement("div");p.className="report-warning";p.textContent=typeof warning==="string"?warning:JSON.stringify(warning);target.append(p);}
@@ -959,15 +973,32 @@ async function save() {
     if(conflictingDraft)throw new Error("This recovered draft is older than the saved plan. Download your edits before loading the latest plan.");
     if(savePromise){await savePromise;if(dirty)return save();return;}
     if(!dirty)return;
-    const sent=clone(plan),sentRevision=revision;
+    const sent=clone(plan);let sentRevision=revision;
     savePromise=(async()=>{
+        if(sent.tracking.some(r=>r.isolate_subject)){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+            if(capabilities.subject_crop!==1)throw new Error('Restart ComfyUI to enable person crops, then Apply again. Your edits are kept.');
+        }
         if(sent.tracking.some(r=>r.anchor==='mask_anchor'||r.mask_anchor)){
             const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
             if(capabilities.mask_anchors!==1)throw new Error('Restart ComfyUI to enable painted 3D anchors, then refresh its main tab and reopen this timeline. Your edits are kept.');
         }
         if(sent.stabilization.some(r=>r.reference.point_mask))await requireMaskBackend();
         if(sent.stabilization.some(r=>r.reference.keyframes||r.reference.tracking_mode==='offline'))await requireReferenceBackend(location.href);
-        const next=await jsonResponse(await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:sentRevision,plan:sent})}));
+        let next;
+        for(let attempt=0;attempt<3;attempt++){
+            try{
+                next=await jsonResponse(await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:sentRevision,plan:sent}),signal:AbortSignal.timeout(30000)}));
+                break;
+            }catch(error){
+                if(error.status!==409||attempt===2)throw error;
+                const latest=await jsonResponse(await fetch(api,{cache:'no-store',signal:AbortSignal.timeout(15000)}));
+                if(latest.info.source_id!==sent.source_id)throw error;
+                if(equal(latest.plan,sent)){next=latest;break;} // Save succeeded before the connection dropped.
+                if(!equal(latest.plan,savedPlan))throw error;
+                sentRevision=latest.revision; // A report/rerun changed only the revision.
+            }
+        }
         revision=next.revision;savedPlan=clone(next.plan||sent);state={...state,...next};
         if(equal(plan,sent))plan=clone(savedPlan);dirty=!equal(plan,savedPlan);draft();
     })();
@@ -1005,7 +1036,7 @@ async function requireMaskBackend(){
 }
 function validateProcessing(operation,scope=null) {
     const candidatePlan=scope?planForScope(plan,scope):plan;
-    if(operation==="detect_cuts")return;
+    if(["detect_cuts","automatic"].includes(operation))return;
     if(operation==='preview_anchor'){
         const r=selected()?.lane==='tracking'?selected().region:null,at=frames.at(activeFrame());
         if(!r||r.enabled===false||at<r.start_ms||at>=r.end_ms)throw new Error('Choose a frame inside an enabled tracking region.');
@@ -1034,6 +1065,10 @@ async function process(operation,scopeKind=null) {
     if(operation==="detect_cuts")$("sceneTools").open=true;
     try {
         if(document.activeElement?.matches('input,textarea,select'))document.activeElement.blur();
+        if(operation==='automatic'){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store'}));
+            if(capabilities.automatic_scenes!==1)throw new Error('Restart ComfyUI and refresh its main tab to enable automatic scenes.');
+        }
         const scope=operation==='selected'?processingScope(plan,scopeKind):null;
         validateProcessing(operation,scope);
         if(scope){
@@ -1060,7 +1095,7 @@ async function process(operation,scopeKind=null) {
         const request=uuid();processPending={request,operation,stabilizationId,previewKey,previewRequest,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
         // A distinct bridge operation makes older main tabs reject scopes instead
         // of silently running their legacy marked-range precedence.
-        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value},location.origin);
+        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value,automatic_options:{people:$("automaticPeople").value}},location.origin);
     }catch(error){fail(error);}finally{startingOperation=null;renderPreviewControls();}
 }
 function finishProcess(error) {
@@ -1079,6 +1114,10 @@ function finishProcess(error) {
 }
 $("processAll").onclick=()=>process("all");$("processSelected").onclick=()=>process("selected","range");$("processRegions").onclick=()=>process("selected","regions");$("processUnfinished").onclick=()=>process("unfinished");
 $("detectCuts").onclick=()=>process("detect_cuts");
+$('processAutomatic').onclick=()=>process('automatic');
+$('automaticSuggestion').onchange=()=>attempt(()=>updateRegion({automatic:{...selected().region.automatic,suggest:$('automaticSuggestion').checked}}));
+function autoReviews(){return plan.tracking.filter(r=>r.automatic).map(region=>{const row=state.report?.regions?.find(row=>row.id===region.id);return {region,reasons:[...new Set([...(region.automatic.review||[]),...(row?.review||[]),...(row?.error?[row.error]:[])])]};}).filter(row=>row.reasons.length);}
+$('nextAutoReview').onclick=()=>{const rows=autoReviews();if(!rows.length)return;const index=rows.findIndex(row=>row.region.id===selected()?.region.id);const row=rows[(index+1)%rows.length];selectRegion(row.region.id);fitRange(row.region.start_ms,row.region.end_ms);seek(row.region.start_ms);};
 $("trackStabilization").onclick=()=>process('stabilize');
 $('previewAnchor').onclick=()=>process('preview_anchor');
 $('showAnchorPreview').onchange=drawSource;
@@ -1146,6 +1185,12 @@ window.s3fTimelineLoad=async()=>{
     if(loading)return;loading=true;
     try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));await loadState(next);}finally{loading=false;}
 };
+window.s3fReconnect=async()=>{
+    appliedPlan=null;
+    if(applyPending)finishApply(new Error('ComfyUI reconnected before Apply was acknowledged. Your plan is kept; Apply again when ready.'));
+    if(processPending)finishProcess(new Error('ComfyUI reconnected. Check its queue before processing again; completed regions and your settings are kept.'));
+    await window.s3fTimelineLoad();
+};
 $("reload").onclick=async()=>{try{const next=pendingState||await jsonResponse(await fetch(api,{cache:"no-store"}));await loadState(next,true);feedback("pending","Latest saved plan loaded");clearError();}catch(error){fail(error);}};
 $("download").onclick=()=>{const blob=new Blob([JSON.stringify(plan,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="processing-timeline.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 window.addEventListener("beforeunload",event=>{draft();if(dirty){event.preventDefault();event.returnValue="";}});
@@ -1169,7 +1214,7 @@ async function initialize() {
     let local;try{local=JSON.parse(localStorage.getItem(draftKey)||"null");}catch(_){}
     await window.s3fTimelineLoad();
     if(local?.plan?.source_id===state.info.source_id&&!equal(local.plan,plan)){
-        conflictingDraft=local.revision!==revision;plan=local.plan;dirty=true;
+        conflictingDraft=local.revision!==revision&&!(local.base&&equal(local.base,savedPlan));plan=local.plan;dirty=true;
         if(conflictingDraft){pendingState=state;revision=local.revision;$("reload").hidden=false;fail(new Error("Recovered unsaved edits from an earlier revision. Download this draft before loading the latest plan."));}
         if(!regionById(plan,activeId))activeId=plan.selected_ids?.[0]||plan.tracking[0]?.id||null;
         draft();status(conflictingDraft?"Recovered older draft · download it before loading the latest plan":"Recovered unsaved edits from this browser · Apply to node to keep them");feedback("pending","Recovered unapplied edits");render();

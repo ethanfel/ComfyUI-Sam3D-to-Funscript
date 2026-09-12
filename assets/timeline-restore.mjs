@@ -15,6 +15,7 @@ export function restoreCandidate(raw,info,clock) {
         for(const key of ['enabled','locked'])if(typeof region[key]!=='boolean')throw new Error('Region enabled/locked values must be true or false.');
         if(typeof region.name!=='string')throw new Error('Region names must be text.');
         if(lane==='tracking'){
+            if(region.isolate_subject!==undefined&&typeof region.isolate_subject!=='boolean')throw new Error('Exclude outside crop must be true or false.');
             if(typeof region.anchor!=='string'||!Array.isArray(region.additional_anchors)||!region.additional_anchors.every(a=>typeof a==='string')||!object(region.settings))throw new Error('Invalid anchor settings.');
             if(!Number.isFinite(region.smoothing_ms)||region.smoothing_ms<0||!Array.isArray(region.rois)||!region.rois.length||region.rois.some(r=>!Array.isArray(r)||r.length!==4||!r.every(Number.isFinite)||r[0]<0||r[1]<0||r[2]<=0||r[3]<=0||r[0]+r[2]>1.000001||r[1]+r[3]>1.000001)||!Number.isInteger(region.person)||region.person<0||region.person>=region.rois.length)throw new Error('Invalid person regions or smoothing.');
             if(region.mask_anchor&&!paintValid(region.mask_anchor))throw new Error('Invalid painted anchor.');

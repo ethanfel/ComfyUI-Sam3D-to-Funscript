@@ -20,7 +20,7 @@ const stabilizedClip=path.join(temporary,'stabilized.mp4');
 const stableEncode=spawnSync('ffmpeg',['-v','error','-i',portraitClip,'-t','2.5','-vf','pad=220:360:20:20:color=black','-an','-c:v','libx264','-preset','ultrafast','-movflags','+faststart',stabilizedClip]);assert.equal(stableEncode.status,0,stableEncode.stderr.toString());
 const session='1234567890abcdef1234567890abcdef';
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
-let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true,meshCapabilities=true,previewCapabilities=true;
+let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true,meshCapabilities=true,previewCapabilities=true,cropCapabilities=true;
 const referenceState={id:'neutral-reference',info:{source_id:'neutral-reference-source',width:160,height:120,source_origin:'0',rate:'2'},config:{crop_xywh:[0,0,160,120],points:[],sections:[]},frame_index:{times_ms:Array.from({length:120},(_,i)=>i*500)}};
 const parentHtml=`<!doctype html><button id="open" onclick="window.editor=window.open('/sam3d_funscript/assets/processing-timeline.html?session=${session}&node=1')">Open editor</button><script>
 window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-reference-apply'){await fetch('/test/reference-save',{method:'POST',body:JSON.stringify(d.config)});e.source.postMessage({type:'s3f-reference-applied',request:d.request},location.origin);return;}if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'||window.rejectScopes&&d.operation==='scoped_selected'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;const result=await(await fetch('/test/process',{method:'POST',body:JSON.stringify(d)})).json();e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete',anchor_preview:result.anchor_preview},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
@@ -29,7 +29,7 @@ const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript'
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0,anchor_preview:previewCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({subject_crop:cropCapabilities?1:0,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0,anchor_preview:previewCapabilities?1:0}));return;}
  if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
  if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
  if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='preview_anchor'){
@@ -113,7 +113,7 @@ try{
  previewCapabilities=false;seenProcess=null;
  await page.evaluate('document.querySelector("#previewAnchor").click()');
  await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI to enable anchor previews")'),'preview backend capability error');
- assert.equal(seenProcess,null);previewCapabilities=true;
+ assert.equal(seenProcess,null);previewCapabilities=true,cropCapabilities=true;
  await page.evaluate('document.querySelector("#apply").click()');await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'preview plan saved');
  console.log('Anchor preview browser: current frame, painted surface, additional anchors, show/hide, frame changes, locks, cancellation, output preservation and old backend feedback passed');
  const paintSaved=structuredClone(state.plan.tracking[0].mask_anchor),meshReload=await page.evaluate('performance.timeOrigin');
@@ -183,6 +183,58 @@ try{
  const at=await ui('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/180,r.height/320);return{x:r.x+(r.width-180*s)/2,y:r.y+(r.height-320*s)/2,s}})()');
  await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:at.x+20*at.s,y:at.y+20*at.s,button:'left',clickCount:1});await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:at.x+120*at.s,y:at.y+260*at.s,buttons:1});await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:at.x+120*at.s,y:at.y+260*at.s,button:'left',clickCount:1});await saved();
  assert.equal(state.plan.tracking[0].rois.length,2);assert.equal(state.plan.tracking[0].person,1);
+ // Strict crop and display zoom share source coordinates with painted anchors.
+ const otherSection=structuredClone(state.plan.tracking[1]);
+ await press('cropPerson');await until(()=>ui('!document.getElementById("source").seeking&&!document.getElementById("subjectTool").disabled'),'crop drawing ready');
+ assert.equal(await ui('document.getElementById("subjectTool").value'),'replace');
+ const drawCrop=async(a,b)=>{
+  const m=await ui('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/180,r.height/320);return{x:r.x+(r.width-180*s)/2,y:r.y+(r.height-320*s)/2,s}})()');
+  await page.call('Input.dispatchMouseEvent',{type:'mousePressed',x:m.x+a[0]*m.s,y:m.y+a[1]*m.s,button:'left',clickCount:1});
+  await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:m.x+b[0]*m.s,y:m.y+b[1]*m.s,buttons:1});
+  await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:m.x+b[0]*m.s,y:m.y+b[1]*m.s,button:'left',clickCount:1});
+ };
+ await drawCrop([30,40],[140,280]);
+ assert.equal(await ui('document.getElementById("personZoom").checked'),true);
+ assert.equal(await ui('document.getElementById("isolateSubject").checked'),true);
+ cropCapabilities=false;await press('apply');await until(()=>ui('document.getElementById("error").textContent.includes("Restart ComfyUI to enable person crops")'),'old backend retains crop draft');
+ assert.equal(state.plan.tracking[0].isolate_subject,undefined);
+ cropCapabilities=true;await saved();
+ const cropped=state.plan.tracking[0];assert.equal(cropped.isolate_subject,true);assert.equal(cropped.person,1);
+ assert.deepEqual(cropped.rois[0],[0,0,1,1]);
+ [30/180,40/320,110/180,240/320].forEach((v,i)=>assert.ok(Math.abs(cropped.rois[1][i]-v)<.01));
+ assert.deepEqual(state.plan.tracking[1],otherSection,'only the selected section changes');
+ const cropRevision=state.revision,cropPlan=structuredClone(state.plan);
+ await press('personZoom');await press('personZoom');await wait(100);
+ assert.equal(state.revision,cropRevision);assert.deepEqual(state.plan,cropPlan);
+ assert.ok(await ui('document.getElementById("apply").textContent.includes("Applied")'),'zoom does not dirty the plan');
+ await set('anchor','mask_anchor');await press('meshAnchorMark');
+ const zoomCenter=await ui('(()=>{const r=document.getElementById("sourceCanvas").getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');
+ await click(zoomCenter.x,zoomCenter.y);await saved();
+ const marked=state.plan.tracking[0].mask_anchor.strokes.at(-1).points[0];
+ assert.ok(Math.abs(marked[0]-85)<1&&Math.abs(marked[1]-160)<1,'zoomed paint stays in original source coordinates: '+JSON.stringify(marked));
+ await set('anchor','pelvis');seenProcess=null;await press('previewAnchor');
+ await until(()=>ui('document.getElementById("anchorPreviewStatus").textContent.includes("original frame")'),'cropped anchor preview');
+ assert.equal(seenProcess.plan.tracking[0].isolate_subject,true);
+ await press('isolateSubject');assert.match(await ui('document.getElementById("anchorPreviewStatus").textContent'),/Preview shows/,'crop changes invalidate the old anchor overlay');
+ await press('isolateSubject');await saved();
+ await press('cropPerson');await until(()=>ui('!document.getElementById("subjectTool").disabled'),'redraw from zoom');await drawCrop([20,30],[130,270]);await saved();
+ [20/180,30/320,110/180,240/320].forEach((v,i)=>assert.ok(Math.abs(state.plan.tracking[0].rois[1][i]-v)<.01,'redraw uses the full original image'));
+ await press('regionLock');assert.equal(await ui('document.getElementById("cropPerson").disabled'),true);
+ assert.equal(await ui('document.getElementById("personZoom").disabled'),false);await press('regionLock');await saved();
+ // The earlier audit intentionally enabled an unfinished stabilization region.
+ await select('audit-s');await press('regionEnabled');await select('audit-a');await saved();
+ seenProcess=null;await press('processRegions');await until(()=>seenProcess?.processing_scope?.kind==='regions','cropped section processing');
+ assert.equal(seenProcess.plan.tracking[0].isolate_subject,true);
+ await until(()=>ui('document.getElementById("progressText").textContent==="Processing complete"'),'cropped section complete');
+ const cropPageOrigin=await ui('performance.timeOrigin');await page.call('Page.reload');
+ await until(async()=>await ui('performance.timeOrigin')!==cropPageOrigin,'crop page navigation');
+ await until(()=>ui('document.getElementById("source")?.readyState>=2&&!document.querySelector("main").inert&&document.getElementById("isolateSubject").checked&&!document.getElementById("source").seeking'),'saved crop reload');
+ await press('resetLayout');await select('audit-a');await press('personZoom');
+ await until(()=>ui('document.getElementById("previewStatus").textContent.includes("zoomed preview")'),'zoomed crop after reload');
+ await ui('window.scrollTo(0,0);new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+ fs.mkdirSync('development/subject-crop-browser',{recursive:true});
+ fs.writeFileSync('development/subject-crop-browser/zoomed-person.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ console.log('Subject crop browser checks passed: ROI isolation, preview zoom, source-coordinate paint, redraw, locks, cache freshness, capability checks, processing and reload');
  const backup=structuredClone(state.plan);await set('regionName','Edited later');await saved();
  await ui(`(()=>{const d=new DataTransfer();d.items.add(new File([${JSON.stringify(JSON.stringify(backup))}],'backup.json',{type:'application/json'}));const e=document.getElementById('restoreFile');e.files=d.files;e.dispatchEvent(new Event('change'));})()`);
  await until(()=>ui('document.getElementById("restoreDialog").open'),'restore review');assert.equal(state.plan.tracking[0].name,'Edited later','choosing a backup does not apply it');await press('confirmRestore');await until(()=>ui('!document.getElementById("restoreDialog").open'),'restore draft');

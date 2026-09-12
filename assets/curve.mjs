@@ -286,11 +286,25 @@ export function autoFitAxis(project,axis,includeExtremes=false,calibration=proje
     const motion=motionForAxis(project,axis,"auto",calibration),source=motion.processed.filter(Number.isFinite);
     if(!source.length)throw new Error("No usable samples for automatic fitting");
     if(calibration==="adaptive")return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,calibration,center:50,range:Math.ceil(percentile(motion.ranges.filter(Number.isFinite),.5)*1e6)/1e6};
+    return fitScalarAxis(project,axis,source,"auto",includeExtremes);
+}
+
+// Fit gain without letting another direction (for example depth drift) replace
+// the component the author selected. Matches the node's numeric auto_fit path.
+export function fitComponentAxis(project,axis,component,includeExtremes=false) {
+    if(!Number.isInteger(component)||component<0||component>2)throw new Error("Choose Up, Forward or Left to fit a component");
+    const motion=motionForAxis(project,axis,component);
+    const source=motion.processed.filter((value,index)=>project.valid[index]&&Number.isFinite(value));
+    if(!source.length)throw new Error("No usable samples for this component");
+    return fitScalarAxis(project,axis,source,component,includeExtremes);
+}
+
+function fitScalarAxis(project,axis,source,component,includeExtremes) {
     const low=percentile(source,includeExtremes?0:.05),high=percentile(source,includeExtremes?1:.95),midpoint=(low+high)/2;
     const range=Math.ceil(Math.max(axis.startsWith("R")?10:.04,(high-low)/(includeExtremes ? .9 : .8),2*Math.abs(midpoint))*1e6)/1e6;
     const invert=project.config.axis_settings[axis].invert;
     const center=Math.floor(Math.max(0,Math.min(100,50-midpoint/range*100*(invert?-1:1)))*1000+.5)/1000;
-    return {...project.config.axis_settings[axis],component:"auto",auto_fit:true,calibration,range,center};
+    return {...project.config.axis_settings[axis],component,auto_fit:true,calibration:"clip",range,center};
 }
 
 export function axisValue(source, settings, index, field="processed") {

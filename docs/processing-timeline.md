@@ -23,6 +23,9 @@ loading or Motion Studio's curve editor.
 2. Keep the timeline node's **operation** on `prepare` and run the workflow once.
    This prepares the timeline without extracting poses for the whole video. Until
    a completed motion project exists, the dependent Motion Studio nodes wait.
+   **plan_json** can be blank or `{}`: a new session starts with a full-video
+   region; an existing session restores its saved plan. Clearing that field does
+   not erase saved regions or cached results.
 3. Click **Open processing timeline**. Use the timeline's zoom and horizontal
    navigation to select the part of the source you want to work on.
 4. Edit the initial full-video **Tracking** region or split it into smaller regions.
@@ -44,16 +47,69 @@ The plan is stored in the node's `plan_json` widget. Save the ComfyUI workflow a
 editing it. The standalone Motion Studio and the embedded preview in this example
 share one editing session through the `editor_session` connection.
 
+Changing the input video keeps that Motion Studio connection, but stores the
+previous video's edits separately. Its locked tracks do not block the new video
+or get copied onto it. Processing the previous video again restores its saved
+edits and locks. These histories stay separate for independently connected Motion
+Studio nodes and survive ComfyUI restarts.
+
 **Download plan** saves a JSON backup. **Restore plan** checks that the backup
 belongs to this source and previews its region counts before you restore it as a
 draft. Review the restored plan, then **Apply to node** and save the workflow.
 Locked regions must be unlocked before a restore can replace their settings.
 Opening a backup alone does not change the plan.
 
+## Automatic first pass
+
+After preparing a new video, open **Automatic mode → Run automatic mode** in the
+Processing Timeline. It uses the existing scene markers, or detects cuts when
+there are none, then finds people inside each scene. **All detected people** is
+the default; **Most prominent person** is available for a smaller candidate set.
+The untouched initial full-video placeholder is replaced by scene regions.
+On an edited project, automatic mode fills uncovered intervals and retains
+existing regions, including disabled or locked ones.
+
+Each person gets **mouth, pelvis, left hand, and right hand** candidates from the
+same pose extraction. Motion Studio keeps these in one scene block with an
+anchor selector. A heuristic based on crop coverage, motion variation and abrupt
+pose changes suggests one candidate for Main. It does not identify contact or
+guarantee that the suggested motion is the one you want. Existing authored Main
+edits and locks still use the usual rerun protection.
+
+Use **Next scene to review** to visit missing detections, changing framing,
+ambiguous crops, or failed candidates. Draw or adjust the person rectangles,
+enable a disabled scene if needed, and process that region again. Choosing its
+person or Main anchor manually turns off **Suggest a main anchor when processing
+this scene**; you can turn it back on in the region settings. In Motion Studio,
+switching the anchor selector only changes the displayed candidate. Use the
+existing copy-to-Main controls to replace the draft with your preferred motion.
+
+Person detection samples the scene at 2 fps and combines matching boxes into a
+crop covering their movement. These are fixed scene crops, not continuous
+identity tracking. **Exclude outside crop from SAM3D** starts enabled so native
+crop padding cannot bring back a person outside the proposed rectangle. Crossings,
+brief appearances, occlusion, camera rotation and
+zoom can still fail. Detections that do not persist reliably are excluded, and
+scenes without a reliable person remain disabled for manual correction. A larger
+crop can keep movement in view, but does not compensate for camera zoom or
+separate overlapping people. Inspect every final section before export.
+
+The detector runs locally on CPU and caches sampled boxes; SAM3D poses also reuse
+the existing processing cache. Automatic mode does not download models. Install
+the optional `requirements-automatic.txt` dependencies in ComfyUI's Python
+environment and place `yolo11m.pt` under
+`models/ultralytics/bbox/YOLO11/`. Registered Ultralytics model folders, YOLO11s,
+and `person_yolov8m-seg.pt` are also supported. Disconnect a single-person mask
+input for automatic discovery; it cannot describe all people in the source.
+
 The timeline's **Open Motion Studio** link uses that same saved editing session
 when there is one directly connected standalone owner. With no sole owner, the
 timeline keeps its own independent saved Motion Studio session. Generated mains
-refresh on processing reruns; user-edited or locked assembled mains are preserved.
+refresh on processing reruns. Once a main has been edited, its existing sections
+stay intact and newly completed sections still insert into unused flat gaps,
+including sections skipped by an earlier version. Inserts blend at both edges
+inside the new section. Existing sections, patterns, custom motion in gaps and
+locked main axes are protected; use the copy controls for an intentional replacement.
 
 ## Stabilization in three stages
 
@@ -269,6 +325,24 @@ advanced settings accept the same motion configuration used by the anchor node.
 redraw the selected person's rectangle or add another directly on the paused
 Original preview. The rectangles are normalized to source dimensions; their
 numbers identify the SAM3D person slots. **Show regions** controls their overlay.
+
+For a small subject or a distracting second person, choose **Crop to person** and
+draw a rectangle on the original preview. This updates the selected person slot,
+enables **Exclude outside crop from SAM3D**, and turns on **Zoom to person**.
+SAM3D normally expands rectangles for extra context; exclusion blacks out pixels
+outside each rectangle before that expansion. Keep useful body context and cover
+the person's movement throughout this section; split the section when a different
+crop is needed. Use **Preview anchor on this frame** to check the result before
+processing the section.
+
+**Zoom to person** only changes the preview. It does not change tracking settings
+or require reprocessing. Source timing and coordinates stay unchanged, including
+painted anchors. You can turn exclusion and preview zoom off independently.
+Changing the rectangle or exclusion setting requires reprocessing that section.
+When a mask video is connected, SAM3D uses the mask's per-frame bounding box;
+exclusion applies to that box. Stabilized sections use the existing transformed
+person bounds, which cover the person's translated positions over the chunk.
+
 Output-axis checkboxes and **Invert L0** cover common output settings. Raw ROI and
 axis JSON remain in **Advanced person coordinates** and **Advanced axis settings**
 for less common configurations.
@@ -363,7 +437,17 @@ and offline project downloads retain it. **Full screen** fills the display;
 inside the combined workspace it keeps the tool tabs available. Escape exits
 full screen.
 
-Use the **▾** button on a Motion Studio track to collapse its curve while keeping
+Motion Studio defaults to **Section blocks · one row**: source curves occupy only
+their analysed intervals on one shared row. Click a block heading to select its
+range and show its controls. Use **Overlapping anchors** to choose which existing
+anchor curve is displayed when tracks overlap. This changes the presentation;
+each track retains its own curve, calibration and lock. The **Section** selector
+and previous/next buttons also reach short or offscreen sections. Scene-cut
+markers, selection, point editing and copying into main work on the shared row.
+**Collapse sections** keeps the block headings available. The view and anchor
+choices are saved with the editor and offline project.
+
+Choose **Separate rows** for comparison. Use the **▾** button on a track to collapse its curve while keeping
 the row controls available; **▸** expands it. This works on locked tracks too,
 and saved projects retain the collapsed state. Each source row's **Select range**
 button selects its exact analysed interval. Selections made on a source stop at

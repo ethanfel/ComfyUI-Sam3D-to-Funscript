@@ -26,6 +26,28 @@ class ProcessingStoreTests(unittest.TestCase):
         restored = self.store.prepare(self.session, self.info, {"revision": 1, "plan": self.state["plan"]})
         self.assertEqual(restored["plan"]["tracking"][0]["anchor"], "mouth")
 
+    def test_blank_plan_starts_new_session_and_restores_saved_edits_without_resetting(self):
+        for raw in ('', ' \n\t ', '{}'):
+            with self.subTest(raw=raw):
+                fresh = self.store.prepare('b' * 32, self.info, raw)
+                self.assertEqual(fresh['plan'], self.state['plan'])
+        plan = deepcopy(self.state['plan'])
+        plan['tracking'][0].update(anchor='mouth', locked=True)
+        saved = self.store.save(self.session, self.state['revision'], plan)
+        saved = self.store.finish(self.session, saved['revision'], {'completed_jobs': 8}, Path(self.tmp.name)/'cached/project.json')
+        before = (self.store.directory(self.session)/'timeline.json').read_bytes()
+        for raw in ('', ' \n\t ', '{}'):
+            restored = ProcessingStore(self.tmp.name).prepare(self.session, self.info, raw)
+            self.assertEqual(restored, saved)
+            self.assertEqual((self.store.directory(self.session)/'timeline.json').read_bytes(), before)
+
+    def test_invalid_plan_never_resets_saved_state(self):
+        before = (self.store.directory(self.session)/'timeline.json').read_bytes()
+        for raw in ('{broken', '[]', 'null', 'false', '""', {'plan': []}):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, 'timeline plan JSON|JSON object'):
+                self.store.prepare(self.session, self.info, raw)
+            self.assertEqual((self.store.directory(self.session)/'timeline.json').read_bytes(), before)
+
     def test_locks_protect_edits_deletion_and_source_switch_until_unlocked(self):
         plan = deepcopy(self.state["plan"])
         plan["tracking"][0]["locked"] = True

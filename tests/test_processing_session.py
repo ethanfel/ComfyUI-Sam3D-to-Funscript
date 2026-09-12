@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 
 def load_node_module():
@@ -39,8 +40,99 @@ class ProcessingSessionTests(unittest.TestCase):
                         {"name": "project_1", "link": None}], "properties": {"s3f_session": "a" * 32}}],
             "links": [[1, 2, 0, 3, 1, "S3F_MOTION_PROJECT"]]}
 
+    def test_node_accepts_blank_widget_on_prepare_and_resumes_the_saved_plan(self):
+        import importlib
+        node = self.node
+        module = importlib.import_module(node.__package__ + '.sam3d_funscript.processing_timeline')
+        graph = types.ModuleType('comfy_execution.graph')
+        class Blocker:
+            def __init__(self, value): self.value = value
+        graph.ExecutionBlocker = Blocker
+        management = types.ModuleType('comfy.model_management')
+        management.throw_exception_if_processing_interrupted = lambda: None
+        management.InterruptProcessingException = type('Interrupted', (Exception,), {})
+        server = types.ModuleType('server')
+        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda *args: None))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); session = 'c' * 32
+            current = {'source_id': 'source', 'start': '0', 'end_ms': 2000, 'width': 640, 'height': 480}
+            node.folder_paths.get_output_directory = lambda: str(root)
+            node.folder_paths.get_full_path = lambda *args: None
+            kwargs = dict(video=object(), model_file='unused-model', operation='prepare', unique_id='1', plan_json='',
+                extra_pnginfo={'workflow': {'nodes': [{'id': 1, 'properties': {'s3f_timeline_session': session}}]}})
+            with patch.dict(sys.modules, {'comfy_execution.graph': graph, 'comfy.model_management': management, 'server': server}), \
+                 patch.object(node, 'video_input_range', return_value=('source', 0, 0)), \
+                 patch.object(node, 'source_info', return_value=current), \
+                 patch.object(module, 'run_timeline', side_effect=AssertionError('Prepare must not run inference')) as worker:
+                result = node.S3F_ProcessingTimeline().run(**kwargs)
+                self.assertIsInstance(result['result'][0], Blocker)
+                worker.assert_not_called()
+                store = node.ProcessingStore(root/'sam3d_funscript/processing')
+                state = store.read(session)
+                plan = deepcopy(state['plan']); plan['tracking'][0].update(anchor='mouth', locked=True)
+                state = store.save(session, state['revision'], plan)
+                node.S3F_ProcessingTimeline().run(**{**kwargs, 'plan_json': ' \n\t '})
+                self.assertEqual(store.read(session), state)
+                worker.side_effect = None; worker.return_value = (None, {'completed_jobs': 8})
+                node.S3F_ProcessingTimeline().run(**{**kwargs, 'operation': 'unfinished'})
+                self.assertEqual(worker.call_args.args[1], state['plan'])
+                self.assertEqual(worker.call_args.kwargs['operation'], 'unfinished')
+
     def test_single_direct_standalone_shares_its_session(self):
         self.assertEqual(self.node.motion_editor_session(self.workflow(), "2", "b" * 32), "a" * 32)
+
+    def test_automatic_node_saves_new_scenes_then_processes_only_their_ids(self):
+        import importlib
+        import json
+        node = self.node
+        timeline = importlib.import_module(node.__package__ + '.sam3d_funscript.processing_timeline')
+        automatic = importlib.import_module(node.__package__ + '.sam3d_funscript.automatic')
+        cuts = importlib.import_module(node.__package__ + '.sam3d_funscript.scene_cuts')
+        graph = types.ModuleType('comfy_execution.graph')
+        graph.ExecutionBlocker = type('Blocker', (), {'__init__': lambda self, value: None})
+        management = types.ModuleType('comfy.model_management')
+        management.throw_exception_if_processing_interrupted = lambda: None
+        management.InterruptProcessingException = type('Interrupted', (Exception,), {})
+        server = types.ModuleType('server')
+        events = []
+        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda *args: events.append(args)))
+        current = {'source_id':'source', 'start':'0', 'end_ms':2000, 'width':640, 'height':480}
+        plan = timeline.normalize_plan({'tracking':[{'id':'manual','start_ms':0,'end_ms':1000,'locked':True}], 'selection':[250,500]}, current)
+        auto = {**deepcopy(plan['tracking'][0]), 'id':'auto_scene', 'start_ms':1000, 'end_ms':2000, 'locked':False,
+                'candidate_people':[0], 'additional_anchors':['mouth','left_hand','right_hand'],
+                'automatic':{'version':1,'suggest':True,'people':[],'review':[]}}
+        generated = {**deepcopy(plan), 'tracking':[*deepcopy(plan['tracking']),auto]}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); session = 'e'*32
+            node.folder_paths.get_output_directory = lambda: str(root)
+            node.folder_paths.get_full_path = lambda *args: None
+            store = node.ProcessingStore(root/'sam3d_funscript/processing')
+            state = store.prepare(session,current,plan)
+            kwargs = dict(video=object(),model_file='unused',unique_id='1',operation='automatic',
+                plan_json=json.dumps({'revision':state['revision'],'plan':plan,'automatic_options':{'people':'all'}}),
+                extra_pnginfo={'workflow':{'nodes':[{'id':1,'properties':{'s3f_timeline_session':session}}]}})
+            with patch.dict(sys.modules, {'comfy_execution.graph':graph,'comfy.model_management':management,'server':server}), \
+                 patch.object(node,'video_input_range',return_value=('source',0,0)), patch.object(node,'source_info',return_value=current), \
+                 patch.object(cuts,'detect_cuts',return_value={'source_id':'source','times_ms':[1000]}) as scan, \
+                 patch.object(automatic,'prepare_automatic',return_value=(generated,{'scenes_added':1,'review':[]})) as planner, \
+                 patch.object(timeline,'run_timeline',return_value=(None,{'regions':[]})) as worker:
+                node.S3F_ProcessingTimeline().run(**kwargs)
+                self.assertEqual(planner.call_args.kwargs['people_mode'],'all')
+                self.assertEqual(worker.call_args.kwargs['operation'],'selected')
+                executed = worker.call_args.args[1]
+                self.assertEqual(executed['selected_ids'],['auto_scene']); self.assertEqual(executed['selection'][0],executed['selection'][1])
+                saved = store.read(session)
+                self.assertEqual(saved['plan']['selection'],[250,500]);self.assertTrue(saved['plan']['tracking'][0]['locked'])
+                self.assertEqual(saved['plan']['tracking'][1]['candidate_people'],[0])
+                self.assertEqual(saved['report']['revision'],saved['revision'])
+                self.assertTrue(any(event[1].get('stage')=='auto_ready' for event in events))
+                # A repeat reuses the saved cuts, does not replace the plan, and
+                # keeps the manual locked interval out of the processing scope.
+                planner.return_value=(saved['plan'],{'scenes_added':0,'review':[],'message':'Existing regions cover this video.'})
+                kwargs['plan_json']=json.dumps({'revision':saved['revision'],'plan':saved['plan']})
+                node.S3F_ProcessingTimeline().run(**kwargs)
+                self.assertEqual(scan.call_count,1)
+                self.assertEqual(worker.call_args.args[1]['selected_ids'],['auto_scene'])
 
     def test_missing_ambiguous_or_ignored_connections_use_independent_stable_session(self):
         expected = self.node.motion_editor_session({}, "2", "b" * 32)

@@ -36,6 +36,11 @@ class PreviewTests(unittest.TestCase):
     def preview(self, at=100, **kwargs):
         return preview_anchor(self.info,self.plan,{'region_id':'t','at_ms':at},'model',self.root,**kwargs)
 
+    def test_subject_crop_is_used_for_the_single_frame_preview(self):
+        self.plan['tracking'][0]['isolate_subject'] = True
+        self.preview()
+        self.assertTrue(self.predict.call_args.kwargs['isolate_subject'])
+
     def test_current_frame_uses_actual_centroid_and_detailed_additional_anchors(self):
         original=deepcopy(self.plan)
         result=self.preview()
@@ -96,7 +101,7 @@ class FrameCacheTests(unittest.TestCase):
             folders=types.ModuleType('folder_paths');folders.get_full_path_or_raise=lambda *args:__file__
             calls=[]
             def predict(model,images,boxes,**kwargs):
-                self.assertEqual(len(images),1);calls.append(boxes)
+                self.assertEqual(len(images),1);calls.append((boxes,kwargs.get('isolate_subject',False)))
                 return [[mesh_person()]]
             modules={'folder_paths':folders,'comfy_extras':types.ModuleType('comfy_extras'),native.__name__:native}
             with patch.dict(sys.modules,modules),patch('sam3d_funscript.video.predict_rgb',side_effect=predict),patch('sam3d_funscript.video._preview_frame',None),patch('sam3d_funscript.video.mouth_regressor',return_value=None):
@@ -112,6 +117,13 @@ class FrameCacheTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'exact anchor preview frame'):
                     predict_frame(current,241,'model',[[0,0,.5,1]])
                 self.assertEqual(len(calls),4)
+                for _ in range(2):
+                    predict_frame(current,240,'model',[[0,0,.5,1]],include_mesh=True,isolate_subject=True)
+                self.assertEqual(len(calls),5)
+                self.assertTrue(calls[-1][1])
+                predict_frame(current,240,'model',[[0,0,.5,1]],include_mesh=True)
+                self.assertEqual(len(calls),6)
+                self.assertFalse(calls[-1][1])
 
 
 class PreviewNodeTests(unittest.TestCase):

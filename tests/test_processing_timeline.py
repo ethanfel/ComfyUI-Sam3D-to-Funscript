@@ -47,6 +47,23 @@ def fake_extract(source, model_file, cache_dir, **kwargs):
 
 
 class PlanTests(unittest.TestCase):
+    def test_subject_crop_is_optional_and_requires_a_boolean(self):
+        ordinary = normalize_plan({'tracking': [region()]}, info())
+        disabled = normalize_plan({'tracking': [region(isolate_subject=False)]}, info())
+        self.assertEqual(ordinary, disabled, 'old default signatures remain valid')
+        isolated = normalize_plan({'tracking': [region(isolate_subject=True)]}, info())
+        self.assertTrue(isolated['tracking'][0]['isolate_subject'])
+        for value in ('false', 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'boolean'):
+                normalize_plan({'tracking': [region(isolate_subject=value)]}, info())
+
+    def test_blank_plan_is_the_default_but_nonempty_invalid_json_is_rejected(self):
+        for raw in ('', ' \n\t '):
+            self.assertEqual(normalize_plan(raw, info()), normalize_plan({}, info()))
+        for raw in ('{broken', '[]', 'null', 'false', '""'):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, 'timeline plan JSON|JSON object'):
+                normalize_plan(raw, info())
+
     def test_explicit_scope_ignores_other_selection_and_preserves_saved_plan(self):
         plan = normalize_plan({'tracking': [region('a', 0, 2000), region('b', 2000, 4000)],
                                'selection': [200, 400], 'selected_ids': ['b']}, info())
@@ -106,6 +123,74 @@ class ExecutionTests(unittest.TestCase):
 
     def run_plan(self, plan, **kwargs):
         return run_timeline(self.info, plan, self.root, str(self.model), **kwargs)
+
+    def test_automatic_people_share_poses_and_keep_distinct_sources_across_reruns(self):
+        from sam3d_funscript.editor import initialize, merge_projects
+        automatic = {'version':1,'suggest':True,'people':[{'coverage':1},{'coverage':1}],'review':[]}
+        plan = {'tracking':[region(anchor='pelvis',additional_anchors=['mouth','left_hand','right_hand'],
+            rois=[[0,0,1,1],[0,0,1,1]],candidate_people=[0,1],automatic=automatic)]}
+        project, report = self.run_plan(plan)
+        self.assertEqual(self.extract.call_count,1)
+        self.assertEqual(len(project['timeline']['tracks']),8)
+        self.assertEqual(len(report['regions'][0]['candidates']),8)
+        self.assertEqual(sum(c['suggested'] for c in report['regions'][0]['candidates']),1)
+        initialize(project)
+        self.assertEqual(len(project['timeline']['latest']),8)
+        self.assertEqual(len({s['input'] for s in project['timeline']['sources']}),8)
+        for axis in AXES: self.assertEqual(len(project['timeline']['main'][axis]['regions']),1)
+        again, _ = self.run_plan(plan)
+        self.assertEqual(self.extract.call_count,1)
+        merged = merge_projects(project,again)
+        self.assertEqual(len(merged['timeline']['tracks']),8)
+        plan['tracking'][0].update(person=1,anchor='right_hand',additional_anchors=['pelvis','mouth','left_hand'])
+        plan['tracking'][0]['automatic']['suggest']=False
+        changed,_ = self.run_plan(plan)
+        self.assertEqual(self.extract.call_count,1,'switching people reuses the multi-person pose cache')
+        primary=[s for s in changed['timeline']['sources'] if s['data']['metadata']['processing_anchor']['primary']]
+        self.assertEqual(len(primary),1)
+        self.assertEqual(primary[0]['data']['config']['target_person'],1)
+        self.assertEqual(primary[0]['data']['config']['target_anchor'],'right_hand')
+
+    def test_automatic_short_or_failed_candidates_do_not_block_later_scenes(self):
+        automatic = {'version':1,'suggest':True,'people':[],'review':[]}
+        plan = {'tracking':[region('short',0,1000,automatic=automatic), region('good',1000,4000,automatic=automatic)]}
+        def extract(*args, **kwargs):
+            if kwargs['start_seconds'] == 0:
+                raise ValueError('Selected video range contains fewer than two sampled frames')
+            return fake_extract(*args, **kwargs)
+        self.extract.side_effect = extract
+        project, report = self.run_plan(plan)
+        self.assertEqual(report['regions'][0]['state'],'error')
+        self.assertEqual(report['regions'][1]['state'],'complete')
+        self.assertEqual(len(project['timeline']['sources']),1)
+        self.assertEqual(project['timeline']['sources'][0]['data']['metadata']['processing_region']['id'],'good')
+        # Missing target poses are candidate failures, not a fake flat source.
+        def invalid(*args, **kwargs):
+            sequence = fake_extract(*args, **kwargs)
+            if kwargs['start_seconds'] == 0: sequence.valid[:] = False
+            return sequence
+        self.extract.side_effect = invalid
+        project, report = self.run_plan(plan, use_cache=False)
+        self.assertEqual(report['regions'][0]['state'],'error')
+        self.assertIn('No usable anchor',report['regions'][0]['error'])
+        self.assertEqual(report['regions'][1]['state'],'complete')
+        self.assertEqual(len(project['timeline']['sources']),1)
+
+    def test_subject_crop_reprocesses_only_the_changed_section(self):
+        plan = {'tracking': [region('a', 0, 2000), region('b', 2000, 4000)]}
+        self.run_plan(plan)
+        self.assertEqual(self.extract.call_count, 2)
+        self.assertNotIn('isolate_subject', self.extract.call_args.kwargs)
+        plan['tracking'][0]['isolate_subject'] = True
+        self.run_plan(plan)
+        self.assertEqual(self.extract.call_count, 3)
+        self.assertTrue(self.extract.call_args.kwargs['isolate_subject'])
+        self.run_plan(plan)
+        self.assertEqual(self.extract.call_count, 3)
+        plan['tracking'][0]['isolate_subject'] = False
+        self.run_plan(plan)
+        self.assertEqual(self.extract.call_count, 4)
+        self.assertNotIn('isolate_subject', self.extract.call_args.kwargs)
 
     def test_multiple_anchors_share_inference_and_only_main_anchor_is_assembled(self):
         plan = {"tracking": [region(anchor="mouth", additional_anchors=["left_hand", "right_hand"])]}

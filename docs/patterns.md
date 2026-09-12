@@ -16,11 +16,13 @@ To keep a separate pattern row, use **Add track**, name the new row, and generat
 Use this for a short interval where tracking stops, a fleeting cut interrupts an otherwise repeating movement, or the extracted curve is corrupted. Select the whole unwanted portion with its endpoints on usable motion.
 
 - **Both sides** estimates the rhythm before and after the selection. **Before the gap** and **After the gap** use only the chosen side.
-- **Context per side** controls how many seconds to examine. Start with four seconds and expand it for slower motion. Automatic detection needs roughly two cycles; a manual cycle override needs at least one and a half cycles.
-- **Cycle override** is in seconds. Zero estimates it from the curve. An override still needs repeating movement in the available context.
+- **Context per side** controls how many seconds to examine. Start with four seconds and expand it for slower motion. Automatic detection needs roughly two cycles; a known cycle override can use one full observed cycle.
+- **Cycle override** is in seconds. Zero estimates it from the curve. An override still needs motion in the available context; it does not turn a flat line into a detected rhythm.
 - **Blend edges** is on by default for continuation; **Blend at each edge** controls the transition duration (initially 150 ms). This join uses the outside endpoints and slopes; corrupted samples inside the selection do not influence it.
 
-The estimate samples each available outside window, detects repetition and fits a trend plus three harmonics. It joins the left and right phases, amplitudes and centers through the gap. Joining phases avoids the amplitude cancellation that a crossfade between opposite waveforms could cause. If only one side has a usable rhythm, it uses that side and reports it. Without a usable repeating signal, it asks for more context, an override or a generated pattern.
+The estimate samples each available outside window, detects repetition and fits a trend plus three harmonics. If the whole window has a weak fit, it searches shorter stretches inside that context and requires a stronger fit for them. This can recover a cycle surrounded by pauses or changes of pace. The preview reports the exact context times it used. It joins the left and right phases, amplitudes and centers through the gap. Joining phases avoids the amplitude cancellation that a crossfade between opposite waveforms could cause. If only one side has a usable rhythm, it uses that side and reports it.
+
+Only motion outside the selection and within the selected source's interval is used. Selecting an entire source leaves no surrounding context on that source: select a smaller gap, work on Main if it has usable neighboring motion, or use **Generate pattern**. A failed estimate reports how much context exists on each chosen side and whether it is flat or lacks a consistent cycle.
 
 The reported **rhythm fit** describes how well the periodic model explains that context. It is not tracking accuracy or evidence of motion hidden by a cut. The replacement is synthesized: long gaps, changed activities, noisy motion and irregular cycles require review. Harmonic fitting approximates the neighboring shape rather than reproducing every small feature. The editor never fills gaps automatically just because a scene marker exists.
 

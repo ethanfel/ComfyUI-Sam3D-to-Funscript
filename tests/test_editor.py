@@ -138,6 +138,118 @@ class EditorTests(unittest.TestCase):
         shorter = copy.deepcopy(incoming); shorter['metadata'].pop('processing_timeline')
         self.assertEqual(merge_projects(normal, shorter)['metadata']['duration_ms'], previous['metadata']['duration_ms'])
 
+    def processing_project(self, spans):
+        from sam3d_funscript.processing_timeline import assemble_projects
+        projects = []
+        for identifier, start, end in spans:
+            sequence = fixture(72)
+            sequence.times_ms = sequence.times_ms / 2000 * (end-start) + start
+            sequence.metadata.update(duration_ms=end, processing_coverage=[[start, end]],
+                processing_region={'id': identifier, 'name': identifier})
+            projects.append(build_project(sequence, {'target_anchor': 'mouth'}))
+        result = assemble_projects(projects, {'join_ms': 100, 'gap_policy': 'hold'},
+            {'end_ms': 10000, 'height': 200, 'width': 300, 'source': self.initial['metadata']['source']})
+        for main in result['timeline']['main'].values():
+            main['processing_generated'] = True
+        return result
+
+    def test_recreated_region_with_same_name_adds_a_distinct_current_detection(self):
+        previous = self.processing_project([('old-zone', 1000, 3000)])
+        incoming = self.processing_project([('new-zone', 1000, 3000)])
+        for project in (previous, incoming):
+            for source in project['timeline']['sources']:
+                source['data']['metadata']['processing_region']['name'] = 'Tracking 31'
+            for track in project['timeline']['tracks']:
+                track['name'] = 'Tracking 31 · mouth'
+        for main in previous['timeline']['main'].values():
+            main['edited'] = True
+        before = copy.deepcopy(previous)
+        merged = merge_projects(previous, incoming)
+        self.assertEqual(len(merged['timeline']['tracks']), 2)
+        old, new = merged['timeline']['tracks']
+        self.assertEqual(old, before['timeline']['tracks'][0])
+        self.assertEqual(old['name'], new['name'])
+        self.assertNotEqual(old['source'], new['source'])
+        self.assertEqual(list(merged['timeline']['latest'].values()), [new['source']])
+        self.assertEqual(merged['scripts'], before['scripts'])
+        self.assertEqual(previous, before)
+        self.assertEqual(merge_projects(merged, incoming), merged)
+
+    def test_edited_processing_main_adds_missing_sections_and_preserves_existing_curves(self):
+        previous = self.processing_project([('first', 1000, 3000)])
+        for axis, main in previous['timeline']['main'].items():
+            main['edited'] = True
+            for action in previous['scripts'][axis]['actions']:
+                if 1200 <= action['at'] < 2800:
+                    action['pos'] = 100-action['pos']
+        incoming = self.processing_project([('first', 1000, 3000), ('new', 6000, 8000)])
+        before = copy.deepcopy(previous)
+        merged = merge_projects(previous, incoming)
+        for axis in merged['scripts']:
+            self.assertEqual([r['name'] for r in merged['timeline']['main'][axis]['regions']], ['first', 'new'])
+            old_points = {a['at']: a['pos'] for a in previous['scripts'][axis]['actions']}
+            points = {a['at']: a['pos'] for a in merged['scripts'][axis]['actions']}
+            self.assertTrue(all(points[at] == pos for at, pos in old_points.items()))
+            self.assertGreaterEqual(len([a for a in merged['scripts'][axis]['actions'] if 6000 < a['at'] < 8000]), 2)
+            self.assertTrue(merged['timeline']['main'][axis]['edited'])
+        self.assertEqual(previous, before)
+        self.assertGreater(len([a for a in merged['scripts']['L0']['actions'] if 6000 < a['at'] < 8000]), 2)
+        # Repeated exports do not duplicate sections or regenerate authored main.
+        repeated = merge_projects(merged, incoming)
+        self.assertEqual(repeated['scripts'], merged['scripts'])
+        self.assertEqual(repeated['timeline']['main'], merged['timeline']['main'])
+
+    def test_previously_skipped_source_row_can_fill_main_and_fill_between_existing_sections(self):
+        previous = self.processing_project([('first', 1000, 3000), ('last', 8000, 9000)])
+        incoming = self.processing_project([('first', 1000, 3000), ('missing', 5000, 6000), ('last', 8000, 9000)])
+        # Reproduce the old bug: the source row exists but its main copy is absent.
+        already_published = merge_projects(previous, incoming)
+        already_published['scripts'] = copy.deepcopy(previous['scripts'])
+        for axis, main in already_published['timeline']['main'].items():
+            main.update(edited=True, regions=[r for r in main['regions'] if r['name'] != 'missing'])
+        merged = merge_projects(already_published, incoming)
+        for axis, main in merged['timeline']['main'].items():
+            self.assertEqual([r['name'] for r in main['regions']], ['first', 'missing', 'last'])
+            for action in previous['scripts'][axis]['actions']:
+                if action['at'] < 5000 or action['at'] > 6000:
+                    self.assertIn(action, merged['scripts'][axis]['actions'])
+
+    def test_auto_insert_respects_locked_axes_patterns_and_authored_gap_motion(self):
+        previous = self.processing_project([('first', 1000, 3000)])
+        incoming = self.processing_project([('first', 1000, 3000), ('new', 6000, 8000)])
+        for main in previous['timeline']['main'].values():
+            main['edited'] = True
+        previous['timeline']['main']['L0']['locked'] = True
+        previous['timeline']['main']['L1']['patterns'] = [{'start': 6100, 'end': 7000}]
+        previous['scripts']['L2']['actions'].insert(-1, {'at': 5000, 'pos': 27})
+        merged = merge_projects(previous, incoming)
+        for axis in ('L0', 'L1', 'L2'):
+            self.assertEqual(merged['scripts'][axis], previous['scripts'][axis])
+            self.assertEqual(merged['timeline']['main'][axis], previous['timeline']['main'][axis])
+        self.assertEqual(len(merged['timeline']['main']['R0']['regions']), 2)
+
+    def test_auto_insert_never_replaces_overlapping_sections_or_manual_whole_main(self):
+        previous = self.processing_project([('first', 1000, 3000)])
+        incoming = self.processing_project([('overlap', 2000, 4000), ('new', 6000, 8000)])
+        for main in previous['timeline']['main'].values():
+            main['edited'] = True
+        previous['timeline']['main']['L1']['regions'][0].update(start=0, end=10000, join='whole')
+        previous['timeline']['main']['L2']['regions'] = []
+        merged = merge_projects(previous, incoming)
+        self.assertEqual([r['name'] for r in merged['timeline']['main']['L0']['regions']], ['first', 'new'])
+        for axis in ('L1', 'L2'):
+            self.assertEqual(merged['scripts'][axis], previous['scripts'][axis])
+        self.assertEqual([r['name'] for r in merged['timeline']['main']['L0']['regions']].count('first'), 1)
+
+    def test_automatic_insert_cut_guards_stay_inside_the_new_section(self):
+        from sam3d_funscript.editor import _insert_actions
+        old = [{'at': 0, 'pos': 20}, {'at': 1000, 'pos': 20}]
+        source = [{'at': 100, 'pos': 90}, {'at': 500, 'pos': 70}]
+        points = {a['at']: a['pos'] for a in _insert_actions(old, source, 100, 500, 0)}
+        self.assertEqual({at: points[at] for at in (0, 100, 500, 1000)}, {0: 20, 100: 20, 500: 20, 1000: 20})
+        self.assertEqual(points[101], 90)
+        self.assertEqual(points[499], 70)
+
     def test_unchanged_input_and_appended_anchor_preserve_unlocked_edits(self):
         previous = self.initial
         track = previous['timeline']['tracks'][0]
@@ -232,3 +344,72 @@ class EditorTests(unittest.TestCase):
             self.assertIn('id="lockMain"', (path.parent / 'viewer.html').read_text())
             with self.assertRaises(ValueError): store.read('../elsewhere')
             with self.assertRaises(Conflict): store.save(session, self.initial, 1)
+
+    def test_switch_video_archives_locked_edits_and_restores_them_after_restart(self):
+        session = 'a' * 32
+        with tempfile.TemporaryDirectory() as root:
+            store = EditorStore(root)
+            original = copy.deepcopy(self.initial)
+            original['timeline']['tracks'][0].update(locked=True, name='Finished track')
+            original['timeline']['main']['L0']['locked'] = True
+            original['scripts']['L0']['actions'] = [{'at': 0, 'pos': 17}, {'at': 1900, 'pos': 73}]
+            saved = store.save(session, original, 0)
+            incoming = copy.deepcopy(self.hand)
+            incoming['metadata']['source']['path'] = 'second-video.mp4'
+            exporter = lambda data: export_project(data, root, 'switch')
+            path, revision = store.export(session, incoming, exporter)
+            self.assertEqual(revision, 2)
+            self.assertEqual(json.loads(path.read_text())['metadata']['source'], incoming['metadata']['source'])
+            self.assertEqual(store.read_video(session, original), saved)
+            self.assertFalse(any(t.get('locked') for t in store.read(session)['project']['timeline']['tracks']))
+            with self.assertRaises(Conflict):
+                store.save(session, original, saved['revision'])
+
+            second = store.read(session)
+            second['project']['timeline']['main']['L1']['locked'] = True
+            second['project']['scripts']['L1']['actions'] = [{'at': 0, 'pos': 30}, {'at': 1900, 'pos': 60}]
+            saved_second = store.save(session, second['project'], revision)
+            store = EditorStore(root)
+            _, restored_revision = store.export(session, self.mouth, exporter)
+            restored = store.read(session)
+            self.assertGreater(restored_revision, saved_second['revision'])
+            self.assertEqual(restored['project']['scripts']['L0'], original['scripts']['L0'])
+            self.assertEqual(restored['project']['timeline']['tracks'][0], original['timeline']['tracks'][0])
+            self.assertTrue(restored['project']['timeline']['main']['L0']['locked'])
+            self.assertEqual(store.read_video(session, incoming), saved_second)
+
+            store.export(session, incoming, exporter)
+            self.assertEqual(store.read(session)['project']['scripts']['L1'], saved_second['project']['scripts']['L1'])
+            self.assertTrue(store.read(session)['project']['timeline']['main']['L1']['locked'])
+            self.assertIsNone(store.read_video('b' * 32, original), 'separate nodes retain separate edit histories')
+
+    def test_failed_source_switch_preserves_active_session_and_revision(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = EditorStore(root); session = 'a' * 32
+            self.initial['timeline']['tracks'][0]['locked'] = True
+            before = store.save(session, self.initial, 0)
+            incoming = copy.deepcopy(self.hand)
+            incoming['metadata']['source']['path'] = 'second-video.mp4'
+            def fail_export(project):
+                raise OSError('export unavailable')
+            with self.assertRaisesRegex(OSError, 'export unavailable'):
+                store.export(session, incoming, fail_export)
+            self.assertEqual(store.read(session), before)
+            self.assertIsNone(store.read_video(session, self.initial))
+
+    def test_video_archives_distinguish_replaced_files_and_normalize_browser_numbers(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = EditorStore(root); session = 'a' * 32
+            original = copy.deepcopy(self.initial)
+            original['metadata']['source'].update(size=1000, mtime_ns=1780595540152825100)
+            original['timeline']['main']['L0']['locked'] = True
+            store.save(session, original, 0)
+            replaced = copy.deepcopy(original)
+            replaced['metadata']['source']['size'] = 2000
+            replaced['timeline']['main']['L0']['locked'] = False
+            store.export(session, replaced, lambda p: export_project(p, root))
+            self.assertFalse(store.read(session)['project']['timeline']['main']['L0']['locked'])
+            browser = copy.deepcopy(original)
+            browser['metadata']['source']['mtime_ns'] = int(float(browser['metadata']['source']['mtime_ns']))
+            self.assertEqual(store.read_video(session, browser)['project'], original)
+            self.assertNotEqual(store.video_path(session, original), store.video_path(session, replaced))

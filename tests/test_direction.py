@@ -17,6 +17,21 @@ AUTO = {"axis_settings": {"L0": {"component": "auto", "auto_fit": True}}}
 
 
 class DirectionTests(unittest.TestCase):
+    def test_browser_component_fit_matches_node_with_gaps_and_inversion(self):
+        sequence = fixture()
+        sequence.valid[15:20, 0] = False
+        sequence.points[..., 2] += (sequence.times_ms / 1000)[:, None, None] ** 2
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for component in range(3):
+                for invert in (False, True):
+                    settings = {'component': component, 'auto_fit': True, 'invert': invert, 'calibration': 'clip'}
+                    project = build_project(sequence, {'axis_settings': {axis: settings for axis in ('L0', 'R0')}})
+                    path = Path(directory) / f'{component}-{invert}.json'
+                    path.write_text(json.dumps(project))
+                    paths.append(str(path))
+            subprocess.run(['node', str(ROOT / 'tests/test_auto.mjs'), *paths], check=True, capture_output=True, text=True)
+
     def test_stroke_is_invariant_to_upright_sideways_and_diagonal_scene_orientation(self):
         original = fixture()
         expected = build_project(original, AUTO)

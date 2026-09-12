@@ -59,7 +59,7 @@ app.registerExtension({
                     if(!['range','regions'].includes(message.processing_scope?.kind))throw new Error('Choose a marked range or selected regions.');
                     message.operation='selected';
                 }
-                if(!["all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors","preview_anchor"].includes(message.operation))throw new Error("Unknown timeline operation");
+                if(!["automatic","all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors","preview_anchor"].includes(message.operation))throw new Error("Unknown timeline operation");
                 const cutScan=message.operation==="detect_cuts",anchorPreview=message.operation==='preview_anchor';
                 const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly&&!anchorPreview;
                 if(anchorPreview){
@@ -67,7 +67,7 @@ app.registerExtension({
                     if(!region||!Number.isFinite(request.at_ms)||request.at_ms<region.start_ms||request.at_ms>=region.end_ms)throw new Error('Select a frame inside an enabled tracking region to preview');
                 }
                 if(targeted&&!message.plan.stabilization.some(r=>r.id===message.stabilization_id&&r.enabled!==false))throw new Error("Select an enabled stabilization region to track");
-                if(cutScan&&!["normal","low","high"].includes(message.cut_sensitivity))throw new Error("Unknown cut sensitivity");
+                if((cutScan||message.operation==='automatic')&&!["normal","low","high"].includes(message.cut_sensitivity))throw new Error("Unknown cut sensitivity");
                 if(jobs.has(node))throw new Error("This timeline is already processing.");
                 const job={reply};jobs.set(node,job);
                 try{
@@ -84,9 +84,10 @@ app.registerExtension({
                     if(message.operation==='selected'&&message.processing_scope){
                         prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,processing_scope:message.processing_scope});
                     }
+                    if(message.operation==='automatic')prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,automatic_options:message.automatic_options});
                     if(targeted)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,stabilization_ids:[message.stabilization_id]});
                     if(anchorPreview)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,anchor_preview:message.anchor_preview});
-                    if(cutScan){
+                    if(cutScan||message.operation==='automatic'){
                         prompt.output[String(node.id)].inputs.cut_sensitivity=message.cut_sensitivity;
                         const widget=node.widgets.find(w=>w.name==="cut_sensitivity");if(widget)widget.value=message.cut_sensitivity;
                     }
@@ -112,7 +113,7 @@ app.registerExtension({
                         value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
                 }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
-                const text=[({anchor_preview:'Inspecting source frame',mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
+                const text=[({auto_people:'Detecting people in scenes',auto_ready:'Automatic scenes prepared',anchor_preview:'Inspecting source frame',mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
                 job.reply({state:"running",text,value:data.total_frames?data.frames:done,max:data.total_frames||total});
             }
         });

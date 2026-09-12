@@ -36,11 +36,58 @@ export function initializeTimeline(project) {
     return timeline;
 }
 
+export function trackLabel(project, track) {
+    if (!track) return null;
+    // Processing reruns replace the source snapshot while older sessions keep
+    // the row's original name. Resolve automatic labels from that exact source.
+    // Locked rows still resolve their own snapshot, never a newer source.
+    // A custom name or a local-fit row remains the user's label.
+    if (track.custom_name || track.window) return track.name;
+    const source = project.timeline.sources.find(source => source.id === track.source);
+    const region = source?.data?.metadata?.processing_region;
+    const candidate=source?.data?.metadata?.automatic_candidate;
+    return region?.name ? `${region.name} · ${source.data.config.target_anchor.replaceAll('_', ' ')}${region.candidate_people?` · person ${source.data.config.target_person}`:''}${candidate?.suggested?' · suggested':''}` : track.name;
+}
+
+export function processingTrackState(project, track) {
+    const source = project.timeline.sources.find(source => source.id === track?.source);
+    if (!source?.data?.metadata?.processing_region?.id) return '';
+    return Object.values(project.timeline.latest).includes(source.id) ? 'Current detection' : 'Saved detection';
+}
+
+export function recreatedTrackChoices(project, previous) {
+    const replacements = new Map();
+    if (!previous?.timeline) return replacements;
+    const entries = value => {
+        const latest = new Set(Object.values(value.timeline.latest));
+        const sources = new Map(value.timeline.sources.map(source => [source.id, source]));
+        return value.timeline.tracks.map(track => {
+            const source = sources.get(track.source);
+            return {track, source, region: source?.data?.metadata?.processing_region, current: latest.has(track.source)};
+        }).filter(entry => entry.region?.id);
+    };
+    const old = entries(previous), next = entries(project);
+    const oldRegions = new Set(old.filter(e => e.current).map(e => e.region.id));
+    const currentRegions = new Set(next.filter(e => e.current).map(e => e.region.id));
+    for (const entry of old) {
+        if (!entry.current || entry.track.window || currentRegions.has(entry.region.id)) continue;
+        // A newly created region at the same interval replaces the displayed
+        // detection. Names do not identify regions, and saved curves stay intact.
+        let candidates = next.filter(e => e.current && !e.track.window && !oldRegions.has(e.region.id) &&
+            e.track.axis === entry.track.axis && ['start_ms', 'end_ms'].every(key =>
+                Number.isFinite(entry.region[key]) && Math.round(e.region[key]) === Math.round(entry.region[key])));
+        const sameAnchor = candidates.filter(e => e.source.data.config.target_anchor === entry.source.data.config.target_anchor);
+        if (sameAnchor.length) candidates = sameAnchor;
+        if (candidates.length === 1) replacements.set(entry.track.id, candidates[0].track.id);
+    }
+    return replacements;
+}
+
 export function sourceChoices(project) {
     const latest=new Set(Object.values(project.timeline.latest));
     return project.timeline.sources.map(source=>{
         const input=source.input??source.id.split("@")[0],config=source.data.config;
-        const label=`${input} · ${config.target_anchor.replaceAll("_"," ")} · person ${config.target_person}`;
+        const label=`${source.data.metadata?.processing_region?.name || input} · ${config.target_anchor.replaceAll("_"," ")} · person ${config.target_person}`;
         return {id:source.id,current:latest.has(source.id),label:latest.has(source.id)?`${label} · latest`:`${label} · saved ${source.id.split("@")[1]?.slice(0,8)??"original"}`};
     });
 }
@@ -233,7 +280,7 @@ export function fitSelectionTrack(project, track, window) {
     // A local section has already excluded the unrelated large movements.
     // Retain its complete filtered shape with 5–95 headroom, including peaks.
     data.config.axis_settings[axis] = autoFitAxis(data, axis, true);
-    return {id: nextTrackId(project), name: `${track.name} · selection`, source: track.source, axis, window: [...window],
+    return {id: nextTrackId(project), name: `${trackLabel(project, track)} · selection`, source: track.source, axis, window: [...window],
         settings: data.config.axis_settings[axis], script: rebuildAxis(data, axis)};
 }
 
@@ -289,7 +336,7 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
     });
     regions.push({start, end, source: track.source, axis: track.axis, settings: copy(track.settings),
         ...(track.window ? {window: [...track.window]} : {}),
-        name: track.name, join: whole ? "whole" : method, blend_ms: whole || method === "cut" ? 0 : Math.min(blendMs, (end - start) / 2)});
+        name: trackLabel(project, track), join: whole ? "whole" : method, blend_ms: whole || method === "cut" ? 0 : Math.min(blendMs, (end - start) / 2)});
     project.scripts[outputAxis] = script;
     if(whole){
         if(track.patterns?.length)main.patterns=copy(track.patterns);else delete main.patterns;
@@ -325,4 +372,26 @@ export function copyTrackToMain(project, track, options = {}) {
     project.scripts = preview.scripts; project.metrics = preview.metrics;
     project.timeline.main = preview.timeline.main;
     return axes;
+}
+
+// Presentation only: retain every source track and its original timestamps.
+export function motionSections(ranges, preferred = []) {
+    const valid = ranges.filter(r => Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
+    const edges = [...new Set(valid.flatMap(r => [r.start, r.end]))].sort((a, b) => a - b);
+    const rank = new Map(preferred.map((id, i) => [id, i]));
+    const sections = [];
+    for (let i = 1; i < edges.length; i++) {
+        const start = edges[i - 1], end = edges[i];
+        const choices = valid.filter(r => r.start <= start && r.end >= end).map(r => r.id);
+        if (!choices.length) continue;
+        const id = choices.reduce((best, next) => (rank.get(next) ?? Infinity) < (rank.get(best) ?? Infinity) ? next : best);
+        const previous = sections.at(-1);
+        if (previous?.end === start && previous.id === id && previous.choices.join('\0') === choices.join('\0')) previous.end = end;
+        else sections.push({start, end, id, choices});
+    }
+    return sections;
+}
+
+export function sectionAt(sections, time) {
+    return sections.find(s => time >= s.start && time < s.end) ?? null;
 }

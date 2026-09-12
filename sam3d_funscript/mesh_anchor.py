@@ -126,13 +126,16 @@ def prepare_patch(info, region, model_file, root, use_cache=True, mask_video_ran
                 "native_source": fingerprint(Path(__import__(SAM3DBody_Predict.__module__, fromlist=["__file__"]).__file__))}
     if mask_video_range is not None:
         identity["person_mask"] = [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])]
+    if region.get('isolate_subject'):
+        identity['isolate_subject'] = True
     path = root / "mesh-anchors" / (digest(identity)+".json")
     if use_cache and path.is_file():
         return json.loads(path.read_text())
     if interrupt:
         interrupt()
     geometry, people = predict_frame(info, at, model_file, region['rois'], use_cache=use_cache,
-                                 mask_video_range=mask_video_range, include_mesh=True, interrupt=interrupt)
+                                 mask_video_range=mask_video_range, include_mesh=True, interrupt=interrupt,
+                                 **({'isolate_subject': True} if region.get('isolate_subject') else {}))
     patch = bind_patch(people[region['person']], geometry['faces'], paint,
                        (info['height'], info['width']), interrupt)
     patch.update(id=path.stem, person=region["person"], seed_time_ms=at, identity=identity)

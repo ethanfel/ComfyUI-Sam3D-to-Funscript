@@ -6,6 +6,8 @@ import re
 import threading
 from pathlib import Path
 
+import numpy as np
+
 from .core import SCHEMA, AXES, validate_actions
 from .timeline import GEOMETRY, SOURCE_FIELDS
 
@@ -30,6 +32,8 @@ def initialize(project):
             region = source['data'].get('metadata', {}).get('processing_region', {})
             if region.get('id'):
                 name = f"region:{region['id']}:{source['data']['config']['target_anchor']}"
+                if region.get('candidate_people'):
+                    name += f":person{source['data']['config']['target_person']}"
                 names[source['id']] = name
                 source['input'] = name
         timeline['latest'] = {names.get(source, name): source for name, source in timeline['latest'].items()}
@@ -90,6 +94,78 @@ def source_digest(data):
     # A cache hit or another export path is not a changed motion input.
     metadata = {k: v for k, v in data['metadata'].items() if k not in ('cache_hit', 'cache_path', 'inference_seconds', 'performance')}
     return digest({**data, 'metadata': metadata})
+
+
+def _insert_actions(actions, incoming, start, end, blend_ms):
+    """Insert inside a gap, blending at both edges without changing its outside."""
+    width = min(round(blend_ms), (end - start) // 2)
+    old_times, old_values = [a['at'] for a in actions], [a['pos'] for a in actions]
+    new_times, new_values = [a['at'] for a in incoming], [a['pos'] for a in incoming]
+
+    def value(at):
+        weight = max(0, min(1, (at-start)/width, (end-at)/width)) if width else int(start < at < end)
+        return float(np.interp(at, old_times, old_values) * (1-weight) + np.interp(at, new_times, new_values) * weight)
+
+    knots = {start, end, *(a['at'] for a in actions + incoming if start < a['at'] < end)}
+    if width:
+        knots.update((start+width, end-width))
+    elif end-start > 1:
+        # Cut guards belong inside the new section too. A shared boundary
+        # sample must not bend the preceding/following authored section.
+        knots.update((start+1, end-1))
+    values = {a['at']: a['pos'] for a in actions if a['at'] < start or a['at'] > end}
+
+    def segment(a, b):
+        mid = (a+b)//2
+        va, vb = value(a), value(b)
+        if a < mid < b and abs(value(mid) - (va+(vb-va)*(mid-a)/(b-a))) > .25:
+            segment(a, mid)
+            segment(mid, b)
+        else:
+            values[a] = round(va)
+
+    times = sorted(knots)
+    for a, b in zip(times, times[1:]):
+        segment(a, b)
+    values[end] = round(value(end))
+    return [{'at': at, 'pos': pos} for at, pos in sorted(values.items())]
+
+
+def _fill_processing_gaps(project, incoming, axis, mapping):
+    """Edited processing mains still accept completed sections in untouched gaps."""
+    main = project['timeline']['main'][axis]
+    regions = main['regions']
+    if not regions:  # An authored replacement of the entire main stays manual.
+        return
+    sources = {s['id']: s for s in incoming['timeline']['sources']}
+    duration = round(max(project['metadata']['duration_ms'], incoming['metadata']['duration_ms']))
+    for region in sorted(incoming['timeline']['main'][axis]['regions'], key=lambda r: r['start']):
+        start, end = round(region['start']), round(region['end'])
+        source = sources[region['source']]
+        if end <= start or not source['data']['metadata'].get('processing_region'):
+            continue
+        # Existing copies, changed anchors and user patterns own their ranges.
+        # Previously published source rows alone do not claim main: this also
+        # repairs a completed section skipped by older versions of this merge.
+        if any(round(r['start']) < end and round(r['end']) > start for r in regions):
+            continue
+        if any(p['start']-1 < end and p['end']+1 > start for p in main.get('patterns', [])):
+            continue
+        actions = project['scripts'][axis]['actions']
+        left = max((round(r['end']) for r in regions if round(r['end']) <= start), default=0)
+        right = min((round(r['start'])-1 for r in regions if round(r['start']) >= end), default=duration)
+        # A free range with hand-authored points/ramping is not an empty gap.
+        # Inspect the entire gap so a flat portion of a custom curve is protected.
+        positions = np.interp([left, right], [a['at'] for a in actions], [a['pos'] for a in actions])
+        if positions[0] != positions[1] or any(a['pos'] != positions[0] for a in actions if left < a['at'] < right):
+            continue
+        blend = region.get('blend_ms', 0) if region.get('join') == 'blend' else 0
+        script = source['data']['scripts'][axis]
+        project['scripts'][axis]['actions'] = [a for a in _insert_actions(actions, script['actions'], start, end, blend) if a['at'] <= duration]
+        regions.append({**copy.deepcopy(region), 'source': mapping[region['source']], 'start': start, 'end': end,
+                        'blend_ms': min(round(blend), (end-start)//2)})
+        regions.sort(key=lambda r: r['start'])
+        project.setdefault('metrics', {}).pop(axis, None)
 
 
 def merge_projects(previous, incoming):
@@ -157,6 +233,10 @@ def merge_projects(previous, incoming):
     for axis, main in new['timeline']['main'].items():
         prior = timeline['main'].get(axis, {})
         generated = prior.get('processing_generated') and main.get('processing_generated') and not prior.get('edited')
+        if (prior.get('processing_generated') and main.get('processing_generated') and prior.get('edited')
+                and not prior.get('locked') and 'processing_timeline' in new['metadata']):
+            _fill_processing_gaps(out, new, axis, mapping)
+            continue
         if prior.get('locked') or (prior.get('assembled') and not generated) or (prior.get('source') == mapping[main['source']] and not generated):
             continue
         main = copy.deepcopy(main); main['source'] = mapping[main['source']]
@@ -211,6 +291,21 @@ class EditorStore:
             path = self.path(session)
             return json.loads(path.read_text()) if path.is_file() else None
 
+    def video_path(self, session, project):
+        source = project['metadata']['source']
+        # Match the identity fields and browser-number rounding used by same_video.
+        identity = {k: source[k] for k in ('path', 'size', 'mtime_ns') if k in source}
+        return self.path(session).with_suffix('') / 'videos' / f'{digest(identity)}.json'
+
+    def read_video(self, session, project):
+        """Read a previous video's edits without changing the active session."""
+        with LOCK:
+            path = self.video_path(session, project)
+            state = json.loads(path.read_text()) if path.is_file() else None
+            if state and not same_video(state['project'], project):
+                raise ValueError('Saved editor history does not match this video.')
+            return state
+
     def export_path(self, session):
         state = self.read(session)
         if not state or not state.get('output'):
@@ -218,12 +313,15 @@ class EditorStore:
         return self.root.parent / state['output'] / 'project.json'
 
     def write(self, session, state):
-        path = self.path(session)
+        self._write(self.path(session), state)
+        return state
+
+    @staticmethod
+    def _write(path, state):
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(state, separators=(',', ':'), allow_nan=False))
         temporary.replace(path)
-        return state
 
     def save(self, session, project, revision):
         validate(project)
@@ -236,7 +334,15 @@ class EditorStore:
     def export(self, session, incoming, exporter):
         with LOCK:
             old = self.read(session)
-            project = merge_projects(old['project'], incoming) if old else initialize(copy.deepcopy(incoming))
+            switching = old is not None and not same_video(old['project'], incoming)
+            previous = self.read_video(session, incoming) if switching else old
+            project = merge_projects(previous['project'], incoming) if previous else initialize(copy.deepcopy(incoming))
             path = exporter(project)
+            if switching:
+                # Archive only after a successful export, before replacing active
+                # state. Locks protect the old video rather than blocking a new one.
+                self._write(self.video_path(session, old['project']), old)
+            # Revisions belong to the active session, never to an older archive:
+            # a still-open tab for another video must fail its stale save.
             state = self.write(session, dict(revision=(old['revision'] if old else 0) + 1, project=project, output=path.parent.name))
             return path, state['revision']

@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import {spawn,spawnSync} from 'node:child_process';
-import {copyTrackToMain} from '../assets/timeline.mjs';
-import {evaluate as curveValue} from '../assets/curve.mjs';
+import {copyTrackToMain,trackProject} from '../assets/timeline.mjs';
+import {evaluate as curveValue,fitComponentAxis,rebuildAxis} from '../assets/curve.mjs';
 
 const root=path.resolve('.'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'s3f-motion-tracks-'));
 const output=path.resolve(process.argv[2]||'development/motion-tracks-browser');fs.mkdirSync(output,{recursive:true});
@@ -43,12 +43,18 @@ let draft={revision:1,output:'fixture',project:JSON.parse(fs.readFileSync(temp+'
 let timeline={session:timelineId,editor_session:editorId,project:'fixture',info:{source_id:'neutral',source:draft.project.metadata.source},
     scene_cuts:{source_id:'neutral',times_ms:[5000,35000,40000.25,45000,50000]}};
 let cutRequests=0;
+let beforeSave;
 const neutralVideo=temp+'/neutral.mp4';const encoded=spawnSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x120:rate=24','-t','60','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart',neutralVideo]);assert.equal(encoded.status,0,encoded.stderr.toString());
 const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css'};
 const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://localhost');res.setHeader('Cache-Control','no-store');
     if(url.pathname===`/sam3d_funscript/editors/${editorId}`){
-        if(req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;const data=JSON.parse(body);assert.equal(data.revision,draft.revision);draft={...draft,revision:draft.revision+1,project:data.project};}
+        if(req.method==='POST'){
+            let body='';for await(const chunk of req)body+=chunk;const data=JSON.parse(body);
+            beforeSave?.(data);
+            if(data.revision!==draft.revision){res.statusCode=409;res.end('Another editor or rerun updated this session.');return;}
+            draft={...draft,revision:draft.revision+1,project:data.project};
+        }
         res.setHeader('Content-Type','application/json');res.end(JSON.stringify(draft));return;
     }
     if(url.pathname===`/sam3d_funscript/timelines/${timelineId}`){cutRequests++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(timeline));return;}
@@ -93,6 +99,92 @@ try{
     await call('Runtime.enable');await call('Page.enable');await call('Emulation.setDeviceMetricsOverride',{width:1500,height:1250,deviceScaleFactor:1,mobile:false});
     await call('Page.navigate',{url:pageURL});
     await until(()=>evaluate('document.querySelectorAll("#tracks .track").length===2'),'project');
+    assert.equal(await evaluate('document.querySelector("#sourceLayout").value'),'sections');
+    await select('#zoom','0');
+    await evaluate('document.querySelector("#sectionCurve").scrollIntoView({block:"center"})');
+    await until(()=>evaluate('document.querySelector("#sceneCutCount").textContent==="5 cuts"'),'compact saved cuts');
+    await evaluate(`(()=>{const c=document.querySelector('#sectionCurve'),r=c.getBoundingClientRect();c.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:r.left+42+40000.25/60000*(r.width-54),clientY:r.top+5}));})()`);
+    assert.equal(await evaluate('document.querySelector("#sceneCutActions").hidden'),false);
+    await click('#sceneCutAfter');assert.deepEqual(await range(),[40000,45000]);await click('#sceneCutClose');
+    assert.equal(await evaluate('[...document.querySelectorAll("#tracks canvas")].filter(e=>e.getBoundingClientRect().height>0).length'),0);
+    assert.equal(await evaluate('document.querySelectorAll(".section-block").length'),2);
+    await until(()=>evaluate('document.querySelector("#sceneCutCount").textContent==="5 cuts"'),'section cut guides');await flush();
+    const compactBefore=structuredClone(draft.project);
+    await click('.section-block[data-track="track_1"]');assert.deepEqual(await range(),[19042,24750]);
+    const fitBefore=structuredClone(draft.project);
+    const fitTrack=fitBefore.timeline.tracks.find(t=>t.id==='track_1'),fitData=trackProject(fitBefore,fitTrack);
+    fitData.config.axis_settings.L0=fitComponentAxis(fitData,'L0',2);
+    const expectedFit=rebuildAxis(fitData,'L0');
+    await select('#component','2');
+    assert.equal(await evaluate('document.querySelector("#autoFit").textContent'),'Fit selected component');
+    assert.equal(await evaluate('document.querySelector("#calibration").disabled'),true);
+    await click('#autoFit');await flush();
+    const fittedTrack=draft.project.timeline.tracks.find(t=>t.id==='track_1');
+    assert.deepEqual(fittedTrack.settings,fitData.config.axis_settings.L0);
+    assert.deepEqual(fittedTrack.script,expectedFit);
+    assert.equal(await evaluate('document.querySelector("#component").value'),'2');
+    assert.deepEqual(draft.project.scripts,fitBefore.scripts,'component fit leaves Main unchanged');
+    assert.deepEqual(draft.project.timeline.tracks[0],fitBefore.timeline.tracks[0]);
+    await click('#undo');await flush();
+    assert.deepEqual(draft.project.timeline.tracks,fitBefore.timeline.tracks,'Undo restores the source curve and calibration');
+    checks.push('Explicit component fitting preserves direction, updates only the chosen source, saves and undoes correctly');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current").dataset.track'),'track_1');
+    await click('#nextSection');assert.deepEqual(await range(),[36146,46146]);
+    await click('#addTrack');await flush();
+    const alternate=draft.project.timeline.active;
+    await select('#tracks .section-current .track-axis','L1');await flush();
+    assert.equal(await evaluate('document.querySelectorAll(".section-block").length'),2,'overlapping sources share a block');
+    assert.equal(await evaluate('document.querySelector("#sectionAlternatives").hidden'),false);
+    assert.equal(await evaluate('document.querySelectorAll("#sectionAnchor option").length'),2);
+    await select('#sectionAnchor','track_0');await flush();
+    assert.deepEqual(draft.project.timeline.tracks[0],compactBefore.timeline.tracks[0],'anchor switching is presentation only');
+    assert.deepEqual(draft.project.scripts,compactBefore.scripts,'anchor switching cannot change the main output');
+    await click('#tracks .section-current .copy-selection');await flush();
+    const compactExpected=structuredClone(compactBefore);
+    copyTrackToMain(compactExpected,compactExpected.timeline.tracks[0],{start:36146,end:46146,blendMs:200});
+    assert.deepEqual(draft.project.scripts,compactExpected.scripts,'compact controls retain all-axis copying');
+    await click('#undo');await flush();assert.deepEqual(draft.project.scripts,compactBefore.scripts);
+    await click('#collapseSections');assert.equal(await evaluate('document.querySelector("#sectionCurve").getBoundingClientRect().height'),0);
+    assert.ok(await evaluate('[...document.querySelectorAll(".section-block")].every(b=>b.getBoundingClientRect().width>1)'),'collapsed blocks remain selectable');
+    await click('#collapseSections');
+    await select('#sectionAnchor',alternate);await click('#tracks .section-current .remove-track');
+    await select('#sectionTrack','track_0');await flush();
+    assert.deepEqual(draft.project.timeline.tracks,compactBefore.timeline.tracks);
+    const sectionEvent=(type,at,pos=50,extra={})=>evaluate(`(()=>{const c=document.querySelector('#sectionCurve'),r=c.getBoundingClientRect(),v=document.querySelector('#viewRange').dataset;const x=r.left+42+(${at}-Number(v.start))/(Number(v.end)-Number(v.start))*(r.width-54),y=r.top+r.height-25-${pos}/100*(r.height-40);c.dispatchEvent(new ${type==='dblclick'?'MouseEvent':'PointerEvent'}(${JSON.stringify(type)},{bubbles:true,clientX:x,clientY:y,button:0,...${JSON.stringify(extra)}}));})()`);
+    await sectionEvent('pointerdown',20000);await sectionEvent('pointerup',20000);await flush();
+    assert.equal(draft.project.timeline.active,'track_1','click resolves the block under the pointer');
+    await sectionEvent('pointerdown',21000,50,{shiftKey:true});await sectionEvent('pointermove',33000,50,{shiftKey:true});await sectionEvent('pointerup',33000);
+    assert.deepEqual(await range(),[21000,24750],'selection stops at the source boundary across a gap');
+    await click('#editPoints');await click('#tracks .section-current .track-lock');await flush();
+    const compactLocked=structuredClone(draft.project.timeline.tracks);
+    await sectionEvent('dblclick',22555,67);await flush();assert.deepEqual(draft.project.timeline.tracks,compactLocked);
+    await click('#tracks .section-current .track-lock');
+    await sectionEvent('dblclick',38055,67);await flush();
+    assert.equal(draft.project.timeline.active,'track_0');
+    const newPoints=draft.project.timeline.tracks[0].script.actions.filter(p=>!compactBefore.timeline.tracks[0].script.actions.some(q=>q.at===p.at));
+    assert.equal(newPoints.length,1);
+    const pixelMs=await evaluate('60000/(document.querySelector("#sectionCurve").getBoundingClientRect().width-54)');
+    assert.ok(Math.abs(newPoints[0].at-38055)<=pixelMs&&newPoints[0].pos===67,'mouse coordinates insert within one screen pixel of the requested time');
+    assert.deepEqual(draft.project.timeline.tracks[1].script,compactBefore.timeline.tracks[1].script,'point edits affect only the clicked block');
+    await click('#undo');await click('#editPoints');await flush();
+    assert.deepEqual(draft.project.timeline.tracks[0],compactBefore.timeline.tracks[0]);
+    await select('#sectionTrack','track_0');await select('#zoom','4000');await click('#previousSection');
+    assert.ok(await evaluate('document.querySelector("#viewRange").dataset.start<=19042'),'offscreen selection pans into view');
+    await select('#zoom','0');await select('#sectionTrack','track_0');
+    assert.equal(await evaluate('document.querySelector("#curve").getBoundingClientRect().width===document.querySelector("#sectionCurve").getBoundingClientRect().width'),true,'main and source share the same horizontal scale');
+    await flush();await call('Page.navigate',{url:pageURL});await until(()=>evaluate('document.querySelectorAll(".section-block").length===2'),'compact reopen');
+    assert.equal(await evaluate('document.querySelector("#sourceLayout").value'),'sections');
+    await evaluate('document.querySelector(".source-head").scrollIntoView({block:"start"})');
+    fs.writeFileSync(output+'/section-blocks.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});await pause(100);
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,'section controls fit narrow layouts');
+    await evaluate('document.querySelector(".source-head").scrollIntoView({block:"start"})');
+    fs.writeFileSync(output+'/section-blocks-narrow.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await call('Emulation.setDeviceMetricsOverride',{width:1500,height:1250,deviceScaleFactor:1,mobile:false});
+    await select('#sourceLayout','rows');
+    // Reset the initial out-of-source range used by the existing row regression.
+    await click('#selectMain');await select('#selectionStart','36.411');await select('#selectionEnd','46.165');await click(lane+' .track-select');
+    checks.push('Compact sections: one curve row, exact ranges, alternate anchors, six-axis copy, click/Shift-drag/point editing, locks and Undo, aligned rulers, offscreen navigation, collapse, reopen and narrow layout');
     assert.equal(await evaluate(`document.querySelector('${lane} .copy-selection').disabled`),true);
     await click(lane+' .select-track-range');assert.deepEqual(await range(),[36146,46146]);
     await select('#selectionStart','36.411');await select('#selectionEnd','46.165');
@@ -299,5 +391,118 @@ try{
     await click('#floatVideo');assert.equal(await evaluate('document.querySelector("#videoPanel").classList.contains("floating")'),false);
     assert.equal(await evaluate('window.mediaReloads'),0,'docking preserves media as well');
     checks.push('Device before body; floating video drag/resize/dock preserves playback; selection loop and one-pass playback, including EOF and empty ranges');
+    await select('#sourceLayout','sections');await select('#zoom','0');await select('#sectionTrack','track_0');
+    await click('#addTrack');await select('#tracks .section-current .track-axis','L1');
+    const chosenAnchor=await evaluate('document.querySelector("#sectionAnchor").value');
+    const compactDownloads=temp+'/compact-downloads';fs.mkdirSync(compactDownloads);
+    await call('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:compactDownloads});await click('#save');
+    await until(()=>fs.readdirSync(compactDownloads).some(n=>n.endsWith('.zip')),'compact offline ZIP');
+    const compactFiles=unzip(compactDownloads+'/'+fs.readdirSync(compactDownloads).find(n=>n.endsWith('.zip')));
+    const compactProject=JSON.parse(compactFiles['project.json']);
+    assert.equal(compactProject.preview.source_layout,'sections');assert.equal(compactProject.preview.section_choices[0],chosenAnchor);
+    assert.equal(compactProject.timeline.tracks.length,3);assert.deepEqual(compactProject.scripts,exported.scripts);
+    fs.writeFileSync(temp+'/offline.html',compactFiles['viewer.html']);
+    await call('Page.navigate',{url:base+'/offline.html'});await until(()=>evaluate('document.querySelectorAll(".section-block").length===2'),'compact offline reopen');
+    assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),chosenAnchor);
+    assert.equal(await evaluate('document.querySelector("#sourceLayout").value'),'sections');
+    assert.ok(await evaluate('document.querySelector("#sectionCurve").getBoundingClientRect().height>0'));
+    await select('#sectionAnchor','track_0');assert.equal(await evaluate('document.querySelector("#tracks .section-current").dataset.track'),'track_0');
+    checks.push('Compact offline export/reopen retains every anchor, chosen display, original main scripts and working anchor selector');
+    // Exercise the real viewer's conflict controls against a revision-checked
+    // disposable server. No live user session or media is used.
+    await call('Page.navigate',{url:base+`/sam3d_funscript/assets/viewer.html?session=${editorId}&project=fixture&timeline=${timelineId}`});
+    await until(()=>evaluate('!!window.s3fFlush&&document.querySelectorAll("#tracks .track").length===2'),'online recovery fixture');await flush();
+    beforeSave=()=>{beforeSave=null;draft.project.timeline.tracks[0].name='Newer saved track';draft.revision++;};
+    await select('#sourceLayout','sections');await flush();
+    assert.equal(await evaluate('document.querySelector("#saveRecovery").hidden'),true,'layout changes recover without blocking');
+    assert.equal(await evaluate('document.querySelector("#tracks .track-head input").value'),'Newer saved track');
+    await select('#sectionTrack','track_0');
+    if(draft.project.timeline.tracks[0].locked){await click('#tracks .section-current .track-lock');await flush();}
+    const rename=label=>evaluate(`(()=>{const input=document.querySelector('#tracks .section-current .track-head input');input.value=${JSON.stringify(label)};input.dispatchEvent(new Event('change'));})()`);
+    beforeSave=()=>{beforeSave=null;draft.project.preview.wide_layout=!draft.project.preview.wide_layout;draft.revision++;};
+    await rename('Local authored name');await flush();assert.equal(draft.project.timeline.tracks[0].name,'Local authored name');
+    beforeSave=()=>{beforeSave=null;draft.project.timeline.tracks[0].name='Other editor name';draft.revision++;};
+    await rename('Unsaved draft name');
+    assert.match(await evaluate('window.s3fFlush().then(()=>"saved",e=>e.message)'),/Another editor/);
+    assert.equal(await evaluate('document.querySelector("#saveRecovery").hidden'),false);
+    assert.equal(draft.project.timeline.tracks[0].name,'Other editor name');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-head input").value'),'Unsaved draft name');
+    const recoveryDownloads=temp+'/recovery-downloads';fs.mkdirSync(recoveryDownloads);
+    await call('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:recoveryDownloads});
+    await evaluate('window.scrollTo(0,0)');
+    fs.writeFileSync(output+'/save-recovery.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await click('#recoverSave');await until(()=>evaluate('document.querySelector("#saveRecovery").hidden'),'conflict recovery');
+    await until(()=>fs.readdirSync(recoveryDownloads).some(n=>n.endsWith('.json')),'draft download');
+    const recovered=JSON.parse(fs.readFileSync(path.join(recoveryDownloads,fs.readdirSync(recoveryDownloads).find(n=>n.endsWith('.json')))));
+    assert.equal(recovered.timeline.tracks[0].name,'Unsaved draft name');assert.equal(draft.project.timeline.tracks[0].name,'Other editor name');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-head input").value'),'Other editor name');
+    await rename('Recovered and editable');await flush();assert.equal(draft.project.timeline.tracks[0].name,'Recovered and editable');
+    checks.push('Revision conflicts recover layout-only changes; competing edits stay intact; draft download and latest-state recovery restore saving');
+    // A processing rerun updates the source while legacy sessions retain the
+    // old automatic row title. All displayed selectors must use the new name.
+    const cropTrack=draft.project.timeline.tracks[0],cropSource=draft.project.timeline.sources.find(s=>s.id===cropTrack.source);
+    cropTrack.custom_name=false;cropTrack.locked=false;delete cropTrack.window;cropTrack.name='Tracking 33 crop · mouth';
+    cropSource.data.metadata.processing_region={id:'crop31',name:'Tracking 31 cropnn',isolate_subject:true};
+    const actualAnchor=cropSource.data.config.target_anchor.replaceAll('_',' '),cropLabel=`Tracking 31 cropnn · ${actualAnchor}`;
+    const mainBeforeRename=structuredClone(draft.project.scripts),rowBeforeRename=structuredClone(cropTrack.script);
+    draft.revision++;await evaluate('window.s3fUpdate()');
+    assert.equal(await evaluate('document.querySelector("#tracks .track-head input").value'),cropLabel);
+    assert.ok((await evaluate('[...document.querySelector("#sectionTrack").options].map(o=>o.textContent)')).some(s=>s.includes(cropLabel)));
+    assert.ok((await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>o.textContent)')).some(s=>s.includes(cropLabel)));
+    assert.ok((await evaluate('[...document.querySelector("#tracks .track-source").options].map(o=>o.textContent)')).some(s=>s.includes('Tracking 31 cropnn')));
+    await click('#tracks .section-current .track-lock');await flush();
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-name").value'),cropLabel,'locking keeps the corrected name');
+    await click('#tracks .section-current .track-lock');await flush();
+    await rename('My finished crop');await flush();
+    assert.equal(draft.project.timeline.tracks[0].name,'My finished crop');
+    assert.deepEqual(draft.project.scripts,mainBeforeRename);assert.deepEqual(draft.project.timeline.tracks[0].script,rowBeforeRename);
+    draft.project.timeline.sources.find(s=>s.id===cropTrack.source).data.metadata.processing_region.name='Another processing rename';draft.revision++;
+    await evaluate('window.s3fUpdate()');assert.equal(await evaluate('document.querySelector("#tracks .track-head input").value'),'My finished crop');
+    checks.push('Processed crop names follow the actual source across live updates and selectors; custom names, main curves and source curves are preserved');
+    // Rebuilding the same interval creates a different region ID. Its identical
+    // name must not leave the old curve selected in the one-row view.
+    let oldTrack=draft.project.timeline.tracks[0],oldSource=draft.project.timeline.sources.find(s=>s.id===oldTrack.source);
+    oldTrack.custom_name=false;oldTrack.name='Tracking 31 · mouth';
+    oldSource.data.metadata.processing_region={id:'old-zone',name:'Tracking 31',start_ms:36145.833333,end_ms:46145.833333};
+    draft.revision++;await evaluate('window.s3fUpdate()');
+    await select('#sectionTrack',oldTrack.id);await flush();
+    const originalCurves=structuredClone(draft.project.scripts),oldRow=structuredClone(draft.project.timeline.tracks[0]);
+    const replacementSource=structuredClone(draft.project.timeline.sources.find(s=>s.id===oldRow.source));
+    replacementSource.id='recreated-source';replacementSource.input='region:new-zone:mouth';replacementSource.data.metadata.processing_region.id='new-zone';
+    const replacementTrack={...structuredClone(oldRow),id:'track_recreated',source:replacementSource.id};
+    replacementTrack.script.actions[0].pos=(replacementTrack.script.actions[0].pos+1)%101;
+    draft.project.timeline.sources.push(replacementSource);draft.project.timeline.tracks.push(replacementTrack);
+    draft.project.timeline.latest=Object.fromEntries(Object.entries(draft.project.timeline.latest).filter(([,id])=>id!==oldRow.source));
+    draft.project.timeline.latest[replacementSource.input]=replacementSource.id;draft.revision++;
+    await evaluate('window.s3fUpdate()');
+    assert.equal(await evaluate('document.querySelector("#sectionTrack").value'),replacementTrack.id);
+    assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),replacementTrack.id);
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-result").textContent'),'Current detection');
+    assert.ok((await evaluate('[...document.querySelectorAll("#sectionLabels button")].map(b=>b.dataset.track)')).includes(replacementTrack.id));
+    const options=await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>({value:o.value,text:o.textContent}))');
+    assert.match(options.find(o=>o.value===oldRow.id).text,/Saved detection/);
+    assert.match(options.find(o=>o.value===replacementTrack.id).text,/Current detection/);
+    await select('#sectionAnchor',oldRow.id);await flush();draft.revision++;await evaluate('window.s3fUpdate()');
+    assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),oldRow.id,'explicitly selected saved detection stays selected');
+    assert.deepEqual(draft.project.scripts,originalCurves);assert.deepEqual(draft.project.timeline.tracks[0].script,oldRow.script);
+    checks.push('Recreated same-name zones reveal their new detection; saved versions remain selectable and main/source curves are preserved');
+    // Candidates from different people share the section, while the active
+    // curve and authored Main remain independent of display selection.
+    const autoSource=draft.project.timeline.sources.find(s=>s.id===replacementSource.id);
+    autoSource.data.metadata.processing_region.candidate_people=[0,1];
+    autoSource.data.metadata.automatic_candidate={suggested:true,review:['Large framing change; review crop']};
+    autoSource.data.config.target_person=0;
+    const otherPerson=structuredClone(autoSource);otherPerson.id='auto-person-1';otherPerson.input='region:new-zone:mouth:person1';
+    otherPerson.data.config.target_person=1;otherPerson.data.metadata.automatic_candidate={suggested:false,review:[]};
+    draft.project.timeline.sources.push(otherPerson);draft.project.timeline.latest[otherPerson.input]=otherPerson.id;
+    draft.project.timeline.tracks.push({...structuredClone(replacementTrack),id:'auto-track-person-1',source:otherPerson.id});
+    draft.revision++;await evaluate('window.s3fUpdate()');await select('#sectionTrack',replacementTrack.id);await flush();
+    const autoOptions=await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>o.textContent)');
+    assert.ok(autoOptions.some(t=>/person 0.*suggested/.test(t)));assert.ok(autoOptions.some(t=>/person 1/.test(t)));
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .automatic-review").textContent'),'Needs review');
+    await select('#sectionAnchor','auto-track-person-1');await flush();
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .automatic-review").textContent'),'Auto candidate');
+    assert.deepEqual(draft.project.scripts,originalCurves);
+    checks.push('Automatic people share one scene selector; suggestion and review labels follow the candidate; choosing a candidate preserves Main');
     assert.deepEqual(errors,[]);fs.writeFileSync(output+'/report.json',JSON.stringify({checks,errors},null,2));console.log(JSON.stringify({checks,errors},null,2));
 }finally{ws?.close();chrome.kill('SIGTERM');await new Promise(r=>server.close(r));}

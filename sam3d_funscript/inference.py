@@ -8,7 +8,21 @@ The core Predict node remains the route for full meshes and render attributes.
 import time
 
 
-def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0, timings=None, include_mesh=False):
+def isolate_rgb(image, box):
+    """Exclude pixels outside xyxy without moving the source camera or pixels."""
+    import math
+    import numpy as np
+    height, width = image.shape[:2]
+    x1, y1, x2, y2 = [math.ceil(float(value)) for value in box]
+    x1, x2 = max(0, min(width, x1)), max(0, min(width, x2))
+    y1, y2 = max(0, min(height, y1)), max(0, min(height, y2))
+    isolated = np.zeros_like(image)
+    if x2 > x1 and y2 > y1:
+        isolated[y1:y2, x1:x2] = image[y1:y2, x1:x2]
+    return isolated
+
+
+def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0, timings=None, include_mesh=False, isolate_subject=False):
     import torch
     import comfy.model_management as management
     import comfy.utils
@@ -50,8 +64,15 @@ def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0,
             else:
                 crop_boxes = boxes.repeat(n, 1)
                 masks = scores = None
+            inputs = [frame for frame in frames for _ in range(people)]
+            if isolate_subject:
+                # Native preprocessing expands each box for padding/aspect ratio.
+                # Zero outside its own rectangle before that expansion, retaining
+                # the original canvas, camera intrinsics and person slot order.
+                inputs = [torch.from_numpy(isolate_rgb(frame.numpy(), box))
+                          for frame, box in zip(inputs, crop_boxes.tolist())]
             batches.append(prepare_batch(
-                [frame for frame in frames for _ in range(people)], crop_boxes,
+                inputs, crop_boxes,
                 input_size=inner.image_size, masks=masks, masks_score=scores, cam_int=cam_int,
             ))
 

@@ -41,6 +41,51 @@ test("Flat, linear and insufficient context do not invent a detected rhythm",()=
     assert.throws(()=>continuePattern(wave(),5000,6000,{side:"unknown"}));
     assert.throws(()=>continuePattern(wave(),5000,6000,{contextMs:NaN}));
 });
+test("Two clean cycles remain usable when flat context hides them on either side",()=>{
+    const cases=[
+        {start:5000,end:6500,side:'before',first:1000,last:3000,signal:t=>t<=3000},
+        {start:2500,end:4000,side:'after',first:6000,last:8000,signal:t=>t>=6000},
+    ];
+    for(const c of cases){
+        const actions=Array.from({length:901},(_,i)=>({at:i*10,pos:c.signal(i*10)?Math.round(50+35*Math.sin(i/100*2*Math.PI)):50}));
+        const result=continuePattern(actions,c.start,c.end,{side:c.side});
+        const model=result.context[c.side].rhythm;
+        assert.ok(model.quality>.9);assert.ok(Math.abs(model.period-1000)<20);
+        assert.ok(model.start>=c.first&&model.end<=c.last,'only the useful exterior cycles participate');
+        assert.match(result.summary,/context \d+\.\d+–\d+\.\d+ s/);
+        const middle=result.inside.filter(p=>p.at>c.start+150&&p.at<c.end-150).map(p=>p.pos);
+        assert.ok(Math.max(...middle)-Math.min(...middle)>60);
+        preserved(actions,result.actions,c.start,c.end);
+        const corrupt=actions.map(p=>p.at>c.start&&p.at<c.end?{...p,pos:p.at%30?0:100}:p);
+        assert.deepEqual(continuePattern(corrupt,c.start,c.end,{side:c.side}).inside,result.inside);
+    }
+});
+test("Sparse triangular strokes and center drift retain their repeating cycle",()=>{
+    const actions=Array.from({length:21},(_,i)=>({at:i*500,pos:(i%2?85:15)+Math.round(i/2)}));
+    const result=continuePattern(actions,5000,6500);
+    assert.ok(Math.abs(result.context.before.rhythm.period-1000)<30);
+    preserved(actions,result.actions,5000,6500);
+});
+test("A known cycle override can use one observed cycle; auto still needs repetition",()=>{
+    const actions=wave(1000),options={side:'before',contextMs:1000};
+    assert.throws(()=>continuePattern(actions,1000,2000,options),/No repeating/);
+    const result=continuePattern(actions,1000,2000,{...options,cycleMs:1000});
+    assert.equal(result.context.before.rhythm.period,1000);
+    assert.ok(Math.abs(evaluate(result.actions,1250)-85)<=1);
+    preserved(actions,result.actions,1000,2000);
+    assert.equal(continuePattern(wave(200),200,500,{...options,cycleMs:200}).context.before.rhythm.period,200);
+});
+test("Context bounds exclude other sections and explain selections with no outside motion",()=>{
+    assert.throws(()=>continuePattern(wave(),5000,6500,{contextBounds:[5000,6500]}),/before: 0.00 s.*after: 0.00 s.*smaller gap/);
+    assert.throws(()=>continuePattern(wave(),5000,6500,{contextBounds:[6500,5000]}),/bounds/);
+    const result=continuePattern(wave(),5000,6500,{contextBounds:[3000,6500]});
+    assert.ok(result.context.before.rhythm.start>=3000);assert.equal(result.context.after.duration,0);
+});
+test("Searching short windows does not call an isolated bump or flat context a rhythm",()=>{
+    const bump=Array.from({length:901},(_,i)=>{const t=i*10;return {at:t,pos:Math.round(t>=1800&&t<=2800?50+40*Math.sin((t-1800)/1000*Math.PI):50)};});
+    assert.throws(()=>continuePattern(bump,5000,6500),/No repeating.*no consistent cycle.*flat motion/);
+    assert.throws(()=>continuePattern([{at:0,pos:50},{at:9000,pos:50}],5000,6500,{cycleMs:1000}),/flat motion/);
+});
 test("All supplied shapes generate valid bounded curves without changing outside actions",()=>{
     const actions=wave(),snapshot=JSON.stringify(actions);
     for(const shape of PATTERNS){

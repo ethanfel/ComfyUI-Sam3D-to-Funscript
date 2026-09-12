@@ -28,11 +28,24 @@ def _number(value, label, minimum=0):
     return float(value)
 
 
+def parse_plan(raw):
+    """A blank node widget means no submitted plan, like the default {}."""
+    if isinstance(raw, str):
+        if not raw.strip():
+            return {}
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid timeline plan JSON at line {error.lineno}, column {error.colno}: {error.msg}. "
+                             "Use an object such as {}, or leave the field blank to reuse the saved plan.") from error
+    if not isinstance(raw, dict):
+        raise ValueError("Timeline plan must be a JSON object")
+    return deepcopy(raw)
+
+
 def normalize_plan(raw, info):
     """Validate a portable plan. Region times are original-relative milliseconds."""
-    raw = json.loads(raw) if isinstance(raw, str) else deepcopy(raw or {})
-    if not isinstance(raw, dict):
-        raise ValueError("Timeline settings must be an object")
+    raw = parse_plan(raw)
     changed = bool(raw.get("source_id") and raw["source_id"] != info["source_id"])
     if changed:
         raw = {}
@@ -100,6 +113,26 @@ def normalize_plan(raw, info):
                     raise ValueError(f"Unknown calibration settings: {sorted(unknown)}")
                 region.update(method=method, anchor=anchor, additional_anchors=extra_anchors, person=person, rois=rois,
                               smoothing_ms=_number(source.get("smoothing_ms", 30), "Smoothing"), settings=deepcopy(settings))
+                if 'candidate_people' in source:
+                    candidates = source['candidate_people']
+                    if not isinstance(candidates, list) or not candidates or any(type(p) is not int or not 0 <= p < len(rois) for p in candidates):
+                        raise ValueError('Candidate people must identify existing person rectangles')
+                    region['candidate_people'] = list(dict.fromkeys([person, *candidates]))
+                if 'automatic' in source:
+                    auto = source['automatic']
+                    if not isinstance(auto, dict) or auto.get('version') != 1 or type(auto.get('suggest')) is not bool:
+                        raise ValueError('Invalid automatic scene settings')
+                    if not isinstance(auto.get('people'), list) or not isinstance(auto.get('review'), list) or any(not isinstance(r, str) for r in auto['review']):
+                        raise ValueError('Invalid automatic scene review')
+                    for detected in auto['people']:
+                        if not isinstance(detected, dict) or not isinstance(detected.get('coverage'), (float, int)) or not 0 <= detected['coverage'] <= 1:
+                            raise ValueError('Invalid automatic person coverage')
+                    region['automatic'] = deepcopy(auto)
+                isolated = source.get('isolate_subject', False)
+                if type(isolated) is not bool:
+                    raise ValueError('Exclude outside person crop must be a boolean')
+                if isolated:
+                    region['isolate_subject'] = True
                 if source.get("mask_anchor") is not None:
                     region["mask_anchor"] = normalize_paint(source["mask_anchor"], info["width"], info["height"])
             else:
@@ -172,6 +205,8 @@ def compile_jobs(plan, info):
                 context_start = max([source_start] + [r["end_ms"] for r in stabilizers if r["end_ms"] <= a])
                 context_end = min([source_end] + [r["start_ms"] for r in stabilizers if r["start_ms"] >= b])
             context_ms = max(500, region["smoothing_ms"] * 3)
+            if region.get('automatic'):
+                context_start, context_end = max(left, context_start), min(right, context_end)
             count = max(1, math.ceil((b-a) / (plan["chunk_seconds"] * 1000)))
             for i in range(count):
                 begin = a + i * plan["chunk_seconds"] * 1000
@@ -191,8 +226,8 @@ def _model_identity(model_file):
     return fingerprint(folder_paths.get_full_path_or_raise("detection", model_file))
 
 
-def _region_settings(region, anchor=None):
-    return {**deepcopy(region["settings"]), "target_anchor": anchor or region["anchor"], "target_person": region["person"],
+def _region_settings(region, anchor=None, person=None):
+    return {**deepcopy(region["settings"]), "target_anchor": anchor or region["anchor"], "target_person": region["person"] if person is None else person,
             "smoothing_ms": region["smoothing_ms"], "enabled_axes": list(AXES)}
 
 
@@ -389,9 +424,14 @@ def assemble_projects(region_projects, plan, info):
         anchor = p["config"]["target_anchor"]
         source["label"] = f"{region['name']} · {anchor.replace('_', ' ')}"
         source["input"] = f"region:{region['id']}:{anchor}"
+        if region.get('candidate_people'):
+            source['input'] += f":person{p['config']['target_person']}"
+            source['label'] += f" · person {p['config']['target_person']}"
     project["timeline"]["latest"] = {s["input"]: s["id"] for s in project["timeline"]["sources"]}
     for track, p in zip(project["timeline"]["tracks"], ordered):
         track["name"] = f"{p['metadata']['processing_region']['name']} · {p['config']['target_anchor'].replace('_', ' ')}"
+        if p['metadata']['processing_region'].get('candidate_people'):
+            track['name'] += f" · person {p['config']['target_person']}"
         track["locked"] = p["metadata"]["processing_region"].get("locked", False)
     project["metadata"] = {**project["metadata"], "source": deepcopy(info["source"]), "duration_ms": float(info["end_ms"]),
         "source_origin_ms": float(Fraction(info.get("source_origin", "0"))*1000),
@@ -568,7 +608,10 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
         signature = digest({"version": VERSION, "region": _stable(region), "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)],
                             "model": model, "checkpoint": tracker_identity,
                             "sample_fps": sample_fps, "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
-        pose_signature = digest({"region": {k: v for k, v in _stable(region).items() if k not in ("anchor", "additional_anchors", "settings")},
+        pose_region = {k: v for k, v in _stable(region).items() if k not in ("anchor", "additional_anchors", "settings", "candidate_people", "automatic")}
+        if region.get('candidate_people'):
+            pose_region.pop('person', None)  # All ROI slots are already cached.
+        pose_signature = digest({"region": pose_region,
             "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)], "model": model,
             "checkpoint": tracker_identity, "sample_fps": sample_fps,
             "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
@@ -662,6 +705,7 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                     # Duration bounds decoded memory; never silently truncate it.
                     max_frames=2**31-1,
                     rois_json=rois, batch_size=batch_size, use_cache=use_cache, mask_video_range=mask_video_range,
+                    **({'isolate_subject': True} if region.get('isolate_subject') else {}),
                     **({"mesh_anchor": mesh_patch} if mesh_patch else {}))
                 sequence = _original_sequence(sequence, info, manifest)
                 path = directory / (digest([signature, job["id"]])+".npz")
@@ -679,21 +723,51 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                 report["jobs"].append({**job, "state": "error", "error": str(error)})
                 atomic_json(directory / "report.json", report)
                 atomic_json(state_path, state)
+                if region.get('automatic') and isinstance(error, ValueError) and 'fewer than two sampled frames' in str(error):
+                    row.setdefault('review', []).append(str(error))
+                    continue
                 raise
         records = [r for r in entry["jobs"] if Path(r["path"]).is_file()]
         if records:
             emit("assembly", region["id"])
-            sequence = _merge_sequences(records, region, info)
-            paths = []
+            try:
+                sequence = _merge_sequences(records, region, info)
+            except ValueError as error:
+                if not region.get('automatic'): raise
+                row.update(state='error', error=str(error))
+                continue
+            paths, candidates = [], []
             shared_geometry = None
-            for anchor in [region["anchor"], *region["additional_anchors"]]:
-                project = build_project(sequence, _region_settings(region, anchor))
-                if shared_geometry is None:
-                    shared_geometry = {key: project[key] for key in GEOMETRY}
-                else:
-                    project.update(shared_geometry)
-                project["metadata"] = {**project["metadata"], "processing_anchor": {"anchor": anchor, "primary": anchor == region["anchor"]}}
-                project_path = directory / (digest([signature, anchor, [r["id"] for r in records]])+".project.json")
+            for person in region.get('candidate_people', [region['person']]):
+                for anchor in [region["anchor"], *region["additional_anchors"]]:
+                    try:
+                        project = build_project(sequence, _region_settings(region, anchor, person))
+                    except ValueError as error:
+                        if not region.get('automatic'): raise
+                        row.setdefault('review', []).append(f'Person {person} · {anchor}: {error}')
+                        continue
+                    if shared_geometry is None:
+                        shared_geometry = {key: project[key] for key in GEOMETRY}
+                    else:
+                        project.update(shared_geometry)
+                    project['metadata'] = {**project['metadata'], 'processing_anchor': {'anchor': anchor,
+                        'primary': anchor == region['anchor'] and person == region['person']}}
+                    if region.get('automatic'):
+                        from .automatic import candidate_review
+                        project['metadata']['automatic_candidate'] = candidate_review(sequence, region, person, anchor, project)
+                    candidates.append(project)
+            if not candidates:
+                row.update(state='error', error='No usable anchor candidates; review the person crops')
+                continue
+            if region.get('automatic', {}).get('suggest'):
+                candidates.sort(key=lambda p: (-p['metadata']['automatic_candidate']['score'],
+                    bool(p['metadata']['automatic_candidate']['review']), p['config']['target_person'], p['config']['target_anchor']))
+                for i, project in enumerate(candidates):
+                    project['metadata']['processing_anchor']['primary'] = i == 0
+                    project['metadata']['automatic_candidate']['suggested'] = i == 0
+            for project in candidates:
+                anchor, person = project['config']['target_anchor'], project['config']['target_person']
+                project_path = directory / (digest([signature, anchor, person, [r["id"] for r in records]])+".project.json")
                 atomic_json(project_path, project)
                 paths.append(str(project_path)); projects.append(project)
             entry["project_path"], entry["additional_project_paths"] = paths[0], paths[1:]
@@ -701,6 +775,10 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             coverage = _coverage(records)
             row.update(state="complete" if coverage == [[region["start_ms"], region["end_ms"]]] else "partial", coverage=coverage,
                        project_path=paths[0], anchors=[region["anchor"], *region["additional_anchors"]])
+            if region.get('automatic'):
+                row['candidates'] = [p['metadata']['automatic_candidate'] for p in candidates]
+                primary = next((p for p in candidates if p['metadata']['processing_anchor']['primary']), candidates[0])
+                row['review'] = list(dict.fromkeys([*row.get('review', []), *primary['metadata']['automatic_candidate']['review']]))
     project = assemble_projects(projects, plan, info)
     if project:
         used = {record.get("stabilization_id") for region in report["regions"]

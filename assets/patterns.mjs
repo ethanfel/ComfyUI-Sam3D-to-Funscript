@@ -146,7 +146,7 @@ function solve(matrix, vector) {
 function rhythm(actions, boundary, side, contextMs, cycleMs) {
     const start=Math.max(actions[0].at,side<0?boundary-contextMs:boundary), end=Math.min(actions.at(-1).at,side<0?boundary:boundary+contextMs);
     const duration=end-start;
-    if(duration<320)return null;
+    if(duration<(cycleMs?200:320))return null;
     const n=Math.min(2048,Math.floor(duration/10)), step=duration/n;
     const values=Array.from({length:n+1},(_,i)=>evaluate(actions,start+i*step));
     const mean=values.reduce((s,v)=>s+v,0)/values.length;
@@ -158,9 +158,14 @@ function rhythm(actions, boundary, side, contextMs, cycleMs) {
     if(!period){
         const scores=[];
         for(let lag=Math.max(2,Math.ceil(160/step));lag<=Math.floor(n/2);lag++){
-            let error=0,power=0;
-            for(let i=lag;i<=n;i++){error+=(detrended[i]-detrended[i-lag])**2;power+=detrended[i]**2+detrended[i-lag]**2;}
-            scores[lag]=1-error/Math.max(1e-9,power);
+            let sx=0,sy=0,xx=0,yy=0,xy=0;
+            for(let i=lag;i<=n;i++){
+                const x=detrended[i],y=detrended[i-lag];sx+=x;sy+=y;xx+=x*x;yy+=y*y;xy+=x*y;
+            }
+            // Removing a trend offsets the two overlapping windows. Compare
+            // their centered shapes so even two clean cycles can agree.
+            const count=n+1-lag,power=Math.sqrt(Math.max(0,xx-sx*sx/count)*Math.max(0,yy-sy*sy/count));
+            scores[lag]=power>1e-9?(xy-sx*sy/count)/power:0;
         }
         const peaks=[];
         for(let lag=1;lag<scores.length;lag++)if(scores[lag]>.65&&scores[lag]>=(scores[lag-1]??-1)&&scores[lag]>=(scores[lag+1]??-1))peaks.push(lag);
@@ -168,10 +173,11 @@ function rhythm(actions, boundary, side, contextMs, cycleMs) {
         const best=Math.max(...peaks.map(i=>scores[i]));
         const lag=peaks.find(i=>scores[i]>=best-.04);
         const a=scores[lag-1]??scores[lag], b=scores[lag], c=scores[lag+1]??scores[lag];
-        const shift=clamp((a-c)/(2*(a-2*b+c)||1),-.5,.5);
+        const shift=Number.isFinite(scores[lag-1])&&Number.isFinite(scores[lag+1])
+            ?clamp((a-c)/(2*(a-2*b+c)||1),-.5,.5):0;
         period=(lag+shift)*step;agreement=b;
     }
-    if(duration<period*1.5)return null;
+    if(duration<period*(cycleMs?1:1.5))return null;
     const omega=TAU/period;
     const row = t => [1,(t-boundary)/contextMs,...[1,2,3].flatMap(k=>[Math.sin(k*omega*(t-boundary)),Math.cos(k*omega*(t-boundary))])];
     const matrix=Array.from({length:8},()=>Array(8).fill(0)), rhs=Array(8).fill(0);
@@ -184,6 +190,39 @@ function rhythm(actions, boundary, side, contextMs, cycleMs) {
     if(quality<.55||amplitude[0]<2)return null;
     return {period,omega,quality,center:coefficients[0],amplitude,phase};
 }
+
+function surroundingRhythm(actions, boundary, side, contextMs, cycleMs, bounds) {
+    const start=Math.max(actions[0].at,bounds[0],side<0?boundary-contextMs:boundary);
+    const end=Math.min(actions.at(-1).at,bounds[1],side<0?boundary:boundary+contextMs);
+    const duration=Math.max(0,end-start),edge=side<0?end:start;
+    if(duration<(cycleMs?200:320))return {duration,reason:'not enough context'};
+    const full=rhythm(actions,edge,side,duration,cycleMs);
+    let best=full?{...full,start,end,offset:Math.abs(edge-boundary),score:full.quality}:null;
+    // A quiet tail or a change of pace can hide a useful rhythm elsewhere in
+    // the requested window. Search only outside the selection, and require a
+    // stronger fit for these shorter windows to avoid accepting incidental noise.
+    if(!full||full.quality<.85){
+        for(const fraction of [.75,.5,.375,.25]){
+            const length=duration*fraction;
+            if(length<640||cycleMs&&length<cycleMs)continue;
+            for(const position of [0,.25,.5,.75,1]){
+                const offset=(duration-length)*position,localEdge=edge+side*offset;
+                const found=rhythm(actions,localEdge,side,length,cycleMs);
+                if(!found||found.quality<.8)continue;
+                const score=found.quality-.12*offset/duration-.04*(1-fraction);
+                if(!best||score>best.score)best={...found,score,offset:Math.abs(localEdge-boundary),
+                    start:side<0?localEdge-length:localEdge,end:side<0?localEdge:localEdge+length};
+            }
+        }
+    }
+    if(!best){
+        const values=Array.from({length:65},(_,i)=>evaluate(actions,start+duration*i/64));
+        return {duration,reason:Math.max(...values)-Math.min(...values)<4?'flat motion':'no consistent cycle'};
+    }
+    const fittedBoundary=side<0?best.end:best.start;
+    best.phase=best.phase.map((phase,k)=>phase+(k+1)*best.omega*(boundary-fittedBoundary));
+    return {duration,rhythm:best};
+}
 export function continuePattern(actions, start, end, options = {}) {
     [start,end]=range(actions,start,end);
     const {contextMs=4000, cycleMs=0, side="both", joinMs=150, stepMs=20}=options;
@@ -191,11 +230,22 @@ export function continuePattern(actions, start, end, options = {}) {
     number(stepMs,"Point spacing (ms)",1,1000);
     if(cycleMs&&cycleMs<200)throw new Error("Cycle override must be zero (auto) or at least 200 ms.");
     if(!["both","before","after"].includes(side))throw new Error("Choose before, after or both sides.");
+    const bounds=options.contextBounds??[actions[0].at,actions.at(-1).at];
+    if(!Array.isArray(bounds)||bounds.length!==2||!bounds.every(Number.isFinite)||bounds[1]<bounds[0])throw new Error('Invalid surrounding motion bounds.');
     // Only the two surrounding windows participate in rhythm estimation.
-    let left=side!=="after"?rhythm(actions,start,-1,contextMs,cycleMs):null;
-    let right=side!=="before"?rhythm(actions,end,1,contextMs,cycleMs):null;
-    const found=[left&&`before ${(left.period/1000).toFixed(3)} s (${Math.round(left.quality*100)}% rhythm fit)`,right&&`after ${(right.period/1000).toFixed(3)} s (${Math.round(right.quality*100)}% rhythm fit)`].filter(Boolean);
-    if(!left&&!right)throw new Error("No repeating motion found outside this range. Expand the context, set a cycle override, or choose Generate pattern.");
+    const contexts={};
+    if(side!=="after")contexts.before=surroundingRhythm(actions,start,-1,contextMs,cycleMs,bounds);
+    if(side!=="before")contexts.after=surroundingRhythm(actions,end,1,contextMs,cycleMs,bounds);
+    let left=contexts.before?.rhythm,right=contexts.after?.rhythm;
+    const found=Object.entries(contexts).filter(([,context])=>context.rhythm).map(([side,{rhythm:r}])=>
+        `${side} ${(r.period/1000).toFixed(3)} s (${Math.round(r.quality*100)}% rhythm fit; context ${(r.start/1000).toFixed(3)}–${(r.end/1000).toFixed(3)} s)`);
+    if(!left&&!right){
+        const details=Object.entries(contexts).map(([side,c])=>`${side}: ${(c.duration/1000).toFixed(2)} s, ${c.reason}`).join('; ');
+        const advice=Object.values(contexts).every(c=>c.duration<(cycleMs?200:320))
+            ?'Select a smaller gap with motion outside it, or use Generate pattern for the whole selection.'
+            :'Choose context containing a full repeated movement, set a known cycle length, or use Generate pattern.';
+        throw new Error(`No repeating motion found outside this range (${details}). ${advice}`);
+    }
     const duration=end-start;
     if(!left)left={...right,phase:right.phase.map((p,k)=>p-(k+1)*right.omega*duration)};
     if(!right)right={...left,phase:left.phase.map((p,k)=>p+(k+1)*left.omega*duration)};
@@ -216,5 +266,6 @@ export function continuePattern(actions, start, end, options = {}) {
         return clamp(v,0,100);
     };
     const result=replace(actions,start,end,value,joinMs,Math.min(stepMs,left.period/64,right.period/64),options.protectedTimes);
-    return {...result, summary:`Continued ${found.join(" · ")}. Synthesized motion; review the join.`, periods:found, quality:Math.min(left.quality,right.quality)};
+    return {...result, summary:`Continued ${found.join(" · ")}. Synthesized motion; review the join.`, periods:found,
+        context:contexts,quality:Math.min(left.quality,right.quality)};
 }

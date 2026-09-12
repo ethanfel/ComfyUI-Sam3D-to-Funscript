@@ -68,11 +68,11 @@ class ProcessingStore:
             return state
 
     def prepare(self, session, info, raw_plan="{}"):
-        from .processing_timeline import normalize_plan
-        raw = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan
-        if not isinstance(raw, dict):
-            raise ValueError("Timeline plan must be a JSON object")
+        from .processing_timeline import normalize_plan, parse_plan
+        raw = parse_plan(raw_plan)
         supplied = raw.get("plan", raw)
+        if not isinstance(supplied, dict):
+            raise ValueError("Timeline plan must be a JSON object")
         with LOCK:
             state = self.read(session)
             if state and state["info"]["source_id"] != info["source_id"]:

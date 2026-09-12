@@ -77,8 +77,8 @@ class S3F_ProcessingTimeline:
             "sample_fps": ("FLOAT", {"default": 0, "min": 0, "max": 120, "step": 1, "tooltip": "0 analyzes every source frame. Original timestamps are retained."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "tracker_model": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
-            "operation": (["prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"], {"default": "prepare", "tooltip": "Prepare opens/restores the editor. Preview anchor inspects one source frame. Stabilize tracks selected stabilization regions without SAM3D. Detect cuts only adds timeline guides."}),
-            "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here with the workflow."}),
+            "operation": (["prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"], {"default": "prepare", "tooltip": "Automatic fills uncovered scenes with person crops and four anchor candidates. Prepare opens/restores the editor. Stabilize runs without SAM3D."}),
+            "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here. Blank or {} reuses the saved plan; a new session starts with a full-video region."}),
             "use_cache": ("BOOLEAN", {"default": True}),
         }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."}),
             "cut_sensitivity": (["normal", "low", "high"], {"default": "normal", "tooltip": "Hard-cut detection sensitivity. High finds smaller changes; low reduces extra markers."})},
@@ -100,10 +100,11 @@ class S3F_ProcessingTimeline:
         from comfy_execution.graph import ExecutionBlocker
         from comfy.model_management import throw_exception_if_processing_interrupted, InterruptProcessingException
         from server import PromptServer
-        from .sam3d_funscript.processing_timeline import run_timeline
+        from .sam3d_funscript.processing_timeline import run_timeline, parse_plan
 
-        if operation not in ("prepare", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"):
+        if operation not in ("prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"):
             raise ValueError("Unknown timeline processing operation")
+        submitted = parse_plan(plan_json)
         path, start, duration = video_input_range(video)
         info = source_info(path, start, duration)
         workflow = (extra_pnginfo or {}).get("workflow", {})
@@ -113,12 +114,43 @@ class S3F_ProcessingTimeline:
             session = hashlib.sha256(f"{info['source_id']}:{unique_id}".encode()).hexdigest()[:32]
         output_root = Path(folder_paths.get_output_directory()) / "sam3d_funscript"
         store = ProcessingStore(output_root / "processing")
-        submitted = json.loads(plan_json) if isinstance(plan_json, str) else plan_json
         prior = store.read(session)
         if operation != "prepare" and prior and isinstance(submitted, dict) and "revision" in submitted:
             if submitted["revision"] != prior["revision"]:
                 raise PlanConflict("This plan changed after the job was queued. Reload the latest timeline and process again.")
-        state = store.prepare(session, info, plan_json)
+        state = store.prepare(session, info, submitted)
+        automatic_report = None
+        if operation == 'automatic':
+            from .sam3d_funscript.automatic import prepare_automatic
+            from .sam3d_funscript.scene_cuts import detect_cuts
+            if mask_video is not None:
+                raise ValueError('Automatic person discovery uses the original video. Disconnect the single-person mask input for this pass.')
+            revision = state['revision']
+            def auto_progress(event):
+                store.progress(session, revision, event)
+                PromptServer.instance.send_sync('s3f_timeline_progress', {'session': session, **event})
+            try:
+                cuts = state.get('scene_cuts')
+                if not cuts or cuts.get('source_id') != info['source_id']:
+                    cuts = detect_cuts(info, output_root/'cut_cache', cut_sensitivity, use_cache,
+                        progress=auto_progress, interrupt=throw_exception_if_processing_interrupted)
+                    state = store.update_cuts(session, info['source_id'], cuts)
+                options = submitted.get('automatic_options', {})
+                if not isinstance(options, dict): raise ValueError('Invalid automatic mode options')
+                plan, automatic_report = prepare_automatic(info, state['plan'], cuts, store.directory(session),
+                    replace_default=not state.get('report') and not state.get('project_path'),
+                    people_mode=options.get('people', 'all'), use_cache=use_cache, progress=auto_progress,
+                    interrupt=throw_exception_if_processing_interrupted)
+                state = store.save(session, revision, plan)
+                revision = state['revision']
+                auto_progress({'stage': 'auto_ready', **automatic_report})
+            except (Exception, InterruptProcessingException) as error:
+                auto_progress({'stage': 'error', 'error': str(error) or 'Automatic planning cancelled'})
+                raise
+            # Only automatic scenes are queued here. Other saved regions remain
+            # available to the assembly but are not newly processed by this pass.
+            submitted['processing_scope'] = {'kind': 'regions', 'ids': [r['id'] for r in state['plan']['tracking'] if r.get('automatic') and r['enabled']]}
+            operation = 'selected' if submitted['processing_scope']['ids'] else 'prepare'
         if operation == 'preview_anchor':
             from .sam3d_funscript.anchor_preview import preview_anchor
             preview = preview_anchor(info, state['plan'], submitted.get('anchor_preview'), model_file,
@@ -232,6 +264,13 @@ class S3F_ProcessingTimeline:
         summary = "Timeline ready · select regions and process in the editor."
         if state.get("project"):
             summary = "Motion result ready." + (" Plan changed since this result; process affected regions to update it." if not state.get("result_current") else "")
+        if automatic_report is not None:
+            if not automatic_report['scenes_added']:
+                summary = automatic_report['message']
+            else:
+                summary = f"Automatic pass · {automatic_report['scenes_added']} scenes added. Review candidates in Motion Studio."
+                if operation == 'prepare':
+                    summary = 'Automatic pass found no usable scenes. Open the timeline to correct the flagged person crops.'
         timeline_path = str(store.directory(session) / "timeline.json")
         return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": [summary],
                        "s3f_timeline_project": [state.get("project")], "text": [timeline_path]},

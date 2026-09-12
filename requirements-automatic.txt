@@ -1,0 +1,2 @@
+# Optional local person detection for Processing Timeline automatic mode.
+ultralytics>=8.3,<9

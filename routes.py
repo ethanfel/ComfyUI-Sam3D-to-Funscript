@@ -183,7 +183,7 @@ def register_routes():
 
     @routes.get("/sam3d_funscript/reference-capabilities")
     async def reference_capabilities(request):
-        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1}, headers={"Cache-Control": "no-store"})
 
     def reference_path(request):
         identifier = request.match_info["reference"]

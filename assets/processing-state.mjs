@@ -2,8 +2,9 @@
 const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 export function trackingConfiguration(r) {
     return {id:r.id,start_ms:r.start_ms,end_ms:r.end_ms,method:r.method||'sam3d',anchor:r.anchor||'pelvis',
-        additional_anchors:r.additional_anchors||[],person:r.person??0,rois:r.rois||[[0,0,1,1]],
-        smoothing_ms:r.smoothing_ms??30,settings:r.settings||{},mask_anchor:r.mask_anchor||null};
+        additional_anchors:r.additional_anchors||[],person:r.person??0,rois:r.rois||[[0,0,1,1]],isolate_subject:!!r.isolate_subject,
+        smoothing_ms:r.smoothing_ms??30,settings:r.settings||{},mask_anchor:r.mask_anchor||null,
+        candidate_people:r.candidate_people||null,automatic:r.automatic||null};
 }
 export function referenceConfiguration(r) {
     const ref=structuredClone(r.reference||{});delete ref.source_id;

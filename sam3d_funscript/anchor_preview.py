@@ -37,7 +37,8 @@ def preview_anchor(info, plan, request, model_file, root, *, use_cache=True, mas
     if progress:
         progress({'stage': 'anchor_preview', 'region_id': region['id'], 'frames': 0, 'total_frames': 1})
     geometry, people = predict_frame(info, at, model_file, region['rois'], use_cache=use_cache,
-                                 mask_video_range=mask_video_range, include_mesh=painted, interrupt=interrupt)
+                                 mask_video_range=mask_video_range, include_mesh=painted, interrupt=interrupt,
+                                 **({'isolate_subject': True} if region.get('isolate_subject') else {}))
     person = people[region['person']]
     size = info['height'], info['width']
     points = np.full((73, 3), np.nan)

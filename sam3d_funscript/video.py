@@ -21,7 +21,7 @@ CACHE_VERSION = 2
 _preview_frame = None
 
 
-def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_range=None, include_mesh=False, interrupt=None):
+def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_range=None, include_mesh=False, interrupt=None, isolate_subject=False):
     """Decode one source frame; keep at most one frame's CPU prediction for edits."""
     import folder_paths
     from comfy_extras.nodes_sam3d_body import SAM3DBody_Loader, SAM3DBody_Predict
@@ -32,6 +32,8 @@ def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_r
            fingerprint(Path(__import__(SAM3DBody_Predict.__module__, fromlist=['__file__']).__file__))]
     if mask_video_range is not None:
         key.append([fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])])
+    if isolate_subject:
+        key.append({'isolate_subject': True})
     key = json.dumps(key, sort_keys=True)
     if interrupt:
         interrupt()
@@ -53,7 +55,8 @@ def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_r
             raise ValueError('The supplied person mask is empty on this reference frame')
         masks = [packed]
     model = SAM3DBody_Loader.execute(model_file).result[0]
-    people = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=max(1, len(boxes)), include_mesh=include_mesh)[0]
+    people = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=max(1, len(boxes)), include_mesh=include_mesh,
+                         **({'isolate_subject': True} if isolate_subject else {}))[0]
     if len(people) != (1 if masks is not None else len(boxes)):
         raise ValueError('SAM3D returned a different number of people than the requested ROI slots')
     if interrupt:
@@ -167,7 +170,7 @@ def video_frames(path, sample_fps=16.0, start_seconds=0.0, duration_seconds=0.0,
 
 def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seconds=0.0,
                   duration_seconds=0.0, max_frames=2000, rois_json="[[0,0,1,1]]",
-                  batch_size=8, fov=0.0, use_cache=True, mask_video_range=None, mesh_anchor=None):
+                  batch_size=8, fov=0.0, use_cache=True, mask_video_range=None, mesh_anchor=None, isolate_subject=False):
     # Imports stay here so the geometry/editor can run without ComfyUI or CUDA.
     import folder_paths
     import comfy.model_management
@@ -188,6 +191,8 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
         if not 0 <= mesh_anchor["person"] < people_count:
             raise ValueError("Mask anchor person is outside the extracted ROI slots")
         key["mesh_anchor"] = mesh_anchor
+    if isolate_subject:
+        key['isolate_subject'] = True
     digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:24]
     cache = Path(cache_dir).resolve() / f"{digest}.npz"
     if use_cache and cache.exists():
@@ -221,7 +226,8 @@ def extract_video(video_path, model_file, cache_dir, sample_fps=16.0, start_seco
             bboxes = [{"x": x * width, "y": y * height, "width": w * width, "height": h * height} for x, y, w, h in rois]
             prediction = predict_rgb(model, [images[i] for i in active], bboxes,
                 packed_masks=[batch_masks[i] for i in active] if mask_video_range is not None else None,
-                fov=fov, batch_size=batch_size, timings=performance, **({"include_mesh": True} if mesh_anchor else {}))
+                fov=fov, batch_size=batch_size, timings=performance, **({"include_mesh": True} if mesh_anchor else {}),
+                **({'isolate_subject': True} if isolate_subject else {}))
             if len(prediction) != len(active):
                 raise ValueError("SAM3D returned a different number of frames than the input batch")
             predictions = dict(zip(active, prediction))

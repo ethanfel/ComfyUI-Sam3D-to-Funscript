@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {autoFitAxis, motionForAxis, rebuildAxis} from "../assets/curve.mjs";
+import {autoFitAxis, fitComponentAxis, motionForAxis, rebuildAxis} from "../assets/curve.mjs";
 
 for(const file of process.argv.slice(2)){
     const project=JSON.parse(readFileSync(file,"utf8")),original=JSON.stringify(project);
     for(const axis of Object.keys(project.scripts)){
         assert.deepEqual(rebuildAxis(project,axis),project.scripts[axis],axis+" Python/browser actions");
+        const settings=project.config.axis_settings[axis];
+        if(settings.component!=="auto"&&settings.auto_fit){
+            const fitted=fitComponentAxis(project,axis,settings.component);
+            assert.equal(fitted.component,settings.component);
+            assert.equal(fitted.range,settings.range);
+            assert.equal(fitted.center,settings.center);
+            assert.equal(fitted.invert,settings.invert);
+        }
         if(project.config.axis_settings[axis].component!=="auto")continue;
         const actual=motionForAxis(project,axis),expected=project.metrics[axis].auto_direction;
         assert.equal(actual.spans.length,expected.length);

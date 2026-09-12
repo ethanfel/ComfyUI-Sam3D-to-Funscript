@@ -186,6 +186,19 @@ test("Latest and saved sources are distinguishable after reruns, reverts and leg
     const reloaded=JSON.parse(JSON.stringify(project));initializeTimeline(reloaded);
     assert.deepEqual(sourceChoices(reloaded),options);
 });
+test("New main copies carry the displayed processing name without changing copied motion",()=>{
+    const project=fixture();initializeTimeline(project);
+    const control=structuredClone(project),track=project.timeline.tracks[0];
+    project.timeline.sources[0].data.metadata.processing_region={name:'Tracking 31 crop'};
+    track.name='Tracking 33 crop · mouth';
+    copyTrackToMain(project,track,{start:300,end:900});
+    copyTrackToMain(control,control.timeline.tracks[0],{start:300,end:900});
+    assert.equal(project.timeline.main.L0.regions[0].name,'Tracking 31 crop · mouth');
+    assert.deepEqual(project.scripts,control.scripts);
+    track.custom_name=true;track.name='My crop';
+    copyTrackToMain(project,track,{start:1000,end:1500});
+    assert.deepEqual(project.timeline.main.L0.regions.map(r=>r.name),['Tracking 31 crop · mouth','My crop']);
+});
 test("Source snapshots, calibration isolation, composed regions, reassignment, undo and JSON roundtrip",()=>{
     const project=fixture();initializeTimeline(project);
     const base=JSON.stringify(project.timeline.sources),track=project.timeline.tracks[0];

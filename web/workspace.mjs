@@ -6,6 +6,7 @@ const providers=new Map(),workspaces=new Set();let timer;
 const alive=win=>{try{return win&&!win.closed&&win.location.origin===location.origin}catch{return false}};
 const current=node=>app.graph?.getNodeById(node.id)===node;
 const uuid=()=>[...crypto.getRandomValues(new Uint8Array(16))].map(value=>value.toString(16).padStart(2,"0")).join("");
+const hostId=uuid();
 export function registerWorkspaceTool(kind,provider){providers.set(kind,provider);}
 function describe(anchor){
     const members=connectedTools(app.graph,anchor),unique=new Map();
@@ -30,16 +31,28 @@ function attach(record){
         if(descriptor){descriptor.provider.attach?.(descriptor.node,item.window);record.bindings.set(item.key,{...descriptor,window:item.window});}
     }
 }
+function adopt(win,id){
+    // The opener's JS state is lost on a page reload. Rebind only the exact
+    // session that opened this workspace, never a reused node number.
+    try{
+        if(!alive(win)||win.opener!==window||new URL(win.location.href).searchParams.get('workspace')!==id)return null;
+        const key=win.s3fWorkspaceIdentity?.();if(!key)return null;
+        const anchor=(app.graph?._nodes||[]).find(node=>providers.get(toolKind(node))?.describe(node)?.key===key);
+        if(!anchor){win.s3fWorkspaceDisconnected?.('Open the matching workflow in ComfyUI to reconnect. Your edits are kept.');return null;}
+        const record={id,win,anchor,pages:[],bindings:new Map()};workspaces.add(record);return record;
+    }catch{return null;}
+}
 async function configure(record,active){
     if(!alive(record.win)){workspaces.delete(record);return;}
     if(!record.win.s3fConfigureWorkspace)return;
-    if(!current(record.anchor)){record.win.s3fWorkspaceNotice("This workflow is no longer active. Return to its ComfyUI workflow before applying changes.");return;}
+    if(!current(record.anchor)){record.win.s3fWorkspaceDisconnected?.("This workflow is no longer active. Return to its ComfyUI workflow before applying changes.");return;}
     const {members,pages}=describe(record.anchor),keys=new Set(pages.map(page=>page.key));
     for(const [key,binding]of record.bindings)if(!keys.has(key)){
         await flushWindow(binding.window);binding.provider.detach?.(binding.node,binding.window);record.bindings.delete(key);
     }
     record.members=members;record.pages=pages;
-    record.win.s3fConfigureWorkspace({connected:true,active,pages:pages.map(({node,provider,...page})=>page)});
+    record.win.s3fConfigureWorkspace({connected:true,host:hostId,anchor:providers.get(toolKind(record.anchor))?.describe(record.anchor)?.key,active,pages:pages.map(({node,provider,...page})=>page)});
+    record.active=null; // The initial request must not reset tab choice on every heartbeat.
     attach(record);record.win.s3fWorkspaceNotice("");
 }
 function update(record,active){
@@ -56,7 +69,13 @@ export function openWorkspace(node){
         const id=uuid(),win=window.open(api.apiURL(`/sam3d_funscript/assets/workspace.html?workspace=${id}`),`s3f-workspace-${id}`);
         if(!win)return null;
         record={id,win,anchor:node,members,pages,bindings:new Map(),active:requested};workspaces.add(record);
-    }else{record.active=requested;update(record,requested);record.win.focus();}
+    }else{
+        record.active=requested;
+        update(record,requested).then(()=>{
+            if(alive(record.win)&&current(record.anchor))record.win.s3fSelectWorkspacePage?.(requested);
+        });
+        record.win.focus();
+    }
     return record.win;
 }
 app.registerExtension({
@@ -64,7 +83,9 @@ app.registerExtension({
     setup(){
         window.addEventListener("message",event=>{
             if(event.origin!==location.origin||!["s3f-workspace-ready","s3f-workspace-frames"].includes(event.data?.type))return;
-            const record=[...workspaces].find(item=>item.win===event.source&&item.id===event.data.workspace);if(!record)return;
+            let record=[...workspaces].find(item=>item.win===event.source&&item.id===event.data.workspace);
+            if(record&&!current(record.anchor)){workspaces.delete(record);record=null;}
+            record??=adopt(event.source,event.data.workspace);if(!record)return;
             if(event.data.type==="s3f-workspace-ready")update(record,record.active);else attach(record);
         });
         const queue=app.queuePrompt;

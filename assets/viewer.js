@@ -1,5 +1,5 @@
-import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, bodyFrame, invertAxis, axisValue, reduceActions} from "./curve.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries} from "./timeline.mjs";
+import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, fitComponentAxis, bodyFrame, invertAxis, axisValue, reduceActions} from "./curve.mjs";
+import {initializeTimeline, trackLabel, processingTrackState, recreatedTrackChoices, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries, motionSections, sectionAt} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {cutIndex, neighboringCut, cutSideRange} from "./cut-markers.mjs";
 import {smoothActions} from "./curve-edit.mjs";
@@ -10,6 +10,8 @@ import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} f
 import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
+const trackName = track => trackLabel(project,track);
+const trackDescription = track => [trackName(track),processingTrackState(project,track)].filter(Boolean).join(" · ");
 const COLORS = ["#75e2ba", "#dcadfa", "#78baf7", "#ffc07d"];
 const EDGES = [[5,6],[5,7],[7,62],[6,8],[8,41],[5,9],[6,10],[9,10],[9,11],[11,13],[10,12],[12,14],[0,5],[0,6]];
 const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:[41]};
@@ -23,8 +25,10 @@ let reductionDraft=null;
 let sceneCuts=[],cutLoading=false,selectedCut=null;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
+let sectionPreferences=[],sectionBlocks=[],sectionRanges=[];
+const sectionSurfaces=new Map();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
-function previewState() {return {...project.preview,device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
+function previewState() {return {...project.preview,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
 $("outputProfile").replaceChildren(new Option("Off · authored only","none"),...DEVICE_PROFILES.map(p=>new Option(p.label,p.id)));
 function deviceOutputControls() {
     const settings=project.device_output??deviceSettings();
@@ -120,7 +124,19 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
 function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
-const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status});
+const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status,
+    recovery:message=>{$('saveRecovery').hidden=!message;$('saveRecoveryMessage').textContent=message||'';},
+    downloadDraft:json=>{
+        const url=URL.createObjectURL(new Blob([json],{type:'application/json'})),a=document.createElement('a');
+        a.href=url;a.download=`motion-draft-${new Date().toISOString().replaceAll(':','-')}.json`;a.click();
+        setTimeout(()=>URL.revokeObjectURL(url),30000);
+    },
+});
+for(const [id,action] of [['retrySave',()=>session?.flush()],['recoverSave',()=>session?.recover()]])$(id).onclick=async()=>{
+    $('retrySave').disabled=$('recoverSave').disabled=true;
+    try{await action();}catch(error){status(error.message);}
+    finally{$('retrySave').disabled=$('recoverSave').disabled=false;}
+};
 const layoutKey="s3f-motion-wide-layout:1";
 function restoreWideLayout(data) {
     let wide=data?.preview?.wide_layout;
@@ -259,7 +275,16 @@ function install(data, keepPlayback=false, output=null) {
     for(const key of Object.keys(localVideos)){if(localVideos[key])URL.revokeObjectURL(localVideos[key]);localVideos[key]=null;}
     videoURL=null;videoVariant="stabilized";videoMapping=null;}
     closeSceneCut();
-    initializeTimeline(data);restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    initializeTimeline(data);
+    if(keepPlayback){
+        const replacements=recreatedTrackChoices(data,project),follow=id=>replacements.get(id)||id;
+        for(const key of ['active','selection_track','selection_lane'])if(data.timeline[key])data.timeline[key]=follow(data.timeline[key]);
+        if(data.preview?.section_choices)data.preview={...data.preview,section_choices:[...new Set(data.preview.section_choices.map(follow))]};
+    }
+    restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    sectionPreferences=Array.isArray(data.preview?.section_choices)?data.preview.section_choices:[];
+    $("sourceLayout").value=data.preview?.source_layout==='rows'?'rows':'sections';
+    $("sectionLane").classList.toggle('collapsed',!!data.preview?.sections_collapsed);
     $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
     $("name").textContent = data.metadata.source.path.split("/").at(-1);
@@ -346,7 +371,7 @@ function renderSceneCutActions(){
     const menu=$('sceneCutActions');if(!selectedCut){menu.hidden=true;return;}
     const {at,canvas,id}=selectedCut,rect=canvas.getBoundingClientRect();
     const width=document.documentElement.clientWidth,heightLimit=document.documentElement.clientHeight;
-    const list=id==='main'?null:$('tracks').getBoundingClientRect();
+    const list=id==='main'||canvas===$('sectionCurve')?null:$('tracks').getBoundingClientRect();
     if(!$('showSceneCuts').checked||!sceneCuts.includes(at)||!canvas.isConnected||rect.height===0||id!==project.timeline.active||at<bounds[0]||at>bounds[1]||
         rect.top+5<Math.max(0,list?.top||0)||rect.top+5>Math.min(heightLimit,list?.bottom??heightLimit)){
         closeSceneCut();return;
@@ -354,7 +379,7 @@ function renderSceneCutActions(){
     menu.hidden=false;
     const track=project.timeline.tracks.find(t=>t.id===id),[a,b]=project.timeline.selection,[low,high]=sceneCutScope();
     $('selectedSceneCutLabel').textContent=`Cut ${cutIndex(sceneCuts,at)+1} · ${formatTime(at,3)}`;
-    $('sceneCutTrack').textContent=track?.name||`Main · ${$('axis').value}`;
+    $('sceneCutTrack').textContent=trackName(track)||`Main · ${$('axis').value}`;
     const outside=roundEven(at)<low||roundEven(at)>high;
     for(const name of ['sceneCutIn','sceneCutOut']){$(name).disabled=outside;$(name).title=outside?'This cut is outside the source track range.':'Use this cut boundary for the selection.';}
     for(const [name,direction]of [['sceneCutBefore',-1],['sceneCutAfter',1]])$(name).disabled=!sceneCutRange(direction);
@@ -409,10 +434,10 @@ function controls() {
     for(const id of ["component","calibration","range","center","rebuild","autoFit"])$(id).disabled=assembled()||locked();
     calibrationControls();
     $("invert").disabled=locked();
-    $("editing").textContent=track?`Editing ${track.name} · ${axis}. Source edits are independent; apply a selection to update main.`:
+    $("editing").textContent=track?`Editing ${trackName(track)} · ${axis}. Source edits are independent; apply a selection to update main.`:
         assembled()?"Editing main · assembled sections. Drag points to adjust joins, or calibrate a source track and apply it again.":`Editing main · ${axis}`;
     $("fitSelection").disabled=!track;
-    if(track?.window)$("editing").textContent=`Editing ${track.name} · ${axis} · local origin within ${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s. Apply a selection to update main.`;
+    if(track?.window)$("editing").textContent=`Editing ${trackName(track)} · ${axis} · local origin within ${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s. Apply a selection to update main.`;
     if(locked())$("editing").textContent="Locked · curve, calibration and source are protected across reruns. Unlock this track to edit it.";
     $("lockMain").textContent=locked("main")?"Unlock":"Lock";$("lockMain").setAttribute("aria-pressed",String(locked("main")));
     const ref=project.references?.[$("axis").value];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
@@ -421,10 +446,15 @@ function controls() {
     const main=project.timeline.main[$("axis").value];
     $("mainDescription").textContent=main.assembled?`${main.regions.length} source sections · device preview and exports follow main`:"Device preview and exported scripts follow this track";
     selectionControls();
+    sectionControls();
 }
 function calibrationControls() {
     const {data,axis}=selected();
-    const adaptive=$("component").value==="auto"&&$("calibration").value==="adaptive"&&data.config.axis_settings[axis].auto_fit;
+    const automatic=$("component").value==="auto";
+    const adaptive=automatic&&$("calibration").value==="adaptive"&&data.config.axis_settings[axis].auto_fit;
+    $("calibration").disabled=assembled()||locked()||!automatic;
+    $("autoFit").textContent=automatic?"Auto fit selected axis":"Fit selected component";
+    $("autoFit").title=automatic?"Fit direction, origin and range using the selected mode. Keeps Invert and other axes.":"Keep the chosen direction and fit its range and center across this source track. Uses cached motion; replaces edits on this curve. Keeps Invert and other axes.";
     $("rangeLabel").textContent=adaptive?"Local full-scale range":"Full-scale range";
     for(const id of ["range","center"])$(id).disabled=assembled()||locked()||adaptive;
 }
@@ -432,7 +462,8 @@ function selectLane(id) {
     if(!project)return;
     if(id!==project.timeline.active)discardPattern("Track changed. Preview on this curve before applying.");
     if(selectedCut&&selectedCut.id!==id)closeSceneCut();
-    project.timeline.active=id;controls();render();
+    if(id!=='main')sectionPreferences=[id,...sectionPreferences.filter(choice=>choice!==id)];
+    project.timeline.active=id;controls();render();session?.changed();
 }
 function collapseLane(row, collapsed) {
     row.classList.toggle("collapsed",collapsed);
@@ -457,11 +488,11 @@ function selectionControls() {
     $("promoteTrack").disabled=!!selectionProblem(project,track,true);
     $("promoteTrack").title=selectionProblem(project,track,true)||describe(track);
     $("selectTrack").disabled=!track;
-    $("selectionStatus").textContent=problem||(track?`Copy source: ${track.name} · ${describe(track)}`:"");
+    $("selectionStatus").textContent=problem||(track?`Copy source: ${trackName(track)} · ${describe(track)}`:"");
     const selectedCurve=selected(),range=project.timeline.selection;
     const scope=selectedCurve.track?trackCoverage(project,selectedCurve.track):[0,roundEven(project.metadata.duration_ms)];
     $("smoothSelection").disabled=locked()||range[1]<=range[0]||range[0]<scope[0]||range[1]>scope[1];
-    $("smoothTarget").textContent=`${selectedCurve.track?.name||"Main"} · ${selectedCurve.axis}${locked()?" · locked":" · selected range only"}`;
+    $("smoothTarget").textContent=`${trackName(selectedCurve.track)||"Main"} · ${selectedCurve.axis}${locked()?" · locked":" · selected range only"}`;
     patternControls();reductionControls();
     const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
     for(const row of $("tracks").children){
@@ -479,6 +510,7 @@ function setSelection(start,end) {
 }
 function buildTracks() {
     closeSceneCut();
+    sectionSurfaces.clear();
     $("tracks").replaceChildren();
     for(const track of project.timeline.tracks){
         const row=document.createElement("div");row.className="track";row.dataset.track=track.id;
@@ -486,7 +518,7 @@ function buildTracks() {
         const collapse=document.createElement("button");collapse.className="collapse-track";
         collapse.onclick=()=>{collapseLane(row,!track.collapsed);session?.changed();render();};
         const select=document.createElement("button");select.className="track-select";select.textContent="Edit";select.onclick=()=>selectLane(track.id);
-        const name=document.createElement("input");name.type="text";name.className="track-name";name.value=track.name;name.setAttribute("aria-label","Track name");
+        const name=document.createElement("input");name.type="text";name.className="track-name";name.value=trackName(track);name.setAttribute("aria-label","Track name");
         name.onchange=()=>{if(track.locked)return;record();track.custom_name=true;track.name=name.value.trim()||"Source track";dirty(false);controls();render();};
         const source=document.createElement("select");source.className="track-source";source.setAttribute("aria-label","Anchor project");
         const choices=sourceChoices(project);
@@ -511,14 +543,112 @@ function buildTracks() {
         range.onclick=()=>{selectLane(track.id);setSelection(...trackCoverage(project,track));};
         const badge=document.createElement("span");badge.className="copy-source-badge";badge.textContent="Copy source";
         for(const input of [name,source,axis,remove])input.disabled=!!track.locked;
-        head.append(collapse,select,lock,name,sourceLabel,axisLabel,range,copy,badge,remove);
+        const result=document.createElement("span");result.className="track-result";result.textContent=processingTrackState(project,track);result.hidden=!result.textContent;
+        result.title=result.textContent==='Saved detection'?'An older result kept for your edits. Select the current detection to review the rebuilt zone.':'The latest result from the current processing plan.';
+        head.append(collapse,select,lock,name,result,sourceLabel,axisLabel,range,copy,badge,remove);
+        const candidate=sourceProject(project,track.source).metadata.automatic_candidate;
+        if(candidate){const review=document.createElement('span');review.className='automatic-review';review.textContent=candidate.review.length?'Needs review':'Auto candidate';review.title=candidate.review.join(' · ')||'Suggested from crop coverage and usable movement. Review the pose and curve before keeping it.';head.append(review);}
         if(track.window){const scope=document.createElement("span");scope.className="track-scope";scope.textContent=`${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s · local fit`;head.append(scope);}
-        const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${track.name} motion timeline`);
+        const canvas=document.createElement("canvas");canvas.tabIndex=0;canvas.dataset.track=track.id;canvas.setAttribute("aria-label",`${trackName(track)} motion timeline`);
         row.append(head,canvas);$("tracks").append(row);collapseLane(row,!!track.collapsed);bindCurve(canvas,track.id);
     }
 }
-function resize(canvas) {
-    const rect=canvas.getBoundingClientRect(), dpr=devicePixelRatio||1;
+function sectionControls() {
+    const compact=$('sourceLayout').value==='sections',tracks=project.timeline.tracks;
+    const current=tracks.find(t=>t.id===project.timeline.active)||selectionTrack(project)||tracks[0];
+    sectionRanges=tracks.map(t=>{const [start,end]=trackCoverage(project,t);return {id:t.id,start,end};}).sort((a,b)=>a.start-b.start||a.end-b.end);
+    if(current)sectionPreferences=[current.id,...sectionPreferences.filter(id=>id!==current.id&&tracks.some(t=>t.id===id))];
+    sectionBlocks=motionSections(sectionRanges,sectionPreferences);
+    $('tracks').classList.toggle('sections-view',compact);
+    document.body.classList.toggle('source-sections',compact);
+    $('sectionControls').hidden=!compact;$('sectionLane').hidden=!compact||!tracks.length;
+    for(const row of $('tracks').children)row.classList.toggle('section-current',row.dataset.track===current?.id);
+    const byId=new Map(tracks.map(t=>[t.id,t]));
+    $('sectionTrack').replaceChildren(...sectionRanges.map(r=>new Option(`${formatTime(r.start,2)}–${formatTime(r.end,2)} · ${trackDescription(byId.get(r.id))}`,r.id)));
+    $('sectionTrack').value=current?.id||'';
+    $('sectionTrack').disabled=!tracks.length;
+    const range=sectionRanges.find(r=>r.id===current?.id);
+    const alternatives=range?sectionRanges.filter(r=>r.start<range.end&&r.end>range.start):[];
+    $('sectionAnchor').replaceChildren(...alternatives.map(r=>new Option(`${trackDescription(byId.get(r.id))} · ${byId.get(r.id).axis}`,r.id)));
+    $('sectionAnchor').value=current?.id||'';$('sectionAlternatives').hidden=alternatives.length<2;
+    $('previousSection').disabled=!range||!sectionRanges.some(r=>r.start<range.start);
+    $('nextSection').disabled=!range||!sectionRanges.some(r=>r.start>range.start);
+    const collapsed=$('sectionLane').classList.contains('collapsed');
+    $('collapseSections').textContent=collapsed?'Expand sections':'Collapse sections';
+    $('collapseSections').setAttribute('aria-expanded',String(!collapsed));
+}
+function chooseSection(id, whole=true) {
+    const track=project?.timeline.tracks.find(t=>t.id===id);if(!track)return;
+    selectLane(id);
+    const [start,end]=trackCoverage(project,track);
+    if(whole)setSelection(start,end);else setSelection(...project.timeline.selection);
+    if(end<=bounds[0]||start>=bounds[1])changeView(panView(project.metadata.duration_ms,view,start));
+    if(currentMs<start||currentMs>=end)seek(start);
+    session?.changed();
+}
+$('sourceLayout').onchange=()=>{if(!project)return;closeSceneCut();dragging=null;sectionControls();session?.changed();render();};
+$('sectionTrack').onchange=()=>chooseSection($('sectionTrack').value);
+$('sectionAnchor').onchange=()=>chooseSection($('sectionAnchor').value,false);
+for(const [name,direction] of [['previousSection',-1],['nextSection',1]])$(name).onclick=()=>{
+    const current=sectionRanges.find(r=>r.id===$('sectionTrack').value);if(!current)return;
+    const candidates=sectionBlocks.filter(r=>direction<0?r.start<current.start:r.start>current.start);
+    const next=direction<0?candidates.at(-1):candidates[0];if(next)chooseSection(next.id);
+};
+$('collapseSections').onclick=()=>{if(!project)return;closeSceneCut();$('sectionLane').classList.toggle('collapsed');sectionControls();session?.changed();render();};
+let sectionLabelKey='';
+function drawSections() {
+    if($('sectionLane').hidden)return;
+    const canvas=$('sectionCurve'),collapsed=$('sectionLane').classList.contains('collapsed');
+    const [ctx,w,h]=resize(canvas,collapsed?[$('sectionLabels').clientWidth,190]:undefined),dpr=devicePixelRatio||1;
+    const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
+    const visible=sectionBlocks.filter(b=>b.end>bounds[0]&&b.start<bounds[1]);
+    const tracks=new Map(project.timeline.tracks.map(t=>[t.id,t]));
+    const labelKey=JSON.stringify([bounds,w,visible,project.timeline.active,visible.map(b=>[trackDescription(tracks.get(b.id)),tracks.get(b.id).axis,tracks.get(b.id).locked])]);
+    if(labelKey!==sectionLabelKey){
+        sectionLabelKey=labelKey;$('sectionLabels').replaceChildren();
+        for(const block of visible){
+            const track=tracks.get(block.id),button=document.createElement('button');
+            const left=Math.max(42,x(block.start)),right=Math.min(w-12,x(block.end));
+            button.className='section-block';button.dataset.track=track.id;
+            button.textContent=`${track.locked?'🔒 ':''}${trackDescription(track)} · ${track.axis}${block.choices.length>1?` · ${block.choices.length} choices`:''}`;
+            button.title=`${button.textContent} · ${formatTime(block.start,3)}–${formatTime(block.end,3)} · Click to select this section`;
+            button.style.left=`${left}px`;button.style.width=`${Math.max(1,right-left)}px`;
+            button.setAttribute('aria-pressed',String(project.timeline.active===track.id));
+            button.onclick=()=>chooseSection(track.id);$('sectionLabels').append(button);
+        }
+    }
+    if(collapsed)return;
+    ctx.fillStyle='#111e28';ctx.fillRect(42,10,w-54,h-35);
+    const painted=new Set();
+    for(const block of visible){
+        const track=tracks.get(block.id);let surface=sectionSurfaces.get(track.id);
+        if(!surface){surface=document.createElement('canvas');surface.dataset.track=track.id;sectionSurfaces.set(track.id,surface);}
+        if(!painted.has(track.id)){
+            drawCurve(surface,trackProject(project,track),track.axis,false,track.id===project.timeline.active,trackCoverage(project,track),[w,h]);
+            painted.add(track.id);
+        }
+        const left=Math.max(42,x(block.start)),right=Math.min(w-12,x(block.end));
+        ctx.fillStyle=track.id===project.timeline.active?'#203e4b':'#192d39';ctx.fillRect(left,10,right-left,h-35);
+        ctx.drawImage(surface,left*dpr,10*dpr,(right-left)*dpr,(h-35)*dpr,left,10,right-left,h-35);
+        ctx.strokeStyle=track.id===project.timeline.active?'#75e2ba':'#4b677d';ctx.lineWidth=1;
+        ctx.strokeRect(left+.5,10.5,Math.max(0,right-left-1),h-36);
+    }
+    // One shared ruler and cut guide, including unprocessed gaps.
+    ctx.font='11px system-ui';ctx.fillStyle='#8197ab';
+    for(const p of [0,25,50,75,100])ctx.fillText(p,9,y(p)+4);
+    for(const tick of rulerTicks(...bounds,w-54,project.metadata.duration_ms)){
+        ctx.fillText(tick.label,Math.max(42,Math.min(w-12-ctx.measureText(tick.label).width,x(tick.time)-ctx.measureText(tick.label).width/2)),h-6);
+    }
+    ctx.save();ctx.beginPath();ctx.rect(42,0,w-54,h-25);ctx.clip();
+    if($('showSceneCuts').checked)for(const t of visibleSceneCuts(...bounds,(w-54)/8)){
+        const px=x(t);ctx.setLineDash([2,5]);line(ctx,[px,10],[px,h-25],'#d9c57e66',1);ctx.setLineDash([]);
+        ctx.fillStyle=selectedCut?.at===t?'#ffe0a8':'#d9c57e';ctx.beginPath();ctx.moveTo(px,1);ctx.lineTo(px+4,5);ctx.lineTo(px,9);ctx.lineTo(px-4,5);ctx.closePath();ctx.fill();
+    }
+    line(ctx,[x(currentMs),10],[x(currentMs),h-25],'#f0f5fa',1);ctx.restore();
+    for(const id of sectionSurfaces.keys())if(!painted.has(id))sectionSurfaces.delete(id);
+}
+function resize(canvas, size) {
+    const rect=size?{width:size[0],height:size[1]}:canvas.getBoundingClientRect(), dpr=devicePixelRatio||1;
     const w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));
     if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
     const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);
@@ -603,8 +733,8 @@ function drawRobot() {
     $("deviceReach").hidden=frame.reachable!==false;
     $("deviceReach").textContent=frame.reachable===false?"Outside schematic linkage reach · dashed coral rods":"";
 }
-function drawCurve(canvas, data, axis, isMain, active, window) {
-    const [ctx,w,h]=resize(canvas),composed=isMain&&project.timeline.main[axis].assembled;
+function drawCurve(canvas, data, axis, isMain, active, window, size) {
+    const [ctx,w,h]=resize(canvas,size),composed=isMain&&project.timeline.main[axis].assembled;
     const x=t=>42+(t-bounds[0])/(bounds[1]-bounds[0])*(w-54),y=p=>h-25-p/100*(h-40);
     const actions=data.scripts[axis].actions,s=data.config.axis_settings[axis],color=isMain?"#75e2ba":"#78baf7";
     const output=isMain&&axis==="L0"&&project.device_output?.show_curve!==false?deviceOutputResult()?.script:null;
@@ -733,7 +863,8 @@ function render() {
     const mainContext=editProject(project,outputAxis,"main");
     if(!$("mainLane").classList.contains("collapsed"))drawCurve($("curve"),mainContext.data,outputAxis,true,project.timeline.active==="main");
     const listRect=$("tracks").getBoundingClientRect();
-    for(const track of project.timeline.tracks){
+    if($('sourceLayout').value==='sections')drawSections();
+    else for(const track of project.timeline.tracks){
         if(track.collapsed)continue;
         const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
         if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);else curveLayers.delete(canvas);
@@ -807,10 +938,14 @@ $("rebuild").addEventListener("click",()=>{
 });
 function fitAutomatic(calibration=$("calibration").value) {
     if(!project||assembled()||locked())return;
-    try{const {data,axis,track}=selected(),settings=autoFitAxis(data,axis,!!track?.window&&calibration==="clip",calibration);record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();}
+    try{
+        const {data,axis,track}=selected(),component=$("component").value;
+        const settings=component==="auto"?autoFitAxis(data,axis,!!track?.window&&calibration==="clip",calibration):fitComponentAxis(data,axis,Number(component),!!track?.window);
+        record();data.config.axis_settings[axis]=settings;regenerate(data,axis,track);dirty();controls();render();
+    }
     catch(error){status(error.message);}
 }
-$("autoFit").addEventListener("click",()=>{if(project){const {data,axis}=selected();fitAutomatic(data.config.axis_settings[axis].calibration??"adaptive");}});
+$("autoFit").addEventListener("click",()=>fitAutomatic());
 $("calibration").addEventListener("change",()=>fitAutomatic());
 $("component").addEventListener("change",calibrationControls);
 $("fitSelection").addEventListener("click",()=>{
@@ -837,12 +972,16 @@ function sceneCutAtPointer(event,canvas){
     const tolerance=(bounds[1]-bounds[0])/Math.max(1,rect.width-54)*7;
     return visibleSceneCuts(...bounds,(rect.width-54)/8).filter(t=>Math.abs(t-time)<=tolerance).sort((a,b)=>Math.abs(a-time)-Math.abs(b-time))[0]??null;
 }
-function bindCurve(canvas,id){
+function bindCurve(canvas,target){
+    let id=typeof target==='function'?null:target;
+    const resolve=event=>{if(typeof target==='function')id=target(pointer(event,canvas).at);return id;};
     canvas.addEventListener("wheel",event=>timelineWheel(event,canvas),{passive:false});
     const actions=()=>id==="main"?project.scripts[$("axis").value].actions:project.timeline.tracks.find(t=>t.id===id).script.actions;
     canvas.addEventListener("pointerdown",event=>{
         if(!project||event.button!==0)return;
         const near=sceneCutAtPointer(event,canvas);
+        resolve(event);
+        if(!id){if(near!==null)id='main';else{seek(pointer(event,canvas).at);return;}}
         if(near!==null){event.preventDefault();selectSceneCut(near,canvas,id,event.shiftKey);return;}
         closeSceneCut();selectLane(id);canvas.focus({preventScroll:true});
         const p=pointer(event,canvas);
@@ -863,7 +1002,8 @@ function bindCurve(canvas,id){
             record();dragging.recorded=true;
         }
         if(locked(id))return;
-        const list=actions(),i=dragging.index,min=i?list[i-1].at+1:0,max=i+1<list.length?list[i+1].at-1:roundEven(project.metadata.duration_ms);
+        const track=project.timeline.tracks.find(t=>t.id===id),scope=typeof target==='function'&&track?trackCoverage(project,track):[0,roundEven(project.metadata.duration_ms)];
+        const list=actions(),i=dragging.index,min=Math.max(scope[0],i?list[i-1].at+1:0),max=Math.min(scope[1],i+1<list.length?list[i+1].at-1:roundEven(project.metadata.duration_ms));
         list[i]={at:Math.max(min,Math.min(max,p.at)),pos:p.pos};dirty();render();
     });
     const release=()=>{if(dragging?.canvas===canvas){dragging=null;render();}};
@@ -871,9 +1011,10 @@ function bindCurve(canvas,id){
     canvas.addEventListener("dblclick",event=>{
         if(!project)return;
         const cut=sceneCutAtPointer(event,canvas);
+        resolve(event);if(!id){if(cut!==null)id='main';else return;}
         if(cut!==null){event.preventDefault();selectSceneCut(cut,canvas,id);const range=sceneCutRange(1);if(range)setSelection(...range);return;}
         if(!project||!$("editPoints").checked||event.shiftKey||locked(id))return;selectLane(id);const list=actions(),p=pointer(event,canvas);if(list.some(a=>a.at===p.at))return;record();list.push(p);list.sort((a,b)=>a.at-b.at);dirty();render();});
-    canvas.addEventListener("contextmenu",event=>{event.preventDefault();if(!project||!$("editPoints").checked||locked(id))return;selectLane(id);const list=actions(),i=nearest(event,canvas,list);if(i>=0&&list.length>1){record();list.splice(i,1);dirty();render();}});
+    canvas.addEventListener("contextmenu",event=>{event.preventDefault();if(!project||!resolve(event)||!$("editPoints").checked||locked(id))return;selectLane(id);const list=actions(),i=nearest(event,canvas,list);if(i>=0&&list.length>1){record();list.splice(i,1);dirty();render();}});
 }
 $("editPoints").onchange=()=>{dragging=null;document.body.classList.toggle("editing-points",$("editPoints").checked);};
 $("smoothSelection").onclick=()=>{
@@ -883,7 +1024,7 @@ $("smoothSelection").onclick=()=>{
         const actions=smoothActions(data.scripts[axis].actions,start,end,$("smoothMs").valueAsNumber,reductionBoundaries(project,track,axis,sceneCuts));
         record();data.scripts[axis]={...data.scripts[axis],actions};delete data.metrics?.[axis];
         commitSelected(data,axis,track);dirty();controls();render();
-        status(`Smoothed ${track?.name||"Main"} · ${axis} over ${(start/1000).toFixed(3)}–${(end/1000).toFixed(3)} s · ${$("smoothMs").value} ms. Undo restores this curve.`);
+        status(`Smoothed ${trackName(track)||"Main"} · ${axis} over ${(start/1000).toFixed(3)}–${(end/1000).toFixed(3)} s · ${$("smoothMs").value} ms. Undo restores this curve.`);
     }catch(error){status(error.message);}
 };
 function reductionOptions() {
@@ -907,7 +1048,7 @@ function reductionControls() {
     $('previewReduction').disabled=locked()||!valid||data.scripts[axis].actions.length<2;
     $('applyReduction').disabled=locked()||!reductionDraft?.removed;
     $('cancelReduction').disabled=!reductionDraft;
-    $('reductionTarget').textContent=`${track?.name||'Main'} · ${axis}${locked()?' · locked':valid?' · '+($('reductionScope').value==='whole'?'whole curve':'selected range'):' · select a range within this track'}`;
+    $('reductionTarget').textContent=`${trackName(track)||'Main'} · ${axis}${locked()?' · locked':valid?' · '+($('reductionScope').value==='whole'?'whole curve':'selected range'):' · select a range within this track'}`;
 }
 $('previewReduction').onclick=()=>{
     if(!project)return;reductionControls();if($('previewReduction').disabled)return;
@@ -927,7 +1068,7 @@ $('applyReduction').onclick=()=>{
     const {data,axis,track}=selected(),draft=reductionDraft;
     record();data.scripts[axis]={...data.scripts[axis],actions:draft.actions};delete data.metrics?.[axis];
     commitSelected(data,axis,track);discardReduction();dirty();controls();render();
-    const message=`Reduced ${track?.name||'Main'} · ${axis}: ${draft.before} → ${draft.after} points · maximum position change ${Number(draft.maxError.toFixed(6))} / 100. Undo restores the original points.`;
+    const message=`Reduced ${trackName(track)||'Main'} · ${axis}: ${draft.before} → ${draft.after} points · maximum position change ${Number(draft.maxError.toFixed(6))} / 100. Undo restores the original points.`;
     $('reductionStatus').textContent=message;status(message);
 };
 for(const input of $('reductionPanel').querySelectorAll('input,select'))input.addEventListener('change',()=>{
@@ -959,7 +1100,7 @@ function patternControls() {
     if(!project)return;
     const {axis,track}=selected(),[start,end]=project.timeline.selection;
     const scope=track?trackCoverage(project,track):[0,roundEven(project.metadata.duration_ms)];
-    const name=`${track?.name||"Main"} · ${axis}`, valid=end>start&&start>=scope[0]&&end<=scope[1];
+    const name=`${trackName(track)||"Main"} · ${axis}`, valid=end>start&&start>=scope[0]&&end<=scope[1];
     if(patternDraft&&patternDraft.key!==patternKey())discardPattern("Curve, range or settings changed. Preview again before applying.");
     $("previewPattern").disabled=locked()||!valid;
     $("applyPattern").disabled=locked()||!valid||!patternDraft;
@@ -990,6 +1131,7 @@ function previewPattern() {
     try{
         const {data,axis,track}=selected(),[start,end]=project.timeline.selection,options=patternOptions();
         options.protectedTimes=reductionBoundaries(project,track,axis,sceneCuts);
+        options.contextBounds=track?trackCoverage(project,track):[0,roundEven(project.metadata.duration_ms)];
         const result=(options.mode==="continue"?continuePattern:generatePattern)(data.scripts[axis].actions,start,end,options);
         patternDraft={...result,key:patternKey()};
         $("patternStatus").textContent=`Pink preview · ${result.summary} Apply changes this axis only.`;
@@ -1005,7 +1147,7 @@ $("applyPattern").onclick=()=>{
     target.patterns=rememberPattern(target.patterns||[],data.scripts[axis].actions,...project.timeline.selection,$("patternMode").value==="generate"?$("patternShape").value:"Continued motion");
     data.scripts[axis]={...data.scripts[axis],actions:draft.actions};delete data.metrics?.[axis];
     commitSelected(data,axis,track);discardPattern();dirty();controls();render();
-    const message=`Applied to ${track?.name||"Main"} · ${axis}. ${draft.summary} Undo restores the previous curve.`;
+    const message=`Applied to ${trackName(track)||"Main"} · ${axis}. ${draft.summary} Undo restores the previous curve.`;
     $("patternStatus").textContent=message;status(message);
 };
 $("appliedPattern").onchange=()=>{
@@ -1019,7 +1161,7 @@ $("removePattern").onclick=()=>{
         const result=removePattern(data.scripts[axis].actions,target.patterns||[],$("appliedPattern").value);
         record();target.patterns=result.patterns;data.scripts[axis]={...data.scripts[axis],actions:result.actions};delete data.metrics?.[axis];
         commitSelected(data,axis,track);discardPattern();dirty();controls();render();
-        const message=`Removed ${result.name} · restored the previous section on ${track?.name||"Main"} · ${axis}. Undo restores the pattern.`;
+        const message=`Removed ${result.name} · restored the previous section on ${trackName(track)||"Main"} · ${axis}. Undo restores the pattern.`;
         $("patternStatus").textContent=message;status(message);
     }catch(error){$("patternStatus").textContent=error.message;}
 };
@@ -1050,6 +1192,7 @@ async function toggleLock(target) {
 }
 $("lockMain").onclick=()=>{if(project)toggleLock(project.timeline.main[$("axis").value]);};
 bindCurve($("curve"),"main");
+bindCurve($('sectionCurve'),time=>sectionAt(sectionBlocks,time)?.id??null);
 $("selectMain").onclick=()=>selectLane("main");
 $("tracks").addEventListener("scroll",render,{passive:true});
 window.addEventListener("scroll",render,{passive:true});
@@ -1075,7 +1218,7 @@ function applySelection(whole){
         const axes=copyTrackToMain(preview,track,{start,end,method:$("join").value,blendMs,whole});
         record();project.scripts=preview.scripts;project.metrics=preview.metrics;project.timeline.main=preview.timeline.main;
         dirty(false);controls();render();
-        const message=`${whole?"Whole track":"Selection"} copied: ${track.name} → Main ${axes.updated.join(", ")}.${axes.locked.length?` Locked axes kept: ${axes.locked.join(", ")}.`:""} Undo restores all copied axes.`;
+        const message=`${whole?"Whole track":"Selection"} copied: ${trackName(track)} → Main ${axes.updated.join(", ")}.${axes.locked.length?` Locked axes kept: ${axes.locked.join(", ")}.`:""} Undo restores all copied axes.`;
         status(message);$("selectionStatus").textContent=message;
     }catch(error){status(error.message);$("selectionStatus").textContent=error.message;}
 }
