@@ -12,7 +12,8 @@ import av
 import numpy as np
 
 from .video import fingerprint
-from .stabilization import stream_windows, translations, correct_sections
+from .stabilization import (stream_windows, translations, correct_sections, similarities,
+                            source_transforms, transform_points, inverse_transforms)
 from .reference_keyframes import reference_keys, validate_keys, merge_tracks
 
 VERSION = 1
@@ -123,9 +124,18 @@ def config_for_source(raw, info):
         result["keyframes"] = keys
     if "tracking_mode" in config:
         result["tracking_mode"] = mode
+    if "transform_mode" in config:
+        if config['transform_mode'] not in ('translation', 'similarity'):
+            raise ValueError('Stabilization correction must be translation or similarity')
+        result['transform_mode'] = config['transform_mode']
     if config.get("point_mask") is not None:
         from .reference_mask import normalize_mask
         result["point_mask"] = normalize_mask(config["point_mask"], info["width"], info["height"])
+    if 'auto_points' in config:
+        stamp = config['auto_points']
+        if not isinstance(stamp, dict) or set(stamp) != {'mask', 'keys'} or any(not isinstance(v, str) for v in stamp.values()):
+            raise ValueError('Invalid generated reference point metadata')
+        result['auto_points'] = dict(stamp)
     return result, changed
 
 
@@ -234,21 +244,33 @@ def analyze(cache, info, config, tolerance=12, max_step=48, reference_masks=None
     keys = reference_keys(config) if conflicts is not None else []
     baseline = np.asarray(keys[0]["points"]) if keys else None
     marked = [k["frame"] for k in keys]
-    shifts, valid, counts, residual, reasons = translations(points, visible, list(range(points.shape[1])), tolerance=tolerance, max_step=max_step,
-        reference=baseline, marked_frames=marked)
+    anchor = (baseline if baseline is not None else points[0]).mean(axis=0)
+    matrices = None
+    if config.get('transform_mode') == 'similarity':
+        matrices, valid, counts, residual, reasons = similarities(points, visible, tolerance=tolerance,
+            max_step=max_step, reference=baseline, marked_frames=marked)
+        shifts = transform_points(anchor[None], inverse_transforms(matrices))[:, 0]-anchor
+    else:
+        shifts, valid, counts, residual, reasons = translations(points, visible, list(range(points.shape[1])), tolerance=tolerance, max_step=max_step,
+            reference=baseline, marked_frames=marked)
     if conflicts is not None:
         for i in range(len(reasons)):
             if not valid[i] and conflicts[i].any():
                 reasons[i] = "tracking_passes_disagree"
     for i in np.flatnonzero(mask_rejected & ~valid):
         reasons[i] = "outside_reference_mask"
-    anchor = (baseline if baseline is not None else points[0]).mean(axis=0)
     corrected, quality = correct_sections(times, shifts, valid, anchor, config["sections"])
+    transforms = {}
+    if matrices is not None:
+        automatic = matrices.copy()
+        # Manual center keys move the center without inventing angle or scale.
+        matrices[:, :, 2] += anchor-transform_points((anchor+corrected)[:, None], matrices)[:, 0]
+        transforms = {'auto_transform_xy': automatic.tolist(), 'transform_xy': matrices.tolist()}
     for frame in marked:
         if valid[frame] and quality[frame] != "manual":
             quality[frame] = "manual"
             reasons[frame] = "reference_keyframe"
-    return {"times_ms": times.tolist(), "source_times_ms": source_times.tolist(), "source_pts": metadata["source_pts"],
+    return {**transforms, "times_ms": times.tolist(), "source_times_ms": source_times.tolist(), "source_pts": metadata["source_pts"],
             "points": np.where(np.isfinite(points), points, 0).tolist(), "visible": visible.tolist(),
             "auto_shift_xy": shifts.tolist(), "shift_xy": corrected.tolist(), "anchor_xy": anchor.tolist(),
             "quality": quality.tolist(), "reasons": reasons, "inliers": counts.tolist(),
@@ -259,8 +281,11 @@ def analyze(cache, info, config, tolerance=12, max_step=48, reference_masks=None
 def render(info, data, destination, interrupt=None, progress=None):
     import cv2
 
-    shifts = np.asarray(data["shift_xy"])
-    padding = (np.ceil((np.max(np.abs(shifts), axis=0)+8)/2)*2).astype(int)
+    matrices = source_transforms(data)
+    corners = np.array([[0, 0], [info['width'], 0], [0, info['height']], [info['width'], info['height']]])
+    mapped = transform_points(corners, matrices)
+    extent = np.maximum(-mapped.min(axis=(0, 1)), mapped.max(axis=(0, 1))-[info['width'], info['height']])
+    padding = (np.ceil((np.maximum(extent, 0)+8)/2)*2).astype(int)
     size = (np.ceil((np.array([info["width"], info["height"]])+2*padding)/2)*2).astype(int)
     pts = list(map(Fraction, data["source_pts"]))
     base = Fraction(info["time_base"])
@@ -280,8 +305,8 @@ def render(info, data, destination, interrupt=None, progress=None):
                         interrupt()
                     if index >= len(pts) or timestamp != pts[index]:
                         raise ValueError("Source timeline changed after tracking")
-                    dx, dy = padding-shifts[index]
-                    matrix = np.array([[1, 0, dx], [0, 1, dy]], np.float32)
+                    matrix = matrices[index].copy()
+                    matrix[:, 2] += padding
                     corrected = cv2.warpAffine(pixels, matrix, tuple(map(int, size)), borderMode=cv2.BORDER_CONSTANT)
                     frame = av.VideoFrame.from_ndarray(corrected, format="bgr24")
                     frame.pts, frame.time_base = int(output_pts[index]/base), base
@@ -316,6 +341,7 @@ def run_reference(path, start, duration, raw_config, checkpoint, root, tolerance
     from .reference_tracker import resolve_checkpoint
     checkpoint = resolve_checkpoint(checkpoint, config.get("tracking_mode", "online"))
     render_config = {**config}
+    render_config.pop('auto_points', None)
     if config.get("point_mask"):
         render_config["point_mask"] = {k: v for k, v in config["point_mask"].items() if k not in ("spacing", "limit")}
     identifier = digest({"source_id": info["source_id"], "config": render_config, "tolerance": tolerance, "mask": reference_masks,
@@ -343,7 +369,6 @@ def run_reference(path, start, duration, raw_config, checkpoint, root, tolerance
     hit = use_cache and cache.exists()
     if not hit:
         track(info, config, checkpoint, cache, progress, interrupt)
-    data = analyze(cache, info, config, tolerance, max_step, reference_masks, interrupt)
     destination = directory / "stabilized.mp4"
     previous = directory / "reference.json"
     if hit and destination.exists() and previous.exists():
@@ -352,6 +377,7 @@ def run_reference(path, start, duration, raw_config, checkpoint, root, tolerance
         manifest["config"] = config
         atomic_json(previous, manifest)
         return manifest, destination
+    data = analyze(cache, info, config, tolerance, max_step, reference_masks, interrupt)
     encoded = render(info, data, destination, interrupt, progress)
     manifest.update(state="ready", data=data, video=encoded, cache_hit=hit, tracking_cache=str(cache))
     atomic_json(previous, manifest)

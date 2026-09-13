@@ -1,7 +1,84 @@
-"""Reference-point translation and bounded online frame windows."""
+"""Reference-point transforms and bounded online frame windows."""
 
 from collections import deque
 import numpy as np
+
+
+def transform_points(points, matrices):
+    """Apply one or per-frame 2x3 affine matrices to [..., points, 2]."""
+    matrices = np.asarray(matrices, float)
+    return np.matmul(points, np.swapaxes(matrices[..., :2], -1, -2)) + matrices[..., 2][..., None, :]
+
+
+def inverse_transforms(matrices):
+    matrices = np.asarray(matrices, float)
+    linear = np.linalg.inv(matrices[..., :2])
+    return np.concatenate([linear, -np.matmul(linear, matrices[..., 2, None])], axis=-1)
+
+
+def source_transforms(data):
+    """Original pixels to the reference canvas, before fixed render padding."""
+    if 'transform_xy' in data:
+        return np.asarray(data['transform_xy'], float)
+    shifts = np.asarray(data['shift_xy'], float)
+    matrices = np.tile(np.eye(2, 3), (len(shifts), 1, 1))
+    matrices[:, :, 2] = -shifts
+    return matrices
+
+
+def similarities(points, visible, tolerance=12, minimum=3, max_step=48, reference=None, marked_frames=()):
+    """Fit reference-to-source motion with RANSAC, then invert for rendering.
+
+    Residuals and jump limits use source pixels. Failed consensus holds the
+    entire last accepted transform, including angle and scale.
+    """
+    import cv2
+    points, visible = np.asarray(points, float), np.asarray(visible, bool)
+    if points.ndim != 3 or points.shape[-1] != 2 or visible.shape != points.shape[:2]:
+        raise ValueError('Expected points [frames, queries, 2] and matching visibility')
+    if len(points) < 2 or points.shape[1] < minimum or tolerance <= 0 or max_step <= 0:
+        raise ValueError('Need two frames and at least three reference points')
+    baseline = np.asarray(points[0] if reference is None else reference, float)
+    eligible = np.isfinite(baseline).all(axis=1)
+    if reference is None: eligible &= visible[0]
+    matrices = np.tile(np.eye(2, 3), (len(points), 1, 1))
+    valid = np.zeros(len(points), bool)
+    counts = np.zeros(len(points), int)
+    residual = np.full(len(points), np.nan)
+    reasons, last_good = [], 0
+    previous = np.eye(2, 3)
+    for frame, positions in enumerate(points):
+        if frame: matrices[frame] = matrices[frame-1]
+        use = eligible & visible[frame] & np.isfinite(positions).all(axis=1)
+        origin, current = baseline[use], positions[use]
+        if len(origin) < minimum:
+            reasons.append('insufficient_visible_points'); continue
+        if np.sqrt(np.mean(np.sum((origin-origin.mean(axis=0))**2, axis=1))) < 2:
+            reasons.append('reference_points_too_close'); continue
+        forward, _ = cv2.estimateAffinePartial2D(origin, current, method=cv2.RANSAC,
+            ransacReprojThreshold=tolerance, maxIters=2000, confidence=.99, refineIters=10)
+        if forward is None or not np.isfinite(forward).all():
+            reasons.append('points_disagree'); continue
+        errors = np.linalg.norm(transform_points(origin, forward)-current, axis=1)
+        inliers = errors <= tolerance
+        counts[frame] = inliers.sum()
+        if counts[frame] < max(minimum, int(np.ceil(len(origin)/2))):
+            reasons.append('points_disagree'); continue
+        spread = origin[inliers]-origin[inliers].mean(axis=0)
+        if np.sqrt(np.mean(np.sum(spread**2, axis=1))) < 2:
+            reasons.append('reference_points_too_close'); continue
+        scale = np.hypot(forward[0, 0], forward[1, 0])
+        if not .25 <= scale <= 4:
+            reasons.append('scale_needs_review'); continue
+        residual[frame] = np.median(errors[inliers])
+        jump = np.max(np.linalg.norm(transform_points(origin[inliers], forward)-transform_points(origin[inliers], previous), axis=1))
+        if frame and frame not in marked_frames and jump > max_step * max(1, frame-last_good):
+            reasons.append('large_jump_needs_review'); continue
+        matrices[frame] = inverse_transforms(forward)
+        previous, last_good = forward, frame
+        valid[frame] = True
+        reasons.append('consensus')
+    return matrices, valid, counts, residual, reasons
 
 
 def correct_sections(times_ms, shifts, valid, anchor, sections):

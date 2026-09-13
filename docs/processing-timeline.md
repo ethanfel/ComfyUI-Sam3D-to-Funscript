@@ -59,12 +59,70 @@ draft. Review the restored plan, then **Apply to node** and save the workflow.
 Locked regions must be unlocked before a restore can replace their settings.
 Opening a backup alone does not change the plan.
 
+## Import known cuts from DaVinci Resolve
+
+For an end-to-end montage, export the rendered video and a **timeline EDL** from
+the same Resolve timeline (Media Pool timeline → Timelines → Export → timeline
+export, choose EDL). Use the video track containing the final sequence. A
+**Timeline Markers to EDL** export is a different format and is not supported.
+
+In Processing Timeline, open **Scene cuts → Import cuts…**, choose the EDL, and
+review the frame rate, start timecode, edit names and cut count. The rate defaults
+to the loaded video. **Video starts at timecode** defaults to the first video
+edit; for an In–Out render, enter the timeline timecode of the rendered file’s
+first frame. This origin addresses the original loaded file even when an upstream
+node trims it. Choose **Preview cuts** after changing either timing field, then
+**Import cuts** to save the markers.
+
+Imported boundaries use record/timeline timecodes, not source-clip timecodes.
+They snap to the indexed source frames, support fractional rates and 29.97/59.94
+drop-frame EDLs, and survive a restart with the processing session. Mismatched
+frame clocks are rejected: use a constant-frame-rate montage rendered at the
+timeline rate. Gaps and edits outside the loaded range appear in the preview
+warnings. Overlapping video tracks, dissolves and wipes require a simpler
+single-track hard-cut EDL. No additional Python package is needed.
+
+Import replaces the current cut annotations and keeps existing regions, locks
+and motion edits. **Run automatic mode** uses these markers without scene
+detection, and names new regions after the EDL clips where available. It fills
+uncovered intervals as usual; import alone does not split or reprocess existing
+regions. To replace imported markers with a visual scan, use **Detect cuts**.
+
+## Automatic stabilization from a painted mask
+
+1. Add a gold stabilization section over the interval needing correction. Keep
+   its crop large enough to contain the reference throughout the section.
+2. In **1 · Mask**, choose a clear frame and paint one reference surface. You can
+   leave it at this stage; separate propagation and tracking runs are optional.
+3. Choose **Correction → Position, rotation & scale** for rotation or zoom. New
+   stabilization sections default to this; existing sections keep their old mode.
+4. Open **Automatic mode**, leave **Use painted masks** selected, and run it.
+   It prepares scene/person candidates, saves points sampled inside the painted
+   reference, propagates the mask in both directions, tracks and renders each
+   section, then extracts the four anchor candidates for each detected person.
+
+Only enabled painted sections overlapping enabled, unlocked automatic tracking
+regions are prepared. Manual point sets and additional reference keyframes stay
+available. Untouched automatically generated points refresh when the paint or
+point-spacing settings change. Editing those points makes them your manual set.
+Locked stabilization sections reuse their saved result. **Use existing reference
+setup** skips automatic point generation and mask propagation.
+
+Completed mask, point and pose stages reuse their caches. A failed reference is
+reported on the affected scene and other scenes continue; a completely held
+reference does not generate a fresh automatic pose result. Partly held sections
+are marked for review. Inspect the stabilized preview and highlighted gaps before
+using the motion. This corrects a 2D similarity transform, not perspective or depth.
+
 ## Automatic first pass
 
 After preparing a new video, open **Automatic mode → Run automatic mode** in the
 Processing Timeline. It uses the existing scene markers, or detects cuts when
 there are none, then finds people inside each scene. **All detected people** is
 the default; **Most prominent person** is available for a smaller candidate set.
+All reliable person candidates remain available, including scenes with more than
+eight rectangles. SAM3D splits crowded frames into groups within the configured
+batch size; person indices and each person's four anchors are preserved.
 The untouched initial full-video placeholder is replaced by scene regions.
 On an edited project, automatic mode fills uncovered intervals and retains
 existing regions, including disabled or locked ones.
@@ -721,6 +779,12 @@ startup also exposes Retry while it waits for code or the local server.
 **Indexing source frames** is a separate step and may take time on a long clip's
 first open. Subsequent opens reuse its timestamp index. If a backend update is
 required, the error identifies it; restarting ComfyUI interrupts any active job.
+
+A delayed workspace heartbeat does not stop processing. If a job-status request
+times out, the editor keeps monitoring the same ComfyUI job and retries the
+status check automatically. It never queues a replacement run on reconnect.
+Reloading ComfyUI's main browser tab replaces that job monitor; check its queue
+before starting another run from the retained Timeline tab.
 
 ## Current scope
 

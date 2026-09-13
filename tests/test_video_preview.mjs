@@ -49,3 +49,20 @@ assert.match(trackingReason('points_disagree'),/disagree/);
 assert.throws(()=>timelineTrackingHealth(manifest,render,{...source,path:'another.mp4'}),/do not match/);
 assert.throws(()=>timelineTrackingHealth({...manifest,id:'wrong'},render,source),/do not match/);
 console.log('Tracking feedback: held coverage, VFR frame lookup, reasons and source identity passed');
+
+const {stabilizedPixel,transformPixel,correctedTransforms,transformBounds}=await import('../assets/video-preview.mjs');
+const rotated={...mapping,transform_xy:mapping.times_ms.map((_,i)=>[[0,-1.5,10*i],[1.5,0,-5*i]])};
+for(const time of [0,40,109,110,150]){
+    const point=[37,82],recovered=originalPixel(rotated,stabilizedPixel(rotated,point,time),time);
+    recovered.forEach((v,j)=>assert.ok(Math.abs(v-point[j])<1e-9));
+}
+const center=[20,30],shift=[7,-4],matrix=rotated.transform_xy[1];
+const [corrected]=correctedTransforms({anchor_xy:center,auto_transform_xy:[matrix]},[shift]);
+assert.deepEqual(corrected.map(row=>row.slice(0,2)),matrix.map(row=>row.slice(0,2)));
+assert.deepEqual(transformPixel(center.map((v,i)=>v+shift[i]),corrected),center);
+const rotatedBounds=transformBounds(120,80,rotated.transform_xy);
+for(const m of rotated.transform_xy)for(const corner of [[0,0],[120,0],[0,80],[120,80]]){
+    transformPixel(corner,m).forEach((v,j)=>assert.ok(v+rotatedBounds.padding[j]>=0&&v+rotatedBounds.padding[j]<=rotatedBounds.size[j]));
+}
+assert.equal(timelineRenderCurrent(render,{...region,reference:{...region.reference,transform_mode:'similarity'}}),false);
+console.log('Similarity preview: rotated/scaled overlays, manual centers and full-canvas bounds passed');

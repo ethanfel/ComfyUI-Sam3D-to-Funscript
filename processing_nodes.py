@@ -9,7 +9,7 @@ import folder_paths
 from .sam3d_funscript.core import export_project, load_project
 from .sam3d_funscript.editor import EditorStore
 from .sam3d_funscript.processing_store import ProcessingStore, PlanConflict
-from .sam3d_funscript.reference import source_info
+from .sam3d_funscript.reference import source_info, digest
 from .sam3d_funscript.video import video_input_range
 
 
@@ -120,8 +120,10 @@ class S3F_ProcessingTimeline:
                 raise PlanConflict("This plan changed after the job was queued. Reload the latest timeline and process again.")
         state = store.prepare(session, info, submitted)
         automatic_report = None
+        stabilization_errors = {}
+        stabilization_reviews = {}
         if operation == 'automatic':
-            from .sam3d_funscript.automatic import prepare_automatic
+            from .sam3d_funscript.automatic import prepare_automatic, prepare_mask_references, run_prepared_stabilization
             from .sam3d_funscript.scene_cuts import detect_cuts
             if mask_video is not None:
                 raise ValueError('Automatic person discovery uses the original video. Disconnect the single-person mask input for this pass.')
@@ -132,17 +134,31 @@ class S3F_ProcessingTimeline:
             try:
                 cuts = state.get('scene_cuts')
                 if not cuts or cuts.get('source_id') != info['source_id']:
+                    expected_cuts = digest(cuts)
                     cuts = detect_cuts(info, output_root/'cut_cache', cut_sensitivity, use_cache,
                         progress=auto_progress, interrupt=throw_exception_if_processing_interrupted)
-                    state = store.update_cuts(session, info['source_id'], cuts)
+                    state = store.update_cuts(session, info['source_id'], cuts, expected=expected_cuts)
                 options = submitted.get('automatic_options', {})
                 if not isinstance(options, dict): raise ValueError('Invalid automatic mode options')
+                stabilization_mode = options.get('stabilization', 'prepared_masks')
+                if stabilization_mode not in ('prepared_masks', 'existing'):
+                    raise ValueError('Invalid automatic stabilization mode')
                 plan, automatic_report = prepare_automatic(info, state['plan'], cuts, store.directory(session),
                     replace_default=not state.get('report') and not state.get('project_path'),
                     people_mode=options.get('people', 'all'), use_cache=use_cache, progress=auto_progress,
                     interrupt=throw_exception_if_processing_interrupted)
+                if stabilization_mode == 'prepared_masks':
+                    plan, prepared = prepare_mask_references(info, plan)
                 state = store.save(session, revision, plan)
                 revision = state['revision']
+                if stabilization_mode == 'prepared_masks' and prepared['regions']:
+                    stabilization_report = run_prepared_stabilization(info, state['plan'], store.directory(session),
+                        folder_paths.get_full_path('cotracker', tracker_model), prepared, use_cache=use_cache,
+                        progress=auto_progress, interrupt=throw_exception_if_processing_interrupted)
+                    stabilization_errors = stabilization_report['errors']
+                    stabilization_reviews = stabilization_report['review']
+                    state = store.stabilization_progress(session, revision, {'stage':'complete'}, stabilization_report)
+                    automatic_report['stabilization'] = stabilization_report
                 auto_progress({'stage': 'auto_ready', **automatic_report})
             except (Exception, InterruptProcessingException) as error:
                 auto_progress({'stage': 'error', 'error': str(error) or 'Automatic planning cancelled'})
@@ -163,6 +179,7 @@ class S3F_ProcessingTimeline:
                     'result': (ExecutionBlocker(None), str(store.directory(session) / 'timeline.json'))}
         if operation == "detect_cuts":
             from .sam3d_funscript.scene_cuts import detect_cuts
+            expected_cuts = digest(state.get('scene_cuts'))
 
             def cut_progress(event):
                 store.update_cuts(session, info["source_id"], progress=event)
@@ -172,7 +189,7 @@ class S3F_ProcessingTimeline:
                 cut_progress({"stage": "scene_cuts", "frames": 0, "cuts": 0})
                 cuts = detect_cuts(info, output_root / "cut_cache", cut_sensitivity, use_cache,
                                    progress=cut_progress, interrupt=throw_exception_if_processing_interrupted)
-                state = store.update_cuts(session, info["source_id"], cuts, {"stage": "complete"})
+                state = store.update_cuts(session, info["source_id"], cuts, {"stage": "complete"}, expected=expected_cuts)
             except (Exception, InterruptProcessingException) as error:
                 store.update_cuts(session, info["source_id"], progress={"stage": "error", "error": str(error) or "Cut detection cancelled"})
                 raise
@@ -214,6 +231,7 @@ class S3F_ProcessingTimeline:
             from .sam3d_funscript.processing_timeline import apply_processing_scope
             plan = apply_processing_scope(plan, submitted["processing_scope"], info)
         if operation == "extract_anchors":
+            from .sam3d_funscript.processing_timeline import overlaps_range
             ids = submitted.get("stabilization_ids", [])
             if not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str):
                 raise ValueError("Select one enabled stabilization region for anchor extraction")
@@ -221,7 +239,7 @@ class S3F_ProcessingTimeline:
             if len(regions) != 1:
                 raise ValueError("Select one enabled stabilization region for anchor extraction")
             region = regions[0]
-            if not any(r["enabled"] and r["start_ms"] < region["end_ms"] and r["end_ms"] > region["start_ms"] for r in plan["tracking"]):
+            if not any(r["enabled"] and overlaps_range(r, region['start_ms'], region['end_ms']) for r in plan['tracking']):
                 raise ValueError("Add a tracking region for this section before extracting anchors")
             plan = {**plan, "selection": [region["start_ms"], region["end_ms"]]}
             operation = "selected"
@@ -242,6 +260,8 @@ class S3F_ProcessingTimeline:
                     sample_fps=sample_fps, batch_size=batch_size, checkpoint=checkpoint,
                     operation=operation, use_cache=use_cache,
                     mask_video_range=video_input_range(mask_video) if mask_video is not None else None,
+                    **({'stabilization_errors': stabilization_errors} if stabilization_errors else {}),
+                    **({'stabilization_reviews': stabilization_reviews} if stabilization_reviews else {}),
                     progress=progress, interrupt=throw_exception_if_processing_interrupted)
                 result_path = publish_motion(result, editor_session, output_root, store.read(session)) if result is not None else None
                 state = store.finish(session, revision, report, result_path)
@@ -271,6 +291,10 @@ class S3F_ProcessingTimeline:
                 summary = f"Automatic pass · {automatic_report['scenes_added']} scenes added. Review candidates in Motion Studio."
                 if operation == 'prepare':
                     summary = 'Automatic pass found no usable scenes. Open the timeline to correct the flagged person crops.'
+            stabilization = automatic_report.get('stabilization')
+            if stabilization:
+                completed = sum(r['id'] not in stabilization['errors'] for r in stabilization['regions'])
+                summary += f" Stabilization: {completed} sections ready, {len(stabilization['errors'])} failed, {len(stabilization['review'])} need review."
         timeline_path = str(store.directory(session) / "timeline.json")
         return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": [summary],
                        "s3f_timeline_project": [state.get("project")], "text": [timeline_path]},

@@ -142,3 +142,5 @@ dialog{background:#20313d;color:inherit;border:1px solid #4c6879;border-radius:8
 .process-options{margin:0 0 0 auto}.process-options-body{position:absolute;bottom:100%;right:0;background:#20313d;border:1px solid var(--line);padding:14px;border-radius:6px;max-width:min(900px,95vw);max-height:60vh;overflow:auto;box-shadow:0 -3px 16px #0008}
 #axisChoices{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}#person{width:180px;max-width:200px}#subjectHelp{font-size:11px;line-height:1.5}
 @media(max-width:750px){.process-options-body{position:static;max-width:none;max-height:none}.process-options{flex-basis:100%}}
+
+#cutImportDialog{width:580px;max-height:85vh;overflow:auto}#cutImportDialog .toolbar{flex-wrap:wrap}#cutImportDialog input[type=text]{width:165px}#cutImportFile{max-width:100%}#cutImportEdits{max-height:200px;overflow:auto;padding-left:28px;font-size:12px}#cutImportEdits li{padding:4px;overflow-wrap:anywhere}#cutImportWarnings{color:#efd59b}#cutImportError{color:#ffb2b2}#cutImportDialog p{line-height:1.5}

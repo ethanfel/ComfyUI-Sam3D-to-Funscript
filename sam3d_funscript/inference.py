@@ -31,18 +31,29 @@ def predict_rgb(model, images, bboxes, packed_masks=None, batch_size=8, fov=0.0,
 
     if not images:
         return []
-    inner = model.model
-    progress = comfy.utils.ProgressBar(len(images))
-    height, width = images[0].shape[:2]
+    batch_size = int(batch_size)
     people = 1 if packed_masks is not None else len(bboxes)
-    if people < 1 or len(images) > max(1, int(batch_size) // people):
+    if batch_size < 1 or people < 1 or len(images) > max(1, batch_size // people):
         raise ValueError("RGB batch exceeds the requested SAM3D person-crop budget")
     if packed_masks is not None and len(packed_masks) != len(images):
         raise ValueError("Each active RGB frame must have its own person mask")
+    if people > batch_size:
+        # One crowded frame can exceed the forward budget. Keep every ROI slot
+        # in order while preparing and predicting only one group at a time.
+        predictions = []
+        for start in range(0, people, batch_size):
+            predictions.extend(predict_rgb(model, images, bboxes[start:start + batch_size],
+                batch_size=batch_size, fov=fov, timings=timings, include_mesh=include_mesh,
+                isolate_subject=isolate_subject)[0])
+        return [predictions]
+
+    inner = model.model
+    progress = comfy.utils.ProgressBar(len(images))
+    height, width = images[0].shape[:2]
 
     # Core prepare_batch expands full-resolution crops to float32. Keep those
     # short-lived buffers small even when the GPU batch is large. At least one
-    # frame's people must fit; this is a working-buffer target, not an RSS limit.
+    # group's people must fit; this is a working-buffer target, not an RSS limit.
     bytes_per_frame = height * width * 3 * 4 * people * 3
     prep_frames = max(1, min(4, (128 * 1024 ** 2) // bytes_per_frame))
     cam_int = cam_int_from_fov(height, width, float(fov))

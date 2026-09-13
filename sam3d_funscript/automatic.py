@@ -16,6 +16,67 @@ VERSION = 1
 AUTO_ANCHORS = ('mouth', 'pelvis', 'left_hand', 'right_hand')
 
 
+def prepare_mask_references(info, plan):
+    """Prepare painted references before saving the automatic plan.
+
+    Only untouched, automatically generated points may be regenerated. Manual
+    points and extra keyframes retain their identities and ordering.
+    """
+    from .reference_keyframes import reference_keys, validate_keys
+    from .reference_mask import seed_points, mask_geometry
+    from .processing_timeline import overlaps_range
+    output = deepcopy(plan)
+    report = {'regions': [], 'errors': {}}
+    tracking = [r for r in plan['tracking'] if r['enabled'] and r.get('automatic') and not r['locked']]
+    for region in output['stabilization']:
+        reference = region['reference']; mask = reference.get('point_mask')
+        if not region['enabled'] or not mask or not mask.get('strokes') or not any(
+            overlaps_range(r, region['start_ms'], region['end_ms']) for r in tracking):
+            continue
+        report['regions'].append(region['id'])
+        if region['locked']: continue
+        try:
+            keys = reference_keys(reference)
+            stamp = reference.get('auto_points', {})
+            geometry = digest([mask_geometry(mask), reference['crop_xywh'], mask['spacing'], mask['limit']])
+            if not any(k['points'] for k in keys) or (stamp.get('keys') == digest(keys) and stamp.get('mask') != geometry):
+                points = seed_points(mask, reference['crop_xywh'], info['width'], info['height'])
+                keys = [{'frame': mask['frame'], 'points': points}]
+                reference.update(points=points, keyframes=keys, auto_points={'mask': geometry, 'keys': digest(keys)})
+            validate_keys(keys)
+        except (ValueError, TypeError) as error:
+            report['errors'][region['id']] = str(error)
+    return output, report
+
+
+def run_prepared_stabilization(info, plan, root, checkpoint, prepared, *, use_cache=True, progress=None, interrupt=None):
+    """Complete painted sections independently; cancellation still propagates."""
+    from .processing_timeline import run_mask_propagation, run_stabilization
+    report = {'regions': [], 'errors': dict(prepared['errors']), 'review': {}}
+    regions = {r['id']: r for r in plan['stabilization']}
+    for sid in prepared['regions']:
+        if interrupt: interrupt()
+        if sid in report['errors']: continue
+        try:
+            # Locked results reuse saved masks, points, and rendered transforms.
+            if not regions[sid]['locked']:
+                run_mask_propagation(info, plan, root, region_ids=[sid], use_cache=use_cache,
+                                     progress=progress, interrupt=interrupt)
+            tracked = run_stabilization(info, plan, root, checkpoint, region_ids=[sid], use_cache=use_cache,
+                                        progress=progress, interrupt=interrupt)
+            report['regions'].extend(tracked['regions'])
+            for result in tracked['regions']:
+                total, held = result.get('frames', 0), result.get('held_frames', 0)
+                if total and held == total:
+                    report['errors'][sid] = 'No reliable stabilization frames; correct the reference mask or points'
+                elif held:
+                    report['review'][sid] = f'Stabilization held {held} / {total} frames; review the highlighted intervals'
+        except (ValueError, RuntimeError, OSError, ImportError) as error:
+            report['errors'][sid] = str(error)
+            if progress: progress({'stage':'stabilization_review', 'region_id':sid, 'error':str(error)})
+    return report
+
+
 def detector_path():
     import folder_paths
     roots = [Path(folder_paths.models_dir) / 'ultralytics']
@@ -182,7 +243,9 @@ def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_m
         if not people: review.append('No reliable person box; draw a crop and enable this scene')
         if end-start < 100: review.append('Scene too short for motion extraction')
         enabled = bool(people) and end-start >= 100
-        region = {'id': 'auto_'+digest([info['source_id'], start, end]), 'name': f'Scene {shot}',
+        clip_name = next((s.get('name') for s in cuts.get('segments', [])
+                          if s['start_ms'] <= start < s['end_ms']), None)
+        region = {'id': 'auto_'+digest([info['source_id'], start, end]), 'name': clip_name or f'Scene {shot}',
                   'start_ms': start, 'end_ms': end, 'enabled': enabled, 'anchor': 'pelvis', 'person': 0,
                   'rois': [p['roi'] for p in people] or [[0, 0, 1, 1]], 'isolate_subject': True, 'smoothing_ms': 30,
                   'additional_anchors': ['mouth', 'left_hand', 'right_hand'],

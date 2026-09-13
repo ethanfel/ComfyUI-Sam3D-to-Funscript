@@ -207,7 +207,7 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
     window.addEventListener('beforeunload', event => {if (pending || saving || recovering || failure) {event.preventDefault();event.returnValue = '';}});
     window.s3fFlush = flush;
     window.s3fUpdate = refresh;
-    window.s3fReconnect = refresh;
+    window.s3fReconnect = () => refresh();
     window.s3fHasUnsavedEdits = () => pending || !!saving || !!recovering || !!failure;
     return {
         async load(fallback) {

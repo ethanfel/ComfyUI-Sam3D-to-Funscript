@@ -4,6 +4,9 @@ The streaming node uses ComfyUI's SAM3D loader, model, crop preprocessing,
 mask conditioning and model memory manager. `batch_size` counts **person crops
 per forward**, so two ROIs with a batch of 32 normally produce 16 frames per
 forward. Empty mask frames remain missing samples and consume no model crops.
+When a frame has more person rectangles than the batch size, its rectangles run
+in successive groups and retain their original person indices. Single-frame
+anchor previews use groups of at most eight crops.
 
 ## Changes
 
@@ -24,7 +27,7 @@ forward. Empty mask frames remain missing samples and consume no model crops.
 
 Source RGB is still buffered up to the requested frame batch; one hour of video
 is never loaded as images. Larger batches still cost RAM and VRAM. The crop
-working-buffer target is 128 MiB, allowing at least one frame's ROI crops; it is
+working-buffer target is 128 MiB, allowing at least one group's ROI crops; it is
 **not** a cap on total process memory. Prepared model crops, decoder buffers,
 weights, saved coordinates and allocator caches consume additional memory.
 

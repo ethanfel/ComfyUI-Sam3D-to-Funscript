@@ -447,8 +447,8 @@ try{
     const mainBeforeRename=structuredClone(draft.project.scripts),rowBeforeRename=structuredClone(cropTrack.script);
     draft.revision++;await evaluate('window.s3fUpdate()');
     assert.equal(await evaluate('document.querySelector("#tracks .track-head input").value'),cropLabel);
-    assert.ok((await evaluate('[...document.querySelector("#sectionTrack").options].map(o=>o.textContent)')).some(s=>s.includes(cropLabel)));
-    assert.ok((await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>o.textContent)')).some(s=>s.includes(cropLabel)));
+    assert.ok((await evaluate('[...document.querySelector("#sectionTrack").options].map(o=>o.textContent)')).some(s=>s.includes('Tracking 31 cropnn')));
+    assert.ok((await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>o.textContent)')).some(s=>s.includes(`Person ${cropSource.data.config.target_person} · ${actualAnchor}`)));
     assert.ok((await evaluate('[...document.querySelector("#tracks .track-source").options].map(o=>o.textContent)')).some(s=>s.includes('Tracking 31 cropnn')));
     await click('#tracks .section-current .track-lock');await flush();
     assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-name").value'),cropLabel,'locking keeps the corrected name');
@@ -477,13 +477,21 @@ try{
     await evaluate('window.s3fUpdate()');
     assert.equal(await evaluate('document.querySelector("#sectionTrack").value'),replacementTrack.id);
     assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),replacementTrack.id);
-    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-result").textContent'),'Current detection');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-result").textContent'),'Latest detection');
     assert.ok((await evaluate('[...document.querySelectorAll("#sectionLabels button")].map(b=>b.dataset.track)')).includes(replacementTrack.id));
     const options=await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>({value:o.value,text:o.textContent}))');
-    assert.match(options.find(o=>o.value===oldRow.id).text,/Saved detection/);
-    assert.match(options.find(o=>o.value===replacementTrack.id).text,/Current detection/);
-    await select('#sectionAnchor',oldRow.id);await flush();draft.revision++;await evaluate('window.s3fUpdate()');
-    assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),oldRow.id,'explicitly selected saved detection stays selected');
+    assert.equal(options.some(o=>o.value===oldRow.id),false,'old detections stay out of the latest anchor list');
+    assert.ok(options.some(o=>o.value===replacementTrack.id));
+    assert.equal(await evaluate('document.querySelector("#sectionAnchor optgroup").label'),'Latest detections');
+    const zoneTimes=await evaluate('[...document.querySelector("#sectionTrack").options].map(o=>o.textContent.split(" · ")[0])');
+    assert.equal(zoneTimes.length,new Set(zoneTimes).size,'one zone entry covers all its detections');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-source-settings").open'),false);
+    await click('#sectionHistory summary');await select('#sectionPrevious',oldRow.id);await flush();draft.revision++;await evaluate('window.s3fUpdate()');
+    assert.equal(await evaluate('document.querySelector("#sectionPrevious").value'),oldRow.id,'explicitly selected previous detection stays selected');
+    assert.equal(await evaluate('document.querySelector("#tracks .section-current .track-result").textContent'),'Previous detection');
+    assert.equal(await evaluate('document.querySelector("#latestDetection").hidden'),false);
+    await click('#latestDetection');await flush();
+    assert.equal(await evaluate('document.querySelector("#sectionAnchor").value'),replacementTrack.id);
     assert.deepEqual(draft.project.scripts,originalCurves);assert.deepEqual(draft.project.timeline.tracks[0].script,oldRow.script);
     checks.push('Recreated same-name zones reveal their new detection; saved versions remain selectable and main/source curves are preserved');
     // Candidates from different people share the section, while the active
@@ -498,11 +506,26 @@ try{
     draft.project.timeline.tracks.push({...structuredClone(replacementTrack),id:'auto-track-person-1',source:otherPerson.id});
     draft.revision++;await evaluate('window.s3fUpdate()');await select('#sectionTrack',replacementTrack.id);await flush();
     const autoOptions=await evaluate('[...document.querySelector("#sectionAnchor").options].map(o=>o.textContent)');
-    assert.ok(autoOptions.some(t=>/person 0.*suggested/.test(t)));assert.ok(autoOptions.some(t=>/person 1/.test(t)));
+    assert.ok(autoOptions.some(t=>/Person 0.*suggested/.test(t)));assert.ok(autoOptions.some(t=>/Person 1/.test(t)));
     assert.equal(await evaluate('document.querySelector("#tracks .section-current .automatic-review").textContent'),'Needs review');
     await select('#sectionAnchor','auto-track-person-1');await flush();
     assert.equal(await evaluate('document.querySelector("#tracks .section-current .automatic-review").textContent'),'Auto candidate');
     assert.deepEqual(draft.project.scripts,originalCurves);
+    for(const person of [0,1])for(const anchor of ['pelvis','left_hand','right_hand']){
+        const source=structuredClone(otherPerson);source.id=`auto-person-${person}-${anchor}`;source.input=source.id;
+        source.data.config.target_person=person;source.data.config.target_anchor=anchor;
+        draft.project.timeline.sources.push(source);draft.project.timeline.latest[source.input]=source.id;
+        draft.project.timeline.tracks.push({...structuredClone(replacementTrack),id:`track-${source.id}`,source:source.id});
+    }
+    draft.revision++;await evaluate('window.s3fUpdate()');
+    assert.equal(await evaluate('document.querySelectorAll("#sectionAnchor option").length'),8,'all four anchors for both people stay together');
+    assert.equal(await evaluate('document.querySelector("#sectionLabels [aria-pressed=true]")?.dataset.track'),'auto-track-person-1','the block curve must match the chosen anchor');
+    await evaluate('document.querySelector("#sectionHistory").open=false;document.querySelector("#sectionControls").scrollIntoView({block:"start"})');
+    fs.writeFileSync(output+'/latest-anchors.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+    await call('Emulation.setDeviceMetricsOverride',{width:560,height:1100,deviceScaleFactor:1,mobile:false});await pause(100);
+    await evaluate('document.querySelector("#sectionControls").scrollIntoView({block:"start"})');
+    assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'latest/history controls fit a narrow viewport');
+    fs.writeFileSync(output+'/latest-anchors-narrow.png',Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
     checks.push('Automatic people share one scene selector; suggestion and review labels follow the candidate; choosing a candidate preserves Main');
     assert.deepEqual(errors,[]);fs.writeFileSync(output+'/report.json',JSON.stringify({checks,errors},null,2));console.log(JSON.stringify({checks,errors},null,2));
 }finally{ws?.close();chrome.kill('SIGTERM');await new Promise(r=>server.close(r));}

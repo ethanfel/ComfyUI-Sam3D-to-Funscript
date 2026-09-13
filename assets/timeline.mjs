@@ -52,7 +52,25 @@ export function trackLabel(project, track) {
 export function processingTrackState(project, track) {
     const source = project.timeline.sources.find(source => source.id === track?.source);
     if (!source?.data?.metadata?.processing_region?.id) return '';
-    return Object.values(project.timeline.latest).includes(source.id) ? 'Current detection' : 'Saved detection';
+    return Object.values(project.timeline.latest).includes(source.id) ? 'Latest detection' : 'Previous detection';
+}
+
+export function latestTrack(project, track) {
+    if(!track||track.window)return track;
+    const sources=new Map(project.timeline.sources.map(s=>[s.id,s])),old=sources.get(track.source);
+    const region=old?.data?.metadata?.processing_region;
+    if(!region)return track;
+    const latest=new Set(Object.values(project.timeline.latest));
+    if(latest.has(track.source))return track;
+    const candidates=project.timeline.tracks.filter(t=>{
+        const s=sources.get(t.source),r=s?.data?.metadata?.processing_region;
+        return latest.has(t.source)&&!t.window&&t.axis===track.axis&&r&&
+            (r.id===region.id||['start_ms','end_ms'].every(k=>Math.round(r[k])===Math.round(region[k])))&&
+            s.data.config.target_anchor===old.data.config.target_anchor&&s.data.config.target_person===old.data.config.target_person;
+    });
+    const sameInput=old.input?candidates.filter(t=>sources.get(t.source).input===old.input):[];
+    const matches=sameInput.length?sameInput:candidates;
+    return matches.length===1?matches[0]:track;
 }
 
 export function recreatedTrackChoices(project, previous) {
@@ -70,13 +88,19 @@ export function recreatedTrackChoices(project, previous) {
     const oldRegions = new Set(old.filter(e => e.current).map(e => e.region.id));
     const currentRegions = new Set(next.filter(e => e.current).map(e => e.region.id));
     for (const entry of old) {
+        if(entry.current&&!entry.track.window){
+            const replacement=latestTrack(project,entry.track);
+            if(replacement.id!==entry.track.id){replacements.set(entry.track.id,replacement.id);continue;}
+        }
         if (!entry.current || entry.track.window || currentRegions.has(entry.region.id)) continue;
         // A newly created region at the same interval replaces the displayed
         // detection. Names do not identify regions, and saved curves stay intact.
         let candidates = next.filter(e => e.current && !e.track.window && !oldRegions.has(e.region.id) &&
+            e.source.data.config.target_person === entry.source.data.config.target_person &&
             e.track.axis === entry.track.axis && ['start_ms', 'end_ms'].every(key =>
                 Number.isFinite(entry.region[key]) && Math.round(e.region[key]) === Math.round(entry.region[key])));
-        const sameAnchor = candidates.filter(e => e.source.data.config.target_anchor === entry.source.data.config.target_anchor);
+        const sameAnchor = candidates.filter(e => e.source.data.config.target_anchor === entry.source.data.config.target_anchor&&
+            e.source.data.config.target_person === entry.source.data.config.target_person);
         if (sameAnchor.length) candidates = sameAnchor;
         if (candidates.length === 1) replacements.set(entry.track.id, candidates[0].track.id);
     }
@@ -378,7 +402,7 @@ export function copyTrackToMain(project, track, options = {}) {
 export function motionSections(ranges, preferred = []) {
     const valid = ranges.filter(r => Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
     const edges = [...new Set(valid.flatMap(r => [r.start, r.end]))].sort((a, b) => a - b);
-    const rank = new Map(preferred.map((id, i) => [id, i]));
+    const rank = new Map([...new Set(preferred)].map((id, i) => [id, i]));
     const sections = [];
     for (let i = 1; i < edges.length; i++) {
         const start = edges[i - 1], end = edges[i];

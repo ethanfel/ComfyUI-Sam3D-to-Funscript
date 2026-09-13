@@ -47,6 +47,25 @@ def fake_extract(source, model_file, cache_dir, **kwargs):
 
 
 class PlanTests(unittest.TestCase):
+    def test_fractional_stabilization_boundary_does_not_include_the_previous_scene(self):
+        cut = 161958.33333333334
+        current = info(end=170250)
+        for start in (161958.333333, 161958.333334):
+            with self.subTest(start=start):
+                plan = normalize_plan({'tracking':[region('scene27',158000,cut),region('scene28',cut,170250)],
+                    'stabilization':[region('s',start,170250)]},current)
+                before = deepcopy(plan)
+                jobs = compile_jobs(plan,current)
+                self.assertEqual([(j['region_id'],j['stabilization_id']) for j in jobs],
+                    [('scene27',None),('scene28','s')])
+                self.assertEqual([(j['start_ms'],j['end_ms']) for j in jobs],[(158000,cut),(cut,170250)])
+                self.assertEqual(jobs[0]['context_end_ms'],cut)
+                self.assertEqual(plan,before,'comparison tolerance must not rewrite saved regions')
+        plan['stabilization'][0]['start_ms']=cut-1000/24
+        jobs=compile_jobs(plan,current)
+        self.assertEqual([(j['region_id'],j['stabilization_id']) for j in jobs],
+            [('scene27',None),('scene27','s'),('scene28','s')],'a genuine one-frame overlap remains included')
+
     def test_subject_crop_is_optional_and_requires_a_boolean(self):
         ordinary = normalize_plan({'tracking': [region()]}, info())
         disabled = normalize_plan({'tracking': [region(isolate_subject=False)]}, info())
@@ -126,29 +145,29 @@ class ExecutionTests(unittest.TestCase):
 
     def test_automatic_people_share_poses_and_keep_distinct_sources_across_reruns(self):
         from sam3d_funscript.editor import initialize, merge_projects
-        automatic = {'version':1,'suggest':True,'people':[{'coverage':1},{'coverage':1}],'review':[]}
+        automatic = {'version':1,'suggest':True,'people':[{'coverage':1} for _ in range(9)],'review':[]}
         plan = {'tracking':[region(anchor='pelvis',additional_anchors=['mouth','left_hand','right_hand'],
-            rois=[[0,0,1,1],[0,0,1,1]],candidate_people=[0,1],automatic=automatic)]}
+            rois=[[0,0,1,1] for _ in range(9)],candidate_people=list(range(9)),automatic=automatic)]}
         project, report = self.run_plan(plan)
         self.assertEqual(self.extract.call_count,1)
-        self.assertEqual(len(project['timeline']['tracks']),8)
-        self.assertEqual(len(report['regions'][0]['candidates']),8)
+        self.assertEqual(len(project['timeline']['tracks']),36)
+        self.assertEqual(len(report['regions'][0]['candidates']),36)
         self.assertEqual(sum(c['suggested'] for c in report['regions'][0]['candidates']),1)
         initialize(project)
-        self.assertEqual(len(project['timeline']['latest']),8)
-        self.assertEqual(len({s['input'] for s in project['timeline']['sources']}),8)
+        self.assertEqual(len(project['timeline']['latest']),36)
+        self.assertEqual(len({s['input'] for s in project['timeline']['sources']}),36)
         for axis in AXES: self.assertEqual(len(project['timeline']['main'][axis]['regions']),1)
         again, _ = self.run_plan(plan)
         self.assertEqual(self.extract.call_count,1)
         merged = merge_projects(project,again)
-        self.assertEqual(len(merged['timeline']['tracks']),8)
-        plan['tracking'][0].update(person=1,anchor='right_hand',additional_anchors=['pelvis','mouth','left_hand'])
+        self.assertEqual(len(merged['timeline']['tracks']),36)
+        plan['tracking'][0].update(person=8,anchor='right_hand',additional_anchors=['pelvis','mouth','left_hand'])
         plan['tracking'][0]['automatic']['suggest']=False
         changed,_ = self.run_plan(plan)
         self.assertEqual(self.extract.call_count,1,'switching people reuses the multi-person pose cache')
         primary=[s for s in changed['timeline']['sources'] if s['data']['metadata']['processing_anchor']['primary']]
         self.assertEqual(len(primary),1)
-        self.assertEqual(primary[0]['data']['config']['target_person'],1)
+        self.assertEqual(primary[0]['data']['config']['target_person'],8)
         self.assertEqual(primary[0]['data']['config']['target_anchor'],'right_hand')
 
     def test_automatic_short_or_failed_candidates_do_not_block_later_scenes(self):
@@ -281,6 +300,21 @@ class ExecutionTests(unittest.TestCase):
         # approved middle of either partially completed chunk.
         newly_completed = [(j["start_ms"], j["end_ms"]) for j in report["jobs"] if j["state"] == "complete"]
         self.assertEqual(newly_completed, [(0,1000), (1000,1250), (2750,3000), (3000,4000)])
+
+    def test_fractional_selection_does_not_run_the_previous_scene(self):
+        cut=1958.3333333333333
+        plan={'tracking':[region('previous',0,cut),region('current',cut,4000)],
+              'selection':[1958.333333,4000]}
+        _,report=self.run_plan(plan,operation='selected')
+        self.assertEqual(self.extract.call_count,1)
+        self.assertEqual({j['region_id'] for j in report['jobs']},{'current'})
+        self.assertEqual(report['regions'][0]['state'],'pending')
+        self.assertEqual(report['regions'][1]['state'],'complete')
+        plan['selection']=[1958.333334,3999.9999997]
+        _,report=self.run_plan(plan,operation='selected',use_cache=False)
+        self.assertEqual({j['region_id'] for j in report['jobs']},{'current'})
+        self.assertEqual(report['regions'][1]['coverage'],[[cut,4000]])
+        self.assertEqual(report['regions'][1]['state'],'complete')
 
     def test_failed_chunk_preserves_previous_completed_chunk(self):
         count = 0

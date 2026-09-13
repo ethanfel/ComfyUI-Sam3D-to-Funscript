@@ -28,6 +28,7 @@ export function restoreCandidate(raw,info,clock) {
             const count=clock.ceil(region.end_ms)-clock.ceil(region.start_ms);
             if(!Array.isArray(keys)||!keys.length||keys.some(k=>!object(k)||!Number.isInteger(k.frame)||k.frame<0||k.frame>=count||!Array.isArray(k.points)||!k.points.every(pointValid)||k.unconfirmed!==undefined&&(!Array.isArray(k.unconfirmed)||k.unconfirmed.some(i=>!Number.isInteger(i)||i<0||i>=k.points.length)))||new Set(keys.map(k=>k.frame)).size!==keys.length)throw new Error('Reference keyframes must be distinct frames inside their region with valid point coordinates.');
             if(ref.sections.some(s=>!object(s)||!Array.isArray(s.keys)||s.keys.some(k=>!object(k)||!Number.isFinite(k.at_ms)||!pointValid(k.xy))))throw new Error('Invalid manual correction keys.');
+            if(ref.transform_mode!==undefined&&!['translation','similarity'].includes(ref.transform_mode))throw new Error('Invalid stabilization correction mode.');
             if(ref.tracking_mode!==undefined&&!['online','offline'].includes(ref.tracking_mode))throw new Error('Invalid reference tracker mode.');
             if(ref.point_mask&&!paintValid(ref.point_mask))throw new Error('Invalid painted mask.');
         }

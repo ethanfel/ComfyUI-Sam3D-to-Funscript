@@ -39,7 +39,9 @@ function add(descriptor){
     return page;
 }
 window.s3fConfigureWorkspace=configuration=>{
-    const reconnected=anchor&&(!hostConnected||hostId!==configuration.host)&&configuration.connected!==false;
+    // A late heartbeat (for example in a background tab) does not replace the
+    // opener or its active job monitor. Only a new host identity does that.
+    const hostChanged=hostId!==null&&hostId!==configuration.host&&configuration.connected!==false;
     hostId=configuration.host;
     anchor=configuration.anchor||anchor;lastHost=Date.now();hostConnected=configuration.connected!==false;
     const wanted=new Set(configuration.pages.map(page=>page.key));
@@ -49,7 +51,7 @@ window.s3fConfigureWorkspace=configuration=>{
     // A ready/heartbeat response can repeat the opener's original tab. Use it
     // only for the first selection; background configuration never navigates.
     select(active||configuration.active||pages.keys().next().value);
-    if(reconnected)void reconnectPages();
+    if(hostChanged)void reconnectPages({hostChanged:true});
 };
 window.s3fSelectWorkspacePage=key=>select(key,true);
 window.s3fWorkspaceIdentity=()=>anchor;
@@ -57,10 +59,10 @@ function connectionStatus(){
     $('connection').textContent=serverConnected===false?'ComfyUI is restarting or unavailable · edits are kept':!hostConnected?'Reconnecting to the ComfyUI workflow · edits are kept':'Connected to ComfyUI';
 }
 window.s3fWorkspaceDisconnected=text=>{hostConnected=false;connectionStatus();window.s3fWorkspaceNotice(text);};
-async function reconnectPages(){
+async function reconnectPages(reason={hostChanged:false}){
     // Keep the existing documents and their drafts. Reconnection never reloads
     // an iframe or queues a processing job.
-    await Promise.allSettled(window.s3fWorkspaceFrames().map(({window:win})=>win.s3fReconnect?.()));
+    await Promise.allSettled(window.s3fWorkspaceFrames().map(({window:win})=>win.s3fReconnect?.(reason)));
 }
 window.s3fWorkspaceFrames=()=>[...pages].filter(([,page])=>page.frame).map(([key,page])=>({key,window:page.frame.contentWindow}));
 window.s3fWorkspaceNotice=text=>{$("notice").textContent=text;$("notice").hidden=!text;};

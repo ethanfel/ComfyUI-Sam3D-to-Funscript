@@ -1,4 +1,5 @@
 import {maskPoints,maskGeometry,drawPointMask} from './reference-mask.mjs';
+import {overlapsRange} from './processing-timeline-edit.mjs?v=anchor-boundary-1';
 import {referenceKeys,withReferenceKeys,validateReferenceKeys} from './reference-edit.mjs?v=reference-masks-1';
 
 export function stabilizationSteps({$,context,attempt,updateReference,seekOriginal,process,configureAnchors,selectRegion,draw}) {
@@ -77,7 +78,7 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
         $('cancelMask').hidden=!running;$('cancelMask').disabled=$('cancel').disabled;
         $('maskStatus').textContent=running?$('progressText').textContent:error||(!hasMask?'Optional · paint an area, or continue with manual points.':ready(c)?`${c.entry.frames} masks ready · propagated in both directions`:'Mask changed · propagate to update all frames');
         if(hasMask&&c.region.reference.points.length)$('maskStatus').textContent+=' · Existing points are kept. Use Generate points with Replace to sample the painted area again.';
-        const overlaps=c.tracking.filter(r=>r.enabled!==false&&r.start_ms<c.region.end_ms&&r.end_ms>c.region.start_ms);
+        const overlaps=c.tracking.filter(r=>r.enabled!==false&&overlapsRange(r,c.region.start_ms,c.region.end_ms));
         $('stabilizedAnchorRegions').replaceChildren(...overlaps.map(r=>{
             const b=document.createElement('button');b.type='button';b.textContent=`${r.name} · ${r.anchor.replaceAll('_',' ')}${r.additional_anchors?.length?` + ${r.additional_anchors.length}`:''}`;b.disabled=c.busy;b.onclick=()=>selectRegion(r.id);return b;
         }));

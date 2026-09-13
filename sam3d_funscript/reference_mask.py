@@ -58,6 +58,25 @@ def raster_mask(mask, width, height):
     return image
 
 
+def seed_points(mask, crop, width, height):
+    """Sample a bounded, evenly distributed point set inside the painted crop."""
+    mask = normalize_mask(mask, width, height)
+    image = raster_mask(mask, width, height)
+    x, y, w, h = crop
+    spacing = mask['spacing']
+    xs = np.arange(x+spacing/2, x+w-1+.001, spacing)
+    ys = np.arange(y+spacing/2, y+h-1+.001, spacing)
+    points = []
+    for yy in ys:
+        row = xs[image[int(round(yy)), np.rint(xs).astype(int)] >= 128]
+        points.extend((float(xx), float(yy)) for xx in row)
+    if len(points) < 3:
+        raise ValueError('Paint a larger reference area or reduce point spacing to generate at least three points')
+    if len(points) > mask['limit']:
+        points = [points[int((i+.5)*len(points)/mask['limit'])] for i in range(mask['limit'])]
+    return [list(p) for p in points]
+
+
 def matting_backend():
     import folder_paths
     # Prefer the installed node, also support sibling development checkouts.

@@ -20,6 +20,12 @@ from .timeline import combine_projects, GEOMETRY
 from .video import extract_video, fingerprint, parse_rois
 
 VERSION = 1
+TIME_EPSILON_MS = .000002  # Same serialization tolerance as the editor frame clock.
+
+
+def overlaps_range(region, start, end):
+    """Exclusive intervals do not overlap through fractional timestamp noise."""
+    return min(region['end_ms'], end) - max(region['start_ms'], start) > TIME_EPSILON_MS
 
 
 def _number(value, label, minimum=0):
@@ -194,16 +200,19 @@ def compile_jobs(plan, info):
         left, right = region["start_ms"], region["end_ms"]
         boundaries = {left, right}
         for stabilization in stabilizers:
-            if stabilization["start_ms"] < right and stabilization["end_ms"] > left:
-                boundaries.update((max(left, stabilization["start_ms"]), min(right, stabilization["end_ms"])))
+            if overlaps_range(stabilization, left, right):
+                boundaries.update(t for t in (stabilization['start_ms'], stabilization['end_ms'])
+                                  if left + TIME_EPSILON_MS < t < right - TIME_EPSILON_MS)
         boundaries = sorted(boundaries)
         for a, b in zip(boundaries, boundaries[1:]):
-            stabilization = next((r for r in stabilizers if r["start_ms"] <= a and r["end_ms"] >= b), None)
+            stabilization = next((r for r in stabilizers if r["start_ms"] <= a + TIME_EPSILON_MS and r["end_ms"] >= b - TIME_EPSILON_MS), None)
             if stabilization:
                 context_start, context_end = stabilization["start_ms"], stabilization["end_ms"]
             else:
-                context_start = max([source_start] + [r["end_ms"] for r in stabilizers if r["end_ms"] <= a])
-                context_end = min([source_end] + [r["start_ms"] for r in stabilizers if r["start_ms"] >= b])
+                context_start = max([source_start] + [a if abs(r['end_ms']-a) <= TIME_EPSILON_MS else r['end_ms']
+                    for r in stabilizers if r['end_ms'] <= a + TIME_EPSILON_MS])
+                context_end = min([source_end] + [b if abs(r['start_ms']-b) <= TIME_EPSILON_MS else r['start_ms']
+                    for r in stabilizers if r['start_ms'] >= b - TIME_EPSILON_MS])
             context_ms = max(500, region["smoothing_ms"] * 3)
             if region.get('automatic'):
                 context_start, context_end = max(left, context_start), min(right, context_end)
@@ -233,6 +242,7 @@ def _region_settings(region, anchor=None, person=None):
 
 def _stable(value):
     result = {k: deepcopy(v) for k, v in value.items() if k not in ("name", "locked", "enabled")}
+    if 'reference' in result: result['reference'].pop('auto_points', None)
     mask = result.get("reference", {}).get("point_mask")
     if mask:
         mask.pop("spacing", None); mask.pop("limit", None)
@@ -240,17 +250,20 @@ def _stable(value):
 
 
 def _stabilized_rois(rois, info, manifest, start, end):
+    from .stabilization import source_transforms, transform_points
     times = np.asarray(manifest["data"]["source_times_ms"])
-    shifts = np.asarray(manifest["data"]["shift_xy"])
+    matrices = source_transforms(manifest['data'])
     selected = (times >= start) & (times <= end)
-    shifts = shifts[selected] if selected.any() else shifts
+    matrices = matrices[selected] if selected.any() else matrices
     padding = np.asarray(manifest["video"]["padding_xy"])
     size = np.asarray(manifest["video"]["size_wh"])
     original = np.asarray([info["width"], info["height"]])
     result = []
     for x, y, w, h in rois:
-        lo = np.maximum(0, [x, y]*original + padding - shifts.max(axis=0))
-        hi = np.minimum(size, [x+w, y+h]*original + padding - shifts.min(axis=0))
+        corners = np.array([[x,y], [x+w,y], [x,y+h], [x+w,y+h]])*original
+        mapped = transform_points(corners, matrices)+padding
+        lo = np.maximum(0, mapped.min(axis=(0,1)))
+        hi = np.minimum(size, mapped.max(axis=(0,1)))
         result.append([*(lo/size), *((hi-lo)/size)])
     return np.asarray(result).tolist()
 
@@ -259,6 +272,7 @@ def _original_sequence(sequence, info, manifest=None):
     """Keep inferred 3D motion in its analysis basis, invert only the 2D preview."""
     sequence.metadata = deepcopy(sequence.metadata)
     if manifest:
+        from .stabilization import source_transforms, inverse_transforms, transform_points
         data, encoded = manifest["data"], manifest["video"]
         local = np.asarray(data["times_ms"])
         absolute = np.asarray(data["source_times_ms"])
@@ -269,8 +283,9 @@ def _original_sequence(sequence, info, manifest=None):
         if not np.allclose(local[index], sequence.times_ms, rtol=0, atol=.01):
             raise ValueError("Stabilized pose timing does not match the original presentation timestamps")
         sequence.times_ms = absolute[index].copy()
-        shifts = np.asarray(data["shift_xy"])[index]
-        sequence.pixels = sequence.pixels - np.asarray(encoded["padding_xy"])[None, None, None, :] + shifts[:, None, None, :]
+        shape = sequence.pixels.shape
+        pixels = (sequence.pixels - np.asarray(encoded['padding_xy'])).reshape(len(index), -1, 2)
+        sequence.pixels = transform_points(pixels, inverse_transforms(source_transforms(data)[index])).reshape(shape)
         origin = Fraction(info["source_origin"])
         sequence.metadata["timestamps"] = [{"time_ms": float(t), "pts": Fraction(data["source_pts"][i]).numerator,
             "time_base": [1, Fraction(data["source_pts"][i]).denominator], "origin": [origin.numerator, origin.denominator]}
@@ -541,16 +556,21 @@ def run_stabilization(info, plan, root, checkpoint, region_ids=None, use_cache=T
         emit(region)
         manifest, _ = _stabilize_region(info, region, root, state, checkpoint, use_cache,
                                        lambda frames: emit(region, frames), interrupt)
-        report["regions"].append({"id": region["id"], "reference_id": manifest["id"]})
+        quality = manifest.get('data', {}).get('quality', [])
+        report["regions"].append({"id": region["id"], "reference_id": manifest["id"],
+                                  'frames': len(quality), 'held_frames': quality.count('held')})
         report["completed_jobs"] += 1
         emit(region)
     return report
 
 
 def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, checkpoint=None,
-                 operation="all", use_cache=True, mask_video_range=None, progress=None, interrupt=None):
+                 operation="all", use_cache=True, mask_video_range=None, progress=None, interrupt=None,
+                 stabilization_errors=None, stabilization_reviews=None):
     """Process selected work and atomically checkpoint each completed chunk."""
     plan = normalize_plan(plan, info)
+    stabilization_errors = stabilization_errors or {}
+    stabilization_reviews = stabilization_reviews or {}
     if operation not in ("all", "selected", "unfinished"):
         raise ValueError("Operation must be all, selected, or unfinished")
     if mask_video_range is not None and any(r["enabled"] for r in plan["stabilization"]):
@@ -582,7 +602,7 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
         raise ValueError("Select a region or a nonempty timeline range before processing the selection")
     if operation == "selected":
         a, b = plan["selection"]
-        intersects = any(j["start_ms"] < b and j["end_ms"] > a for j in jobs) if b > a else any(
+        intersects = any(overlaps_range(j, a, b) for j in jobs) if b > a else any(
             j["region_id"] in selected or j["stabilization_id"] in selected for j in jobs)
         if not intersects:
             raise ValueError("The selection has no enabled tracking coverage. Add or enable a tracking region there; stabilization runs together with overlapping tracking regions.")
@@ -626,6 +646,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
         entry = state["regions"].get(region["id"])
         row = {"id": region["id"], "start_ms": region["start_ms"], "end_ms": region["end_ms"], "state": "pending"}
         report["regions"].append(row)
+        for sid in sorted(dependencies):
+            if sid in stabilization_reviews: row.setdefault('review', []).append(stabilization_reviews[sid])
         if region["locked"] and entry and entry.get("project_path") and Path(entry["project_path"]).is_file():
             project = json.loads(Path(entry["project_path"]).read_text())
             project["metadata"]["processing_region"]["locked"] = True
@@ -647,17 +669,26 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
         if operation == "selected":
             if plan["selection"][1] > plan["selection"][0]:
                 a, b = plan["selection"]
-                pending = [j for j in pending if j["start_ms"] < b and j["end_ms"] > a]
+                pending = [j for j in pending if overlaps_range(j, a, b)]
                 for job in pending:
-                    job["start_ms"], job["end_ms"] = max(a, job["start_ms"]), min(b, job["end_ms"])
+                    if abs(a-job['start_ms']) > TIME_EPSILON_MS: job['start_ms'] = max(a, job['start_ms'])
+                    if abs(b-job['end_ms']) > TIME_EPSILON_MS: job['end_ms'] = min(b, job['end_ms'])
                     job["id"] = digest([job["region_id"], job["start_ms"], job["end_ms"], job["stabilization_id"]])
                     margin = max(500, region["smoothing_ms"]*3)
                     job["context_start_ms"] = max(job["context_start_ms"], job["start_ms"]-margin)
                     job["context_end_ms"] = min(job["context_end_ms"], job["end_ms"]+margin)
             else:
                 pending = [j for j in pending if region["id"] in selected or j["stabilization_id"] in selected]
+        blocked = [j for j in pending if j['stabilization_id'] in stabilization_errors]
+        if blocked:
+            for job in blocked:
+                message = stabilization_errors[job['stabilization_id']]
+                report['jobs'].append({**job, 'state':'error', 'error':message})
+                row.setdefault('review', []).append('Stabilization: '+message)
+            row.update(state='error', error='Stabilization needs review')
+            pending = [j for j in pending if j['stabilization_id'] not in stabilization_errors]
         if use_cache or operation == "unfinished" or region["locked"]:
-            covered = _coverage([r for r in entry["jobs"] if Path(r["path"]).is_file()])
+            covered = _coverage([r for r in entry["jobs"] if Path(r["path"]).is_file() and r.get('stabilization_id') not in stabilization_errors])
             missing = []
             for job in pending:
                 intervals = _uncovered(job["start_ms"], job["end_ms"], covered)
@@ -727,7 +758,7 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                     row.setdefault('review', []).append(str(error))
                     continue
                 raise
-        records = [r for r in entry["jobs"] if Path(r["path"]).is_file()]
+        records = [r for r in entry["jobs"] if Path(r["path"]).is_file() and r.get('stabilization_id') not in stabilization_errors]
         if records:
             emit("assembly", region["id"])
             try:
@@ -755,6 +786,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                     if region.get('automatic'):
                         from .automatic import candidate_review
                         project['metadata']['automatic_candidate'] = candidate_review(sequence, region, person, anchor, project)
+                        candidate = project['metadata']['automatic_candidate']
+                        candidate['review'] = list(dict.fromkeys([*candidate['review'], *row.get('review', [])]))
                     candidates.append(project)
             if not candidates:
                 row.update(state='error', error='No usable anchor candidates; review the person crops')
@@ -789,7 +822,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                 manifests[sid] = json.loads(Path(stored["manifest_path"]).read_text()), Path(stored["video_path"])
         project["metadata"]["processing_timeline"]["stabilized_regions"] = [
             {"id": sid, "source": fingerprint(path), "reference_id": manifest["id"], "source_times_ms": manifest["data"]["source_times_ms"],
-             "times_ms": manifest["data"]["times_ms"], "shift_xy": manifest["data"]["shift_xy"], "padding_xy": manifest["video"]["padding_xy"]}
+             "times_ms": manifest["data"]["times_ms"], "shift_xy": manifest["data"]["shift_xy"], "padding_xy": manifest["video"]["padding_xy"],
+             **({'transform_xy': manifest['data']['transform_xy']} if 'transform_xy' in manifest['data'] else {})}
             for sid, (manifest, path) in manifests.items()]
         result_path = directory / "project.json"
         atomic_json(result_path, project)

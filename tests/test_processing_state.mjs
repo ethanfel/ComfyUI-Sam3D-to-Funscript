@@ -36,6 +36,7 @@ assert.throws(()=>restoreCandidate({...plan,tracking:[{...r,mask_anchor:{frame:4
 const referencePlan={...plan,stabilization:[{...stable,name:'Reference',locked:false}]};
 assert.equal(restoreCandidate(referencePlan,info,clock).stabilization.length,1);
 for(const reference of [
+ {...stable.reference,transform_mode:"perspective"},
  {...stable.reference,keyframes:[]},
  {...stable.reference,keyframes:[{frame:4,points:[]}]},
  {...stable.reference,keyframes:[{frame:0,points:[]},{frame:0,points:[]}]},
@@ -45,3 +46,12 @@ for(const reference of [
 ])assert.throws(()=>restoreCandidate({...referencePlan,stabilization:[{...referencePlan.stabilization[0],reference}]},info,clock));
 assert.equal(restoreCandidate({...referencePlan,stabilization:[{...referencePlan.stabilization[0],reference:{...stable.reference,points:[]}}]},info,clock).stabilization[0].reference.points.length,0,'unfinished references can be restored as drafts');
 console.log('Processing scope, output freshness, source-bound restore and malformed plan rejection passed');
+
+const similarityPlan=structuredClone(referencePlan);similarityPlan.stabilization[0].reference.transform_mode="similarity";
+assert.equal(restoreCandidate(similarityPlan,info,clock).stabilization[0].reference.transform_mode,"similarity");
+assert.equal(trackingResultCurrent(r,stabilizedEntry,similarityPlan.stabilization),false);
+
+const stamped=structuredClone(stable);stamped.reference.auto_points={mask:'paint',keys:'keys'};stamped.reference.transform_mode='translation';
+assert.equal(trackingResultCurrent(r,stabilizedEntry,[stamped]),true,'point-generator metadata does not invalidate an unchanged result');
+const fractional={...r,start_ms:158000,end_ms:161958.33333333334};
+assert.equal(trackingResultCurrent(fractional,{region:fractional,stabilization_regions:[]},[{...stable,start_ms:161958.333333,end_ms:170250}]),true,'the next frame-aligned stabilization does not stale the previous scene');

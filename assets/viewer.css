@@ -48,3 +48,5 @@ body.video-floating .stage{grid-template-columns:1fr 1fr}.video-panel.floating{p
 @media(max-width:600px){.section-controls label{flex-wrap:wrap}.section-controls select{max-width:100%}.section-controls #sectionTrack{width:230px}.track-head>*{max-width:100%}.track-head label{min-width:0}.track-head .track-name{min-width:0}}
 
 body.source-sections #mainLane{scrollbar-gutter:auto}
+
+.track-result{font-weight:600;padding:4px 8px;border-radius:4px;background:#24483f;color:#9ce9cb}.track-result[data-current="false"]{background:#594323;color:#ffcf88}.track-source-settings{font-size:12px}.track-source-settings summary,#sectionHistory summary{cursor:pointer;color:#9db5c7}.track-source-settings[open] label{margin-top:6px}#sectionHistory{font-size:12px}#sectionHistory[open] label{display:flex;margin-top:6px}#latestDetection{border-color:#75e2ba;color:#9ce9cb}

@@ -1,3 +1,4 @@
+import {correctedTransforms,transformBounds} from './video-preview.mjs?v=stabilization-auto-1';
 import {workflowHost} from "./workflow-host.mjs";
 import {correctedMotion,curveBuckets,referenceKeys,withReferenceKeys,validateReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-keys-1";
 
@@ -42,6 +43,7 @@ function renderReferenceKeys(){
 $("markReference").onclick=()=>{pause();snapshot();config=addReferenceKey(config,index);$("mode").value='points';rebuild()};
 $("removeReferenceKey").onclick=()=>{snapshot();config=withReferenceKeys(config,referenceKeys(config).filter(k=>k.frame!==index));rebuild()};
 $("referenceKeyframes").onchange=()=>{if($("referenceKeyframes").value!=='')seek(Number($("referenceKeyframes").value))};
+$("transformMode").onchange=()=>{snapshot();config.transform_mode=$("transformMode").value;rebuild()};
 $("trackingMode").onchange=()=>{snapshot();config.tracking_mode=$("trackingMode").value;rebuild()};
 function rebuild(){
     $("error").textContent="";motion=null;
@@ -52,12 +54,14 @@ function rebuild(){
     extent=[0,0];for(const p of motion?.shifts||[])for(let j=0;j<2;j++)extent[j]=Math.max(extent[j],Math.abs(p[j]));
     if(motion){
         for(const key of referenceKeys(project.config))if(project.data.reasons[key.frame]==="reference_keyframe")motion.quality[key.frame]="manual";
+        motion.transforms=correctedTransforms(project.data,motion.shifts);
+        motion.bounds=transformBounds(project.info.width,project.info.height,motion.transforms);
         motion.counts={tracked:0,manual:0,held:0};motion.quality.forEach(q=>motion.counts[q]++);
     }
     const before=$("section").value;$("section").replaceChildren();
     for(const [i,s] of config.sections.entries()){const o=document.createElement("option");o.value=s.id;o.textContent=s.name||`Section ${i+1}`;$("section").append(o)}
     if(config.sections.some(s=>s.id===before))$("section").value=before;
-    $("seek").max=times().length-1;renderReferenceKeys();$("trackingMode").value=config.tracking_mode||"online";
+    $("seek").max=times().length-1;renderReferenceKeys();$("trackingMode").value=config.tracking_mode||"online";$("transformMode").value=config.transform_mode||"translation";
     $("track").disabled=tracking;
     $("play").disabled=times().length<2;$("previous").disabled=times().length<2;$("next").disabled=times().length<2;
     for(const id of ["newSection","estimate","removeSection"])$(id).disabled=!project.data;
@@ -91,19 +95,22 @@ function draw(){
     if(video.readyState>=2)ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
     const point=(p)=>[ox+(p[0]-crop[0])*scale,oy+(p[1]-crop[1])*scale];
     const [cx,cy]=point(config.crop_xywh),[cw,ch]=config.crop_xywh.slice(2);ctx.strokeStyle="#75ddb4";ctx.lineWidth=1.5;ctx.strokeRect(cx,cy,cw*scale,ch*scale);
-    const stale=project.data&&(!same(referenceKeys(config),referenceKeys(project.config))||!same(config.crop_xywh,project.config.crop_xywh)||config.tracking_mode!==project.config.tracking_mode);
+    const stale=project.data&&(!same(referenceKeys(config),referenceKeys(project.config))||!same(config.crop_xywh,project.config.crop_xywh)||config.tracking_mode!==project.config.tracking_mode||config.transform_mode!==project.config.transform_mode);
     const points=project.data&&!stale&&$("mode").value!=="points"?project.data.points[index]:(referenceKeys(config).find(k=>k.frame===index)?.points||[]);
     points.forEach((p,i)=>{const [x,y]=point(p);ctx.strokeStyle=project.data&&!stale&&$("mode").value!=="points"&&!project.data.visible[index][i]?"#ff986f":"#8becc6";ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);ctx.stroke();ctx.fillStyle=ctx.strokeStyle;ctx.fillText(i+1,x+7,y-6)});
     if(motion){const p=project.data.anchor_xy.map((v,j)=>v+motion.shifts[index][j]),[x,y]=point(p);ctx.strokeStyle="#ffe296";ctx.beginPath();ctx.moveTo(x-10,y);ctx.lineTo(x+10,y);ctx.moveTo(x,y-10);ctx.lineTo(x,y+10);ctx.stroke()}
     if(drag){const a=point(drag.start),b=point(drag.end);ctx.strokeStyle="#b6ccff";ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1])}
     drawPreview();drawTimeline();
-    if(motion){const counts=motion.counts;$("metrics").textContent=`${counts.tracked} tracked · ${counts.manual} corrected · ${counts.held} held / ${times().length} frames · current: ${motion.quality[index]}${motion.quality[index]==="held"?" ("+project.data.reasons[index].replaceAll("_"," ")+")":""}${stale?" · Starting points changed: queue to update tracking":""}`}
+    if(motion){const counts=motion.counts;$("metrics").textContent=`${counts.tracked} tracked · ${counts.manual} corrected · ${counts.held} held / ${times().length} frames · current: ${motion.quality[index]}${motion.quality[index]==="held"?" ("+project.data.reasons[index].replaceAll("_"," ")+")":""}${stale?" · Reference settings changed: track to update correction":""}`}
     else $("metrics").textContent="Select at least three points on the same reference surface. Right-click a starting point to remove it.";
 }
 function drawPreview(){
     const [ctx,w,h]=prepare($("previewCanvas"));if(video.readyState<2)return;
-    const pad=extent.map(v=>Math.ceil((v+8)/2)*2),size=[project.info.width+2*pad[0],project.info.height+2*pad[1]],s=Math.min(w/size[0],h/size[1]),x=(w-size[0]*s)/2,y=(h-size[1]*s)/2,shift=motion?.shifts[index]||[0,0];
-    ctx.drawImage(video,x+(pad[0]-shift[0])*s,y+(pad[1]-shift[1])*s,project.info.width*s,project.info.height*s);
+    const {padding:pad,size}=motion?.bounds||transformBounds(project.info.width,project.info.height,[[[1,0,0],[0,1,0]]]);
+    const s=Math.min(w/size[0],h/size[1]),x=(w-size[0]*s)/2,y=(h-size[1]*s)/2;
+    const [[a,b,tx],[c,d,ty]]=motion?.transforms?.[index]||[[1,0,0],[0,1,0]];
+    ctx.save();ctx.transform(a*s,c*s,b*s,d*s,x+(pad[0]+tx)*s,y+(pad[1]+ty)*s);
+    ctx.drawImage(video,0,0,project.info.width,project.info.height);ctx.restore();
     if(project.data){const a=project.data.anchor_xy,px=x+(a[0]+pad[0])*s,py=y+(a[1]+pad[1])*s;ctx.strokeStyle="#ffe296";ctx.beginPath();ctx.moveTo(px-12,py);ctx.lineTo(px+12,py);ctx.moveTo(px,py-12);ctx.lineTo(px,py+12);ctx.stroke()}
 }
 function drawTimeline(){
@@ -173,7 +180,7 @@ window.s3fReferenceApply=()=>{
         const timeout=setTimeout(()=>finishApply(new Error("ComfyUI did not acknowledge the settings. Keep this tab open and apply again.")),15000);
         applyPending={promise,request,sent,resolve,reject,timeout};
         $("error").textContent="";applyFeedback("applying","Waiting for ComfyUI to confirm…");
-        const check=sent.keyframes||sent.tracking_mode==='offline'?requireReferenceBackend(location.href):Promise.resolve();
+        const check=Promise.all([requireCorrectionBackend(sent),sent.keyframes||sent.tracking_mode==='offline'?requireReferenceBackend(location.href):Promise.resolve()]);
         check.then(()=>{if(applyPending?.request===request)workflowHost().postMessage({type:"s3f-reference-apply",node,reference:project.id,request,config:sent},location.origin)}).catch(finishApply);
         return promise;
     }catch(error){applyFailed(error);return Promise.reject(error)}
@@ -186,6 +193,7 @@ window.s3fReferenceTrack=async()=>{
     $("tracking").hidden=false;$("trackStatus").textContent="Applying reference settings…";$("trackProgress").removeAttribute("value");
     try{
         validate();
+        await requireCorrectionBackend(config);
         if(config.keyframes||config.tracking_mode==='offline')await requireReferenceBackend(location.href);
         if(!workflowHost()||workflowHost().closed)throw new Error("Open the reference editor from its ComfyUI node to start tracking. Your settings can still be downloaded here.");
         await window.s3fReferenceApply();
@@ -234,3 +242,9 @@ if(params.get("reference"))window.s3fReferenceLoad(params.get("reference")).catc
 
 window.s3fHasUnsavedEdits=()=>dirty||!!applyPending;
 window.s3fPausePreview=pause;
+
+async function requireCorrectionBackend(value){
+    if(value.transform_mode!=='similarity')return;
+    const response=await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)});
+    if(!response.ok||(await response.json()).similarity_stabilization!==1)throw new Error('Restart ComfyUI to enable position, rotation and scale correction.');
+}

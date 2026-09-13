@@ -14,6 +14,7 @@ const session='a'.repeat(32),editor='b'.repeat(32),api=`/sam3d_funscript/timelin
 const source={path:'neutral.mp4',size:100,mtime_ns:1000};
 let state={session,revision:1,editor_session:editor,info:{source_id:'neutral',source,start:'0',duration:'2',source_origin:'0',rate:'2',width:160,height:120,end_ms:2000},plan:{version:1,source_id:'neutral',tracking:[],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null};
 let saved={revision:1,output:'fixture',project:{metadata:{source},scripts:{L0:{actions:[{at:0,pos:20}]}},timeline:{sources:[],tracks:[],main:{},selection:[0,0]}}},queued=0,failPlanOnce=false;
+let allowJob=false,jobFinished=false,capabilitiesUnavailable=false;
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');res.setHeader('Cache-Control','no-store');
  const send=(data,type='text/javascript')=>{res.setHeader('Content-Type',type);res.end(data);};
@@ -27,10 +28,10 @@ const server=http.createServer(async(req,res)=>{
  document.querySelector('#open').onclick=()=>openWorkspace(app.graph._nodes[0]);window.openTool=index=>openWorkspace(app.graph._nodes[index]);window.hostApp=app;window.hostReady=true;
  </script>`,'text/html');
  if(url.pathname==='/scripts/app.js')return send(`const foreign=location.search.includes('foreign');
- const timeline={id:9,type:'S3F_ProcessingTimeline',properties:{s3f_timeline_session:foreign?'c'.repeat(32):'${session}',s3f_timeline_ready:true},widgets:[{name:'plan_json',value:''}],setDirtyCanvas(){}};
+ const timeline={id:9,type:'S3F_ProcessingTimeline',properties:{s3f_timeline_session:foreign?'c'.repeat(32):'${session}',s3f_timeline_ready:true},widgets:[{name:'plan_json',value:''}],s3fTimelineStatus:{},setDirtyCanvas(){}};
  const motion={id:10,type:'S3F_StandaloneExport',properties:{s3f_session:foreign?'d'.repeat(32):'${editor}'}};
- export const app={extensions:[],registerExtension(e){this.extensions.push(e)},async queuePrompt(){},graph:{_nodes:[timeline,motion],links:{1:{origin_id:9,target_id:10,type:'S3F_MOTION_PROJECT'}},getNodeById(id){return this._nodes.find(n=>n.id===Number(id))},change(){}}};`);
- if(url.pathname==='/scripts/api.js')return send(`export const api=new EventTarget();api.apiURL=p=>p;api.fetchApi=(p,o)=>fetch(p,o);`);
+ export const app={extensions:[],registerExtension(e){this.extensions.push(e)},async queuePrompt(){},async graphToPrompt(){return {output:{9:{class_type:'S3F_ProcessingTimeline',inputs:{}}},workflow:{nodes:[]}}},graph:{_nodes:[timeline,motion],links:{1:{origin_id:9,target_id:10,type:'S3F_MOTION_PROJECT'}},getNodeById(id){return this._nodes.find(n=>n.id===Number(id))},change(){}}};`);
+ if(url.pathname==='/scripts/api.js')return send(`export const api=new EventTarget();api.apiURL=p=>p;api.fetchApi=(p,o)=>fetch(p,o);api.queuePrompt=async()=>{const response=await fetch('/prompt',{method:'POST'});if(!response.ok)throw Error('Do not queue');return response.json()};`);
  if(url.pathname==='/sam3d_funscript/assets/viewer.html')return send(`<p id="status"></p><p id="value"></p><script type="module">
  import {editorSession} from './editor-session.mjs';let project;
  window.testSession=editorSession({install:p=>{project=p;document.querySelector('#value').textContent=p.scripts.L0.actions[0].pos},snapshot:()=>project,status:s=>document.querySelector('#status').textContent=s});
@@ -43,7 +44,10 @@ const server=http.createServer(async(req,res)=>{
    saved={...saved,revision:saved.revision+1,project:data.project};return json({revision:saved.revision});
   }return json(saved);
  }
- if(url.pathname==='/sam3d_funscript/reference-capabilities')return json({});
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){
+  if(capabilitiesUnavailable){res.writeHead(503);res.end('Temporarily busy');return;}
+  return json({});
+ }
  if(url.pathname===api){
   if(req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;const data=JSON.parse(body);
    if(failPlanOnce){failPlanOnce=false;state.revision++;}
@@ -52,7 +56,9 @@ const server=http.createServer(async(req,res)=>{
   }return json(state);
  }
  if(url.pathname===api+'/frames')return json({source_id:'neutral',first_frame:0,end_frame:4,times_ms:[0,500,1000,1500],end_ms:2000});
- if(url.pathname==='/prompt'){queued++;res.writeHead(500);res.end('Do not queue');return;}
+ if(url.pathname==='/prompt'){queued++;if(allowJob)return json({prompt_id:'test-job'});res.writeHead(500);res.end('Do not queue');return;}
+ if(url.pathname==='/history/test-job')return json(jobFinished?{'test-job':{outputs:{9:{s3f_timeline:[session],s3f_timeline_status:['Test scan complete']}}}}:{});
+ if(url.pathname==='/queue')return json({queue_running:queued&&!jobFinished?[[0,'test-job']]:[],queue_pending:[]});
  const name=path.basename(url.pathname),file=url.pathname===api+'/video'?clip:url.pathname.startsWith('/sam3d_funscript/assets/')?path.join(root,'assets',name):url.pathname.startsWith('/extensions/s3f/')?path.join(root,'web',name):null;
  if(!file||!fs.existsSync(file)){res.writeHead(404);res.end();return;}
  send(fs.readFileSync(file),({'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.mp4':'video/mp4'})[path.extname(file)]||'application/octet-stream');
@@ -145,6 +151,30 @@ try{
  assert.equal(queued,0,'reconnection never queues GPU work');
  assert.equal(errors.length,0,JSON.stringify(errors));
  console.log('PASS: unrelated workflow cannot adopt the old session; returning to the matching workflow recovers its draft without queueing');
+
+ allowJob=true;
+ await inspect(`window.s3fSelectWorkspacePage('timeline:${session}');originalTimeline.document.querySelector('#detectCuts').click()`);
+ await until(()=>queued===1,'test job queued');
+ await until(()=>inspect(`!originalTimeline.document.querySelector('#cancel').hidden`),'processing acknowledged');
+ // Background-tab throttling can make the host heartbeat late even though its
+ // existing job monitor remains alive. The next ready reply has the same host ID.
+ await inspect(`window.s3fWorkspaceDisconnected('Heartbeat delayed');window.dispatchEvent(new Event('focus'))`);
+ await until(()=>inspect(`document.querySelector('#connection').textContent==='Connected to ComfyUI'&&!document.querySelector('#notice').textContent`),'same host responds');
+ assert.equal(await inspect(`originalTimeline.document.querySelector('#cancel').hidden`),false,'late heartbeat keeps the active job and Cancel control');
+ assert.equal(await inspect(`originalTimeline.document.querySelector('#error').textContent`),'');
+ capabilitiesUnavailable=true;
+ await inspect(`window.dispatchEvent(new Event('focus'))`);
+ await until(()=>inspect(`document.querySelector('#connection').textContent.includes('unavailable')`),'temporary failed health check');
+ capabilitiesUnavailable=false;
+ await inspect(`window.dispatchEvent(new Event('focus'))`);
+ await until(()=>inspect(`document.querySelector('#connection').textContent==='Connected to ComfyUI'`),'health check recovers');
+ assert.equal(await inspect(`originalTimeline.document.querySelector('#cancel').hidden`),false,'health check recovery does not discard processing');
+ assert.equal(await inspect(`originalTimeline.document.querySelector('#error').textContent`),'');
+ jobFinished=true;
+ await until(()=>inspect(`originalTimeline.document.querySelector('#cancel').hidden&&originalTimeline.document.querySelector('#progressText').textContent.includes('Cut scan complete')`),'same job completes after false disconnect');
+ assert.equal(queued,1,'heartbeat recovery must never submit duplicate work');
+ assert.equal(errors.length,0,JSON.stringify(errors));
+ console.log('PASS: delayed host and failed health checks retain active processing and receive its completion without requeueing');
  workspaceSocket.close();
 }finally{
  ws?.close();const exited=new Promise(r=>chrome.once('exit',r));chrome.kill('SIGTERM');await exited;

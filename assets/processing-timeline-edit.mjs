@@ -1,6 +1,11 @@
 // Region edits retain the original-video clock. This module is also used by tests.
 import {validateReferenceKeys,referenceKeys,withReferenceKeys} from './reference-edit.mjs?v=reference-keys-1';
 export const LANES = ["tracking", "stabilization"];
+// Match frame-clock's tolerance for serialized fractional frame timestamps.
+export const TIME_EPSILON_MS = .000002;
+export function overlapsRange(region, start, end) {
+    return Math.min(region.end_ms,end)-Math.max(region.start_ms,start)>TIME_EPSILON_MS;
+}
 export const ANCHORS = ["pelvis", "chest", "nose", "left_wrist", "right_wrist", "left_hand", "right_hand", "neck", "mouth"];
 // Named landmarks from anchors.py, grouped separately from the everyday choices.
 export const DETAILED_ANCHOR_GROUPS = {
@@ -36,7 +41,7 @@ export function createRegion(lane, id, start, end, info, count = 0) {
     const [low, high] = bounds(info);
     start = clamp(start, low, high - 1); end = clamp(end, start + 1, high);
     const common = {id, name: `${lane === "tracking" ? "Tracking" : "Stabilization"} ${count + 1}`, start_ms: start, end_ms: end, enabled: true, locked: false};
-    return lane === "tracking" ? {...common, anchor: "pelvis", additional_anchors: [], person: 0, rois: [[0, 0, 1, 1]], smoothing_ms: 30, settings: {}} : {...common, reference: {crop_xywh: [0, 0, info.width, info.height], points: [], sections: []}};
+    return lane === "tracking" ? {...common, anchor: "pelvis", additional_anchors: [], person: 0, rois: [[0, 0, 1, 1]], smoothing_ms: 30, settings: {}} : {...common, reference: {crop_xywh: [0, 0, info.width, info.height], points: [], sections: [], transform_mode: "similarity"}};
 }
 export function validateInterval(plan, lane, id, start, end, info) {
     const [low, high] = bounds(info);
@@ -140,8 +145,9 @@ export function isolateSelection(plan, id, newId, info, clock=null) {
     const found = regionById(plan, id);
     if (!found) throw new Error("Select the region containing this time range first.");
     if (found.region.locked) throw new Error("Unlock this region before splitting it.");
-    const [a,b] = selectionRange(plan, info), region = found.region;
-    if (b-a<1 || a<region.start_ms || b>region.end_ms) throw new Error("Select a nonempty range inside the active region.");
+    let [a,b] = selectionRange(plan, info);const region = found.region;
+    if (b-a<1 || a<region.start_ms-TIME_EPSILON_MS || b>region.end_ms+TIME_EPSILON_MS) throw new Error("Select a nonempty range inside the active region.");
+    a=Math.max(a,region.start_ms);b=Math.min(b,region.end_ms);
     let result=plan,middle=id;
     if(a>region.start_ms+1){result=splitRegion(result,middle,a,newId(),info,clock);middle=result.selected_ids[0];}
     if(b<region.end_ms-1)result=splitRegion(result,middle,b,newId(),info,clock);
@@ -149,13 +155,15 @@ export function isolateSelection(plan, id, newId, info, clock=null) {
 }
 
 export function regionFromSelection(plan,lane,newId,info,clock=null){
-    const [a,b]=selectionRange(plan,info);
+    let [a,b]=selectionRange(plan,info);
     if(!LANES.includes(lane)||b-a<1)throw new Error("Select a nonempty range before making a region.");
-    const overlaps=plan[lane].filter(r=>r.enabled!==false&&a<r.end_ms&&b>r.start_ms);
-    if(overlaps.length===1&&a>=overlaps[0].start_ms&&b<=overlaps[0].end_ms){
+    const overlaps=plan[lane].filter(r=>r.enabled!==false&&overlapsRange(r,a,b));
+    if(overlaps.length===1&&a>=overlaps[0].start_ms-TIME_EPSILON_MS&&b<=overlaps[0].end_ms+TIME_EPSILON_MS){
         const region=overlaps[0];
+        if(Math.abs(a-region.start_ms)<=TIME_EPSILON_MS)a=region.start_ms;
+        if(Math.abs(b-region.end_ms)<=TIME_EPSILON_MS)b=region.end_ms;
         if(a===region.start_ms&&b===region.end_ms)return {...plan,selected_ids:[region.id]};
-        return isolateSelection(plan,region.id,newId,info,clock);
+        return isolateSelection({...plan,selection:[a,b]},region.id,newId,info,clock);
     }
     if(overlaps.length)throw new Error("This range crosses existing regions. Select a range inside one region or inside an empty gap.");
     const region=createRegion(lane,newId(),a,b,info,plan[lane].length);

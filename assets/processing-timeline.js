@@ -2,18 +2,18 @@ import {workflowHost,openWorkspacePage} from "./workflow-host.mjs";
 import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as basePanView, followView as baseFollowView, sliderSpan as baseSliderSpan, spanSlider as baseSpanSlider, formatTime, rulerTicks} from "./viewport.mjs";
 // These exports were added together. Bypass helper URLs cached by older servers;
 // updated servers revalidate all editor assets on subsequent loads.
-import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection} from "./processing-timeline-edit.mjs?v=timeline-audit-1";
+import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection,overlapsRange} from "./processing-timeline-edit.mjs?v=anchor-boundary-1";
 import {cutIndex,neighboringCut,snapCut,shotRange,cutSideRange,visibleCuts} from "./cut-markers.mjs?v=cut-selection-2";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs?v=timeline-audit-1";
 import {frameClock} from "./frame-clock.mjs";
 import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-masks-1";
-import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason} from "./video-preview.mjs?v=reference-masks-1";
+import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason,transformPixel} from "./video-preview.mjs?v=stabilization-auto-1";
 
-import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=automatic-scenes-1";
-import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=subject-crop-1";
+import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=anchor-boundary-1";
+import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=stabilization-auto-1";
 import {subjectEditor} from "./timeline-subject.mjs?v=subject-crop-1";
 import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
-import {stabilizationSteps} from './stabilization-steps.mjs?v=timeline-audit-1';
+import {stabilizationSteps} from './stabilization-steps.mjs?v=anchor-boundary-1';
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
@@ -39,6 +39,33 @@ const sourceBounds = () => {const [a,b]=bounds(state.info);return frames?[Math.m
 const duration = () => sourceBounds()[1];
 const clipDuration = () => sourceBounds()[1]-sourceBounds()[0];
 const cuts = () => frameCuts;
+const cutClipName = at => state.scene_cuts?.segments?.find(s=>s.start_ms<=at&&at<s.end_ms)?.name||'';
+let cutImportLoading=false, cutImportAttempt=0;
+$('importCuts').onclick=async()=>{
+    if(busy||startingOperation||cutImportLoading)return;
+    cutImportLoading=true;$('importCuts').disabled=true;clearError();
+    try{
+        // A running older backend may serve updated files but not yet expose
+        // this new asset. Optional EDL tools must not prevent timeline startup.
+        const url=new URL('./cut-import.mjs',import.meta.url);
+        url.searchParams.set('v',`edl-import-1-${++cutImportAttempt}`);
+        const {cutImporter}=await import(url.href);
+        cutImporter({$,context:()=>({info:state.info,cuts:state.scene_cuts,busy:busy||!!startingOperation}),
+            endpoint:new URL(`${api.pathname}/cuts/import`,location.origin),imported:async next=>{
+                // Annotation imports must also appear while a local plan has unsaved edits.
+                if(next.info.source_id===state.info.source_id){
+                    state={...state,scene_cuts:next.scene_cuts};
+                    frameCuts=[...new Set(next.scene_cuts.times_ms.map(t=>frames.snap(t)))];
+                    selectedCut=null;cutRangeReady=false;
+                }
+                await loadState(next);renderNavigation();renderTimelines();
+                status('Cuts imported · automatic mode will use these boundaries');
+            }});
+        $('importCuts').onclick();
+    }catch(error){
+        fail(new Error('EDL import could not load. Restart ComfyUI to load the updated backend, then try Import cuts again. The timeline remains available.'));
+    }finally{cutImportLoading=false;renderNavigation();}
+};
 // requestVideoFrameCallback reports a frame PTS (possibly rounded by the browser),
 // while currentTime is a continuously advancing clock inside a frame.
 const activeFrame = () => !video.paused&&!video.seeking?(presentedTime!==null?frames.nearest(presentedTime):frames.containing(sourceTime(video.currentTime))):frames.containing(playhead);
@@ -364,7 +391,7 @@ function drawSource() {
             ctx.lineWidth=2;ctx.font='12px system-ui';ctx.strokeStyle=ctx.fillStyle=held?'#ffc18b':'#85e8dd';
             for(const [i,p] of (health.points?.[index]||[]).entries()){
                 if(!health.visible?.[index]?.[i]||!p.every(Number.isFinite))continue;
-                const mapped=previewClip?p.map((v,axis)=>v+health.padding[axis]-health.shifts[index][axis]):p,[px,py]=point(mapped);
+                const mapped=previewClip?(health.transforms?.[index]?transformPixel(p,health.transforms[index]):p.map((v,axis)=>v-health.shifts[index][axis])).map((v,axis)=>v+health.padding[axis]):p,[px,py]=point(mapped);
                 ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.stroke();ctx.fillText(String(i+1),px+8,py-7);
             }
         }
@@ -442,13 +469,14 @@ function renderNavigation() {
     $('selectedRegionsSummary').title=enabledSelected.map(r=>r.name).join(', ');
     $('processSelected').title=b>a?`Process only ${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:'Mark In and Out first';
     $('processRegions').title=enabledSelected.length?`Process full regions: ${enabledSelected.map(r=>r.name).join(', ')}`:'Select enabled regions first';
-    $("processAutomatic").disabled=busy;$("automaticPeople").disabled=busy;
+    $("processAutomatic").disabled=busy;$("automaticPeople").disabled=busy;$("automaticStabilization").disabled=busy;
     $("detectCuts").disabled=busy;$("cutSensitivity").disabled=busy;
+    $("importCuts").disabled=busy||!!startingOperation||cutImportLoading;
     $("previousCut").disabled=neighboringCut(cuts(),playhead,-1)===null;
     $("nextCut").disabled=neighboringCut(cuts(),playhead,1)===null;
     const hasScan=state.scene_cuts?.source_id===state.info.source_id;
     $("selectShot").disabled=!hasScan||busy;
-    $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":hasScan?`${cuts().length} cut markers${state.scene_cuts.cache_hit?" · cached":""}`:"No cut scan yet";
+    $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":hasScan?`${cuts().length} cut markers${state.scene_cuts.format==='edl'?" · imported EDL":state.scene_cuts.cache_hit?" · cached":""}`:"No cut markers yet";
     $("markOut").title=selectedCut!==null?"End the selection exactly at this cut, before its first frame (O)":"End the selection after the displayed frame, including it (O)";
     $("selectionHint").textContent=selectedCut!==null?"Cut selected: In / Out use the boundary before this frame.":"Mark Out includes the displayed frame. Out is the boundary after the selection.";
     $("cutActions").hidden=selectedCut===null;
@@ -456,7 +484,7 @@ function renderNavigation() {
     for(const id of ['timelineSplit','split'])$(id).disabled=busy||!active||active.locked||playhead<=active.start_ms+1||playhead>=active.end_ms-1;
     $("timelineSplit").title=active?`Split ${active.name} at ${positionLabel(playhead)} (S)`:'Select a region, then seek to the frame where it changes';
     if(selectedCut!==null){
-        $("selectedCutLabel").textContent=`Cut ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}`;
+        $("selectedCutLabel").textContent=`Cut ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}${cutClipName(selectedCut)?' · '+cutClipName(selectedCut):''}`;
         for(const [id,direction]of [["cutBefore",-1],["cutAfter",1]]){const range=cutSideRange(cuts(),selectedCut,direction,...sourceBounds());$(id).disabled=!range||range[1]-range[0]<1;}
         $("cutRegion").disabled=busy||!cutRangeReady||b-a<1;
         $("cutRegionRange").textContent=cutRangeReady&&b>a?`${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:"Select a shot, set In / Out, or Shift-click another cut";
@@ -553,7 +581,7 @@ function renderCutButtons(width){
         }
         button.style.left=`${(at-view.start_ms)/view.span_ms*100}%`;
         button.setAttribute("aria-pressed",String(at===selectedCut));
-        button.setAttribute("aria-label",`Cut ${cutIndex(cuts(),at)+1}, frame ${frames.ceil(at)}`);
+        button.setAttribute("aria-label",`Cut ${cutIndex(cuts(),at)+1}, frame ${frames.ceil(at)}${cutClipName(at)?', '+cutClipName(at):''}`);
         button.title=`${button.getAttribute("aria-label")} · click for In / Out · Shift-click another cut to select between · double-click for the following shot`;
     }
     for(const button of existing.values())button.remove();
@@ -596,7 +624,7 @@ function renderInspector() {
     $('automaticRegionReview').hidden=!region.automatic;$('automaticSuggestionLabel').hidden=!region.automatic;
     if(region.automatic){$('automaticRegionReview').textContent=autoReviews().find(row=>row.region.id===region.id)?.reasons.join(' · ')||'Automatic scene · review the suggested anchor in Motion Studio.';$('automaticSuggestion').checked=region.automatic.suggest;}
     if(lane==="tracking")Object.assign(values,{anchor:region.anchor,person:region.person,smoothing:region.smoothing_ms,rois:JSON.stringify(region.rois),axisSettings:JSON.stringify(region.settings||{},null,2)});
-    else Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh),trackingMode:region.reference.tracking_mode||'online'});
+    else Object.assign(values,{crop:JSON.stringify(region.reference.crop_xywh),trackingMode:region.reference.tracking_mode||'online',transformMode:region.reference.transform_mode||'translation'});
     for(const [id,value] of Object.entries(values))if(document.activeElement!==$(id))$(id).value=value;
     $("regionEnabled").checked=region.enabled!==false;$("regionLock").textContent=region.locked?"Unlock":"Lock";$("lockNotice").hidden=!region.locked;
     $("trackingSettings").hidden=lane!=="tracking";$("stabilizationSettings").hidden=lane!=="stabilization";
@@ -713,6 +741,7 @@ function renderReferenceKeys(region) {
     $("markReference").disabled=disabled||playhead<region.start_ms||playhead>=region.end_ms;
     $("removeReferenceKey").disabled=disabled||!key;
 }
+$("transformMode").onchange=()=>attempt(()=>updateRegion({reference:{...selected().region.reference,transform_mode:$("transformMode").value}}));
 $("trackingMode").onchange=()=>attempt(()=>updateRegion({reference:{...selected().region.reference,tracking_mode:$("trackingMode").value}}));
 $("markReference").onclick=()=>attempt(()=>{
     maskSteps.setStep("track");
@@ -829,7 +858,10 @@ $("cutBefore").onclick=()=>selectCutSide(-1);$("cutAfter").onclick=()=>selectCut
 $("cutRegion").onclick=()=>attempt(()=>{
     if(!cutRangeReady)return;
     const lane=$("cutRegionLane").value,next=regionFromSelection(plan,lane,uuid,state.info,frames);
-    activeId=next.selected_ids[0];edit(next,"Region ready · choose its anchor or stabilization reference points");
+    activeId=next.selected_ids[0];
+    const made=regionById(next,activeId)?.region;
+    if(made&&lane==='tracking'&&cutClipName(made.start_ms))made.name=cutClipName(made.start_ms);
+    edit(next,"Region ready · choose its anchor or stabilization reference points");
     showInspectorTab("region");
     if(lane==="stabilization")seek(regionById(plan,activeId).region.start_ms);
     clearCut();
@@ -931,6 +963,7 @@ $("play").onclick=togglePlay;$("previous").onclick=()=>seek(frames.step(frames.a
 $("seekTime").onclick=()=>seek(positionTime($("goTime").value));$("goTime").onkeydown=event=>{if(event.key==="Enter"){$("seekTime").click();$("ruler").focus();}};$("mute").onchange=()=>{video.muted=$("mute").checked;};
 for(const [id,field] of [["chunkSeconds","chunk_seconds"],["joinMs","join_ms"],["gapPolicy","gap_policy"]])$(id).onchange=()=>attempt(()=>edit({...plan,[field]:id==="gapPolicy"?$(id).value:Number($(id).value)}));
 window.addEventListener("keydown",event=>{
+    if(document.querySelector('dialog[open]'))return;
     if(event.key==="Escape"&&selectedCut!==null){event.preventDefault();clearCut();$("ruler").focus();return;}
     if(!state||!frames||document.querySelector("main").inert||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,textarea,select,[role=separator],[contenteditable=true]"))return;
     if(event.code==="Space"&&!event.target.closest("button")){event.preventDefault();togglePlay();}
@@ -984,6 +1017,7 @@ async function save() {
             if(capabilities.mask_anchors!==1)throw new Error('Restart ComfyUI to enable painted 3D anchors, then refresh its main tab and reopen this timeline. Your edits are kept.');
         }
         if(sent.stabilization.some(r=>r.reference.point_mask))await requireMaskBackend();
+        if(sent.stabilization.some(r=>r.reference.transform_mode==='similarity'))await requireTransformBackend();
         if(sent.stabilization.some(r=>r.reference.keyframes||r.reference.tracking_mode==='offline'))await requireReferenceBackend(location.href);
         let next;
         for(let attempt=0;attempt<3;attempt++){
@@ -1030,6 +1064,10 @@ async function applyWorkflow(){
     } catch(error){feedback("error",error.message);$("apply").disabled=busy;fail(error);throw error;}
 }
 $("apply").onclick=()=>window.s3fTimelineApply().catch(()=>{});
+async function requireTransformBackend(){
+    const data=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+    if(data.similarity_stabilization!==1)throw new Error('Restart ComfyUI to enable position, rotation and scale correction. Your edits are kept.');
+}
 async function requireMaskBackend(){
     const data=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
     if(data.reference_masks!==1)throw new Error('Restart ComfyUI to enable reference masks, then refresh its main tab and reopen this timeline. Your edits are kept.');
@@ -1053,8 +1091,8 @@ function validateProcessing(operation,scope=null) {
     if(!candidatePlan.tracking.some(r=>r.enabled!==false))throw new Error("Add and enable at least one tracking region.");
     const [a,b]=selectionRange(candidatePlan,state.info),ids=new Set(candidatePlan.selected_ids||[]);
     for(const region of candidatePlan.stabilization)if(region.enabled!==false){
-        let relevant=operation!=="selected"||b-a>1&&region.start_ms<b&&region.end_ms>a;
-        if(operation==="selected"&&b-a<=1)relevant=candidatePlan.tracking.some(r=>ids.has(r.id)&&r.start_ms<region.end_ms&&r.end_ms>region.start_ms)||ids.has(region.id);
+        let relevant=operation!=="selected"||b-a>1&&overlapsRange(region,a,b);
+        if(operation==="selected"&&b-a<=1)relevant=candidatePlan.tracking.some(r=>ids.has(r.id)&&overlapsRange(r,region.start_ms,region.end_ms))||ids.has(region.id);
         if(relevant)validateReference(region);
     }
 }
@@ -1067,6 +1105,7 @@ async function process(operation,scopeKind=null) {
         if(document.activeElement?.matches('input,textarea,select'))document.activeElement.blur();
         if(operation==='automatic'){
             const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store'}));
+            if($("automaticStabilization").value==='prepared_masks'&&capabilities.automatic_stabilization!==1)throw new Error('Restart ComfyUI to enable automatic stabilization from painted masks.');
             if(capabilities.automatic_scenes!==1)throw new Error('Restart ComfyUI and refresh its main tab to enable automatic scenes.');
         }
         const scope=operation==='selected'?processingScope(plan,scopeKind):null;
@@ -1095,7 +1134,7 @@ async function process(operation,scopeKind=null) {
         const request=uuid();processPending={request,operation,stabilizationId,previewKey,previewRequest,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
         // A distinct bridge operation makes older main tabs reject scopes instead
         // of silently running their legacy marked-range precedence.
-        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value,automatic_options:{people:$("automaticPeople").value}},location.origin);
+        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value,automatic_options:{people:$("automaticPeople").value,stabilization:$("automaticStabilization").value}},location.origin);
     }catch(error){fail(error);}finally{startingOperation=null;renderPreviewControls();}
 }
 function finishProcess(error) {
@@ -1185,11 +1224,15 @@ window.s3fTimelineLoad=async()=>{
     if(loading)return;loading=true;
     try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));await loadState(next);}finally{loading=false;}
 };
-window.s3fReconnect=async()=>{
-    appliedPlan=null;
-    if(applyPending)finishApply(new Error('ComfyUI reconnected before Apply was acknowledged. Your plan is kept; Apply again when ready.'));
-    if(processPending)finishProcess(new Error('ComfyUI reconnected. Check its queue before processing again; completed regions and your settings are kept.'));
-    await window.s3fTimelineLoad();
+window.s3fReconnect=async({hostChanged=false}={})=>{
+    if(hostChanged){
+        appliedPlan=null;
+        if(applyPending)finishApply(new Error('ComfyUI’s main tab was reloaded before Apply was acknowledged. Your plan is kept; Apply again when ready.'));
+        if(processPending)finishProcess(new Error('ComfyUI’s main tab was reloaded. Check its queue before processing again; completed regions and your settings are kept.'));
+    }
+    // Health-check recovery says nothing about whether a queued job stopped.
+    // Its existing monitor checks queue/history and delivers the final result.
+    if(!processPending&&!applyTask&&!savePromise&&!startingOperation)await window.s3fTimelineLoad();
 };
 $("reload").onclick=async()=>{try{const next=pendingState||await jsonResponse(await fetch(api,{cache:"no-store"}));await loadState(next,true);feedback("pending","Latest saved plan loaded");clearError();}catch(error){fail(error);}};
 $("download").onclick=()=>{const blob=new Blob([JSON.stringify(plan,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="processing-timeline.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};

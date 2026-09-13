@@ -1,11 +1,41 @@
-// Pixel mapping reverses render(): stabilized = original + padding - shift.
-export function previewShift(mapping, timeMs) {
+function previewIndex(mapping, timeMs) {
     const ts=mapping.times_ms;
     let lo=0,hi=ts.length-1;
     while(lo<hi){const mid=Math.ceil((lo+hi)/2);if(ts[mid]<=timeMs+.001)lo=mid;else hi=mid-1;}
-    return mapping.shift_xy[lo];
+    return lo;
+}
+export function previewShift(mapping,timeMs){return mapping.shift_xy[previewIndex(mapping,timeMs)];}
+export function transformPixel(point,matrix){
+    return matrix.map(row=>row[0]*point[0]+row[1]*point[1]+row[2]);
+}
+export function correctedTransforms(data,shifts){
+    return shifts.map((shift,i)=>{
+        const matrix=structuredClone(data.auto_transform_xy?.[i]||[[1,0,0],[0,1,0]]);
+        const center=data.anchor_xy.map((v,j)=>v+shift[j]),mapped=transformPixel(center,matrix);
+        matrix.forEach((row,j)=>row[2]+=data.anchor_xy[j]-mapped[j]);
+        return matrix;
+    });
+}
+export function transformBounds(width,height,matrices){
+    const corners=[[0,0],[width,0],[0,height],[width,height]],extent=[0,0];
+    for(const matrix of matrices)for(const p of corners){
+        const q=transformPixel(p,matrix);
+        q.forEach((v,j)=>extent[j]=Math.max(extent[j],-v,v-[width,height][j]));
+    }
+    const padding=extent.map(v=>Math.ceil((v+8)/2)*2);
+    return {padding,size:[width+2*padding[0],height+2*padding[1]]};
+}
+export function stabilizedPixel(mapping,point,timeMs){
+    const i=previewIndex(mapping,timeMs),matrix=mapping.transform_xy?.[i];
+    return (matrix?transformPixel(point,matrix):point.map((v,j)=>v-mapping.shift_xy[i][j])).map((v,j)=>v+mapping.padding_xy[j]);
 }
 export function originalPixel(mapping, point, timeMs) {
+    const matrix=mapping.transform_xy?.[previewIndex(mapping,timeMs)];
+    if(matrix){
+        const [[a,b,tx],[c,d,ty]]=matrix,det=a*d-b*c;
+        const x=point[0]-mapping.padding_xy[0]-tx,y=point[1]-mapping.padding_xy[1]-ty;
+        return [(d*x-b*y)/det,(-c*x+a*y)/det];
+    }
     const shift=previewShift(mapping,timeMs);
     return point.map((v,i)=>v-mapping.padding_xy[i]+shift[i]);
 }
@@ -43,7 +73,8 @@ export function timelineRenderCurrent(render, region) {
     // Names, locks and enabled toggles do not change a rendered image.
     return maskKey(render.region.reference)===maskKey(region.reference)&&['start_ms','end_ms','agreement_pixels','max_step_pixels'].every(key=>render.region[key]===region[key])&&
         ['crop_xywh','points','sections','keyframes'].every(key=>JSON.stringify(render.region.reference?.[key]||[])===JSON.stringify(region.reference?.[key]||[]))&&
-        (render.region.reference?.tracking_mode||'online')===(region.reference?.tracking_mode||'online');
+        (render.region.reference?.tracking_mode||'online')===(region.reference?.tracking_mode||'online')&&
+        (render.region.reference?.transform_mode||'translation')===(region.reference?.transform_mode||'translation');
 }
 export function timelineRenderAt(renders, plan, time) {
     return renders.find(render=>plan.stabilization.some(region=>region.id===render.id&&region.enabled!==false&&
@@ -61,7 +92,7 @@ export function timelineTrackingHealth(manifest, render, source) {
     const counts={tracked:0,manual:0,held:0},gaps=[];
     quality.forEach((q,i)=>{counts[q]++;if(q==='held'&&(i===0||quality[i-1]!=='held'))gaps.push(times[i]);});
     return {times,quality,counts,gaps,total:times.length,points:data.points,visible:data.visible,inliers:data.inliers,config:manifest.config,
-        shifts:data.shift_xy,padding:manifest.video?.padding_xy||[0,0],reasons:data.reasons||[],end:render.region.end_ms};
+        shifts:data.shift_xy,transforms:data.transform_xy,padding:manifest.video?.padding_xy||[0,0],reasons:data.reasons||[],end:render.region.end_ms};
 }
 export function trackingFrame(health, time) {
     if(!health||time<health.times[0]-.001||time>=health.end-.001)return null;
@@ -74,5 +105,5 @@ export function trackingSummary(health) {
     return `${tracked} tracked · ${manual?`${manual} corrected · `:''}${held} held / ${health.total} frames (${(held/health.total*100).toFixed(1)}% held)`;
 }
 export function trackingReason(reason) {
-    return ({outside_reference_mask:'fewer than 3 points inside the propagated mask',insufficient_visible_points:'fewer than 3 visible reference points',points_disagree:'reference points disagree',tracking_passes_disagree:'tracking from reference keyframes disagrees',large_jump_needs_review:'sudden tracking jump'})[reason]||'tracking unavailable';
+    return ({reference_points_too_close:'reference points are too close together',scale_needs_review:'extreme scale change needs review',outside_reference_mask:'fewer than 3 points inside the propagated mask',insufficient_visible_points:'fewer than 3 visible reference points',points_disagree:'reference points disagree',tracking_passes_disagree:'tracking from reference keyframes disagrees',large_jump_needs_review:'sudden tracking jump'})[reason]||'tracking unavailable';
 }

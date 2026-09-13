@@ -1,5 +1,5 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, fitComponentAxis, bodyFrame, invertAxis, axisValue, reduceActions} from "./curve.mjs";
-import {initializeTimeline, trackLabel, processingTrackState, recreatedTrackChoices, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries, motionSections, sectionAt} from "./timeline.mjs";
+import {initializeTimeline, trackLabel, processingTrackState, latestTrack, recreatedTrackChoices, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries, motionSections, sectionAt} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {cutIndex, neighboringCut, cutSideRange} from "./cut-markers.mjs";
 import {smoothActions} from "./curve-edit.mjs";
@@ -534,7 +534,9 @@ function buildTracks() {
         axis.onchange=()=>{if(track.locked)return;record();assignTrack(project,track,source.value,axis.value);project.timeline.active=track.id;buildTracks();dirty();controls();render();};
         const remove=document.createElement("button");remove.className="remove-track";remove.textContent="Remove";
         remove.onclick=()=>{if(track.locked)return;record();project.timeline.tracks=project.timeline.tracks.filter(t=>t!==track);if(project.timeline.active===track.id)project.timeline.active="main";buildTracks();dirty(false);controls();render();};
-        const sourceLabel=document.createElement("label");sourceLabel.append("Project ",source);
+        const sourceLabel=document.createElement("label");sourceLabel.append("Source project ",source);
+        const sourceSettings=document.createElement("details");sourceSettings.className="track-source-settings";
+        const sourceSummary=document.createElement("summary");sourceSummary.textContent="Change source…";sourceSettings.append(sourceSummary,sourceLabel);
         const axisLabel=document.createElement("label");axisLabel.append("Axis ",axis);
         const lock=document.createElement("button");lock.className="track-lock";lock.title="Protect this curve and calibration across edits and reruns. Unlock explicitly to edit.";lock.textContent=track.locked?"Unlock":"Lock";lock.setAttribute("aria-pressed",String(!!track.locked));lock.onclick=()=>toggleLock(track);
         const copy=document.createElement("button");copy.className="copy-selection";copy.onclick=()=>{selectLane(track.id);applySelection(false);};
@@ -543,9 +545,9 @@ function buildTracks() {
         range.onclick=()=>{selectLane(track.id);setSelection(...trackCoverage(project,track));};
         const badge=document.createElement("span");badge.className="copy-source-badge";badge.textContent="Copy source";
         for(const input of [name,source,axis,remove])input.disabled=!!track.locked;
-        const result=document.createElement("span");result.className="track-result";result.textContent=processingTrackState(project,track);result.hidden=!result.textContent;
-        result.title=result.textContent==='Saved detection'?'An older result kept for your edits. Select the current detection to review the rebuilt zone.':'The latest result from the current processing plan.';
-        head.append(collapse,select,lock,name,result,sourceLabel,axisLabel,range,copy,badge,remove);
+        const result=document.createElement("span");result.className="track-result";result.textContent=processingTrackState(project,track);result.hidden=!result.textContent;result.dataset.current=String(result.textContent==='Latest detection');
+        result.title=result.textContent==='Previous detection'?'An older result kept for your edits. Use Show latest detection to review the rebuilt zone.':'The latest result from the current processing plan.';
+        head.append(collapse,select,lock,name,result,sourceSettings,axisLabel,range,copy,badge,remove);
         const candidate=sourceProject(project,track.source).metadata.automatic_candidate;
         if(candidate){const review=document.createElement('span');review.className='automatic-review';review.textContent=candidate.review.length?'Needs review':'Auto candidate';review.title=candidate.review.join(' · ')||'Suggested from crop coverage and usable movement. Review the pose and curve before keeping it.';head.append(review);}
         if(track.window){const scope=document.createElement("span");scope.className="track-scope";scope.textContent=`${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s · local fit`;head.append(scope);}
@@ -555,22 +557,47 @@ function buildTracks() {
 }
 function sectionControls() {
     const compact=$('sourceLayout').value==='sections',tracks=project.timeline.tracks;
-    const current=tracks.find(t=>t.id===project.timeline.active)||selectionTrack(project)||tracks[0];
-    sectionRanges=tracks.map(t=>{const [start,end]=trackCoverage(project,t);return {id:t.id,start,end};}).sort((a,b)=>a.start-b.start||a.end-b.end);
+    const current=tracks.find(t=>t.id===project.timeline.active)||selectionTrack(project)||latestTrack(project,tracks[0]);
+    const byId=new Map(tracks.map(t=>[t.id,t])),sources=new Map(project.timeline.sources.map(s=>[s.id,s]));
+    const isPrevious=t=>processingTrackState(project,t)==='Previous detection';
+    const allRanges=tracks.map(t=>{const [start,end]=trackCoverage(project,t);return {id:t.id,start,end};}).sort((a,b)=>a.start-b.start||a.end-b.end);
+    const available=allRanges.filter(r=>!isPrevious(byId.get(r.id)));
+    // Keep old-only coverage available; hide superseded results from the usual choices.
+    const visibleRanges=allRanges.filter(r=>!isPrevious(byId.get(r.id))||r.id===current?.id||!available.some(n=>n.start===r.start&&n.end===r.end));
     if(current)sectionPreferences=[current.id,...sectionPreferences.filter(id=>id!==current.id&&tracks.some(t=>t.id===id))];
-    sectionBlocks=motionSections(sectionRanges,sectionPreferences);
+    const preferred=[...sectionPreferences.filter(id=>!isPrevious(byId.get(id))||id===current?.id),...available.map(r=>r.id)];
+    sectionBlocks=motionSections(visibleRanges,preferred);
     $('tracks').classList.toggle('sections-view',compact);
     document.body.classList.toggle('source-sections',compact);
     $('sectionControls').hidden=!compact;$('sectionLane').hidden=!compact||!tracks.length;
     for(const row of $('tracks').children)row.classList.toggle('section-current',row.dataset.track===current?.id);
-    const byId=new Map(tracks.map(t=>[t.id,t]));
-    $('sectionTrack').replaceChildren(...sectionRanges.map(r=>new Option(`${formatTime(r.start,2)}–${formatTime(r.end,2)} · ${trackDescription(byId.get(r.id))}`,r.id)));
+    const grouped=new Map();
+    for(const r of visibleRanges){const key=`${r.start}:${r.end}`,old=grouped.get(key);
+        if(!old||r.id===current?.id||old.id!==current?.id&&preferred.indexOf(r.id)>=0&&(preferred.indexOf(old.id)<0||preferred.indexOf(r.id)<preferred.indexOf(old.id)))grouped.set(key,r);
+    }
+    sectionRanges=[...grouped.values()];
+    const zoneLabel=t=>sources.get(t.source)?.data?.metadata?.processing_region?.name||trackName(t);
+    $('sectionTrack').replaceChildren(...sectionRanges.map(r=>new Option(`${formatTime(r.start,2)}–${formatTime(r.end,2)} · ${zoneLabel(byId.get(r.id))}`,r.id)));
     $('sectionTrack').value=current?.id||'';
     $('sectionTrack').disabled=!tracks.length;
-    const range=sectionRanges.find(r=>r.id===current?.id);
-    const alternatives=range?sectionRanges.filter(r=>r.start<range.end&&r.end>range.start):[];
-    $('sectionAnchor').replaceChildren(...alternatives.map(r=>new Option(`${trackDescription(byId.get(r.id))} · ${byId.get(r.id).axis}`,r.id)));
-    $('sectionAnchor').value=current?.id||'';$('sectionAlternatives').hidden=alternatives.length<2;
+    const range=allRanges.find(r=>r.id===current?.id);
+    const alternatives=range?allRanges.filter(r=>r.start<range.end&&r.end>range.start):[];
+    const latest=alternatives.filter(r=>!isPrevious(byId.get(r.id))),previous=alternatives.filter(r=>isPrevious(byId.get(r.id)));
+    const anchorLabel=r=>{const t=byId.get(r.id),source=sources.get(t.source),config=source?.data?.config,region=source?.data?.metadata?.processing_region;
+        return region?`Person ${config.target_person} · ${config.target_anchor.replaceAll('_',' ')} · ${t.axis}${source.data.metadata.automatic_candidate?.suggested?' · suggested':''}${t.window?' · local fit':''}`:trackDescription(t);};
+    const groups=[];
+    for(const [label,entries] of [['Latest detections',latest]])if(entries.length){const group=document.createElement('optgroup');group.label=label;group.append(...entries.map(r=>new Option(anchorLabel(r),r.id)));groups.push(group);}
+    $('sectionAnchor').replaceChildren(...groups);
+    if(current&&isPrevious(current))$('sectionAnchor').prepend(new Option('Viewing a previous detection',''));
+    $('sectionAnchor').value=current&&!isPrevious(current)?current.id:'';
+    $('sectionAlternatives').hidden=!range;
+    $('sectionPrevious').replaceChildren(new Option('Choose a previous detection…',''),...previous.map(r=>new Option(`${anchorLabel(r)} · previous${byId.get(r.id).locked?' · locked':''}`,r.id)));
+    $('sectionPrevious').value=current&&isPrevious(current)?current.id:'';
+    $('sectionHistory').hidden=!previous.length;
+    $('sectionHistory').querySelector('summary').textContent=`Previous detections (${previous.length})`;
+    const newest=latestTrack(project,current);
+    $('latestDetection').hidden=!current||!isPrevious(current)||newest.id===current.id;
+    $('latestDetection').dataset.track=newest?.id||'';
     $('previousSection').disabled=!range||!sectionRanges.some(r=>r.start<range.start);
     $('nextSection').disabled=!range||!sectionRanges.some(r=>r.start>range.start);
     const collapsed=$('sectionLane').classList.contains('collapsed');
@@ -589,6 +616,8 @@ function chooseSection(id, whole=true) {
 $('sourceLayout').onchange=()=>{if(!project)return;closeSceneCut();dragging=null;sectionControls();session?.changed();render();};
 $('sectionTrack').onchange=()=>chooseSection($('sectionTrack').value);
 $('sectionAnchor').onchange=()=>chooseSection($('sectionAnchor').value,false);
+$('sectionPrevious').onchange=()=>chooseSection($('sectionPrevious').value,false);
+$('latestDetection').onclick=()=>chooseSection($('latestDetection').dataset.track,false);
 for(const [name,direction] of [['previousSection',-1],['nextSection',1]])$(name).onclick=()=>{
     const current=sectionRanges.find(r=>r.id===$('sectionTrack').value);if(!current)return;
     const candidates=sectionBlocks.filter(r=>direction<0?r.start<current.start:r.start>current.start);

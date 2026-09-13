@@ -63,20 +63,27 @@ class AutomaticTests(unittest.TestCase):
 
     def test_preparation_reuses_detections_and_keeps_four_anchors_per_person(self):
         current = info(); plan = normalize_plan({}, current)
-        detector = Mock(return_value=sample([.05,.1,.4,.9], [.6,.1,.95,.9])['people'])
+        # Crowded scenes used to pass detection and then fail the eight-ROI limit.
+        boxes = [[x, y, x+.2, y+.2] for y in (.05,.35,.65) for x in (.05,.35,.65)]
+        detector = Mock(return_value=sample(*boxes)['people'])
         def frames(*args, **kwargs):
             start = kwargs['start_seconds']*1000
             for offset in (0, 500): yield np.zeros((240,320,3),np.uint8), {'time_ms': start+offset}
         with tempfile.TemporaryDirectory() as folder, patch('sam3d_funscript.automatic.video_frames', side_effect=frames):
-            cuts = {'source_id':current['source_id'], 'times_ms':[2000]}
+            cuts = {'source_id':current['source_id'], 'times_ms':[2000], 'format':'edl',
+                    'segments':[{'start_ms':0,'end_ms':2000,'name':'First clip'},
+                                {'start_ms':2000,'end_ms':current['end_ms'],'name':'Second clip'}]}
             output, report = prepare_automatic(current,plan,cuts,folder,replace_default=True,detector=detector)
             self.assertEqual(detector.call_count,4); self.assertEqual(report['scenes_added'],2)
+            self.assertEqual([r['name'] for r in output['tracking']],['First clip','Second clip'])
             for r in output['tracking']:
                 self.assertTrue(r['isolate_subject'])
-                self.assertEqual(r['candidate_people'], [0,1]); self.assertEqual(len([r['anchor'],*r['additional_anchors']]),4)
+                self.assertEqual(len(r['rois']),9)
+                self.assertEqual(r['candidate_people'], list(range(9))); self.assertEqual(len([r['anchor'],*r['additional_anchors']]),4)
                 for job in compile_jobs(output,current):
                     own = next(r for r in output['tracking'] if r['id']==job['region_id'])
                     self.assertGreaterEqual(job['context_start_ms'],own['start_ms']);self.assertLessEqual(job['context_end_ms'],own['end_ms'])
+            detector.side_effect = AssertionError('Reuse detections saved before plan normalization')
             again, _ = prepare_automatic(current,plan,cuts,folder,replace_default=True,detector=detector)
             self.assertEqual(detector.call_count,4);self.assertEqual(again,output)
             unchanged, r = prepare_automatic(current,output,cuts,folder,detector=detector)

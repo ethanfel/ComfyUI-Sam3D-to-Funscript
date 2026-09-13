@@ -14,12 +14,12 @@ adds a mask → stabilize → anchors workflow to each stabilization region.
 ComfyUI-SAM2Matting propagates a painted mask in both directions from its seed
 frame. Dense points can be generated inside that mask; CoTracker still follows
 numbered point identities. The propagated mask filters trajectories with an
-adjustable pixel tolerance, rather than deriving translation from a mask center.
+adjustable pixel tolerance, rather than deriving motion from a mask center.
 
 The original point-only workflow remains available in both editors. The separate
 Reference editor retains its existing point/keyframe controls; the new mask tools
 are in the Timeline. Neither propagation nor a denser point set guarantees that
-independently deforming surfaces will agree on one translation.
+independently deforming surfaces will agree on one rigid transform.
 
 ## Select the reference
 
@@ -49,10 +49,26 @@ separately opened page can download its settings for import into `reference_json
 Changing the source file or upstream trim clears the active selection for the new
 source; old coordinates are never silently reused.
 
+## Position, rotation and scale
+
+Choose **Correction → Position, rotation & scale** to lock all three together.
+New gold Timeline sections use this mode; existing sections and the standalone
+Reference editor retain **Position only** until you change it. Switching correction
+mode reuses cached CoTracker trajectories and renders a new stabilized clip.
+
+The similarity fit rejects outliers and needs at least three visible, spread-out
+points on the same surface. A held frame freezes the entire last accepted transform.
+Extreme scale changes, clustered points and failed agreement or jump checks are
+flagged for review. Manual center corrections keep the estimated rotation and scale;
+use reference keyframes to improve those estimates.
+
+For the automatic painted-mask workflow, see
+[Automatic stabilization](processing-timeline.md#automatic-stabilization-from-a-painted-mask).
+
 ## Correct a gap
 
 The timeline distinguishes **tracked**, **manual**, and **held** frames. Held frames
-use the previous accepted translation because too few points were visible, points
+use the previous accepted transform because too few points were visible, points
 disagreed, or the displacement failed the jump check. The yellow cross marks the
 reference center used for stabilization. Agreement is not proof of point identity.
 
@@ -104,15 +120,15 @@ Both files remain available while the page is open.
   The two seeded estimates are blended only where they agree. Conflicting points
   are rejected and flagged; insufficient consensus still holds the last transform.
   Marked frames count as manual observations. Hidden predictions remain excluded.
-  Translation assumes the chosen points move together; rotation or deformation
-  may still require smaller sections or manual corrections.
-- A separate streaming pass renders inverse translation with fixed black padding.
-  Scale and orientation remain fixed. The output is H.264 CRF 16, without audio.
+  Position-only correction assumes the chosen points translate together. Similarity
+  correction also fits rotation and scale; deformation can still require smaller sections.
+- A separate streaming pass renders the accepted transforms with fixed black padding
+  covering all transformed frame corners. The output is H.264 CRF 16, without audio.
 - Output clips start at zero. Original inter-frame presentation times are preserved
   exactly and verified in the encoded file. The manifest retains the original source
   timestamps and offset; the editor displays source and output times together.
 - GPU tracking is cached by source/trim, crop, numbered reference keyframes, mode
-  and the actual checkpoint. Manual correction sections and agreement settings
+  and the actual checkpoint. Manual correction sections, agreement settings and correction mode
   do not invalidate it. **Use cache = false** reruns it.
 - The second output points to `reference.json`, including all coordinates, flags,
   corrections, source-time mapping and the rendered video location. It resides under

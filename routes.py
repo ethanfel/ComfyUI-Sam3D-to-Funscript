@@ -63,6 +63,40 @@ def register_routes():
             raise web.HTTPNotFound(text="Source video moved; choose its new location in the workflow.")
         return web.FileResponse(path)
 
+    @routes.post("/sam3d_funscript/timelines/{session}/cuts/import")
+    async def processing_import_cuts(request):
+        from .sam3d_funscript.edl import import_edl
+        from .sam3d_funscript.frame_index import frame_index
+        from .sam3d_funscript.reference import digest
+        request = request.clone(client_max_size=4 * 1024 * 1024)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('EDL import must be a JSON object.')
+            state = processing_state(request)
+            if body['source_id'] != state['info']['source_id']:
+                raise PlanConflict('The source video changed. Reload the timeline before importing cuts.')
+            preview = body.get('preview', True)
+            if not isinstance(preview, bool):
+                raise ValueError('Invalid import preview option.')
+            if not preview and not isinstance(body.get('expected_cuts'), str):
+                raise ValueError('Preview the EDL before importing its cuts.')
+            async with frame_index_slots:
+                index = await asyncio.to_thread(frame_index, state['info'], processing_store().root / 'frame-index')
+            result = await asyncio.to_thread(import_edl, body['text'], state['info'], index,
+                fps=body['fps'], start_timecode=body.get('start_timecode', ''), filename=body.get('filename', ''))
+            if processing_state(request)['info']['source_id'] != result['source_id']:
+                raise PlanConflict('The source video changed while reading the EDL. Reload the timeline.')
+            if preview:
+                return web.json_response({'cuts': result, 'expected_cuts': digest(state.get('scene_cuts'))})
+            updated = processing_store().update_cuts(state['session'], result['source_id'], result,
+                {'stage': 'complete'}, expected=body['expected_cuts'])
+            return web.json_response(updated)
+        except PlanConflict as error:
+            raise web.HTTPConflict(text=str(error))
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
+
     @routes.get("/sam3d_funscript/timelines/{session}/thumbnail")
     async def processing_thumbnail(request):
         state = processing_state(request)
@@ -175,7 +209,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
+        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
             raise web.HTTPNotFound()
         # Module entry points and imported helpers must revalidate together after
         # an update. Heuristic caching can otherwise mix incompatible exports.
@@ -183,7 +217,7 @@ def register_routes():
 
     @routes.get("/sam3d_funscript/reference-capabilities")
     async def reference_capabilities(request):
-        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1}, headers={"Cache-Control": "no-store"})
 
     def reference_path(request):
         identifier = request.match_info["reference"]

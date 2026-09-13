@@ -13,19 +13,20 @@ const encoded=spawnSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=
 assert.equal(encoded.status,0,encoded.stderr.toString());
 const session='a'.repeat(32),draftKey=`s3f-processing-timeline:${session}`,api=`/sam3d_funscript/timelines/${session}`;
 const state={session,revision:1,info:{source_id:'neutral',source:'neutral.mp4',start:'0',duration:'2',source_origin:'0',rate:'2',width:160,height:120,end_ms:2000},plan:{version:1,source_id:'neutral',tracking:[],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null};
-let warming=true,brokenModule=false,brokenApi=false,stalledFrames=false,posts=0;
+let warming=true,brokenModule=false,brokenEdl=true,brokenApi=false,stalledFrames=false,posts=0;
 const helpers={'cut-markers.mjs':'cutSideRange','processing-timeline-edit.mjs':'regionFromSelection'},requests=[];
 const server=http.createServer((req,res)=>{
  const url=new URL(req.url,'http://localhost'),name=path.basename(url.pathname);requests.push(req.url);
+ url.pathname=url.pathname.replace(/^\/api\//,'/');
  if(req.method!=='GET'){posts++;res.writeHead(405);res.end();return;}
  if(url.pathname==='/prime'){
   res.setHeader('Content-Type','text/html');
-  res.end(`<script type="module">await import('/sam3d_funscript/assets/cut-markers.mjs');await import('/sam3d_funscript/assets/processing-timeline-edit.mjs');window.primed=true;</script>`);return;
+  res.end(`<script type="module">await import('/api/sam3d_funscript/assets/cut-markers.mjs');await import('/api/sam3d_funscript/assets/processing-timeline-edit.mjs');window.primed=true;</script>`);return;
  }
  if(url.pathname===api){res.setHeader('Content-Type','application/json');res.writeHead(brokenApi?503:200);res.end(JSON.stringify(brokenApi?{error:'Server temporarily unavailable'}:state));return;}
  if(url.pathname===api+'/frames'){if(stalledFrames)return;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:'neutral',first_frame:0,end_frame:4,times_ms:[0,500,1000,1500],end_ms:2000}));return;}
  const file=url.pathname===api+'/video'?clip:url.pathname.startsWith('/sam3d_funscript/assets/')?path.join(root,'assets',name):null;
- if(!file||!fs.existsSync(file)||brokenModule&&name==='processing-timeline.js'){res.writeHead(404);res.end();return;}
+ if(!file||!fs.existsSync(file)||brokenModule&&name==='processing-timeline.js'||brokenEdl&&name==='cut-import.mjs'){res.writeHead(404);res.end();return;}
  let data=fs.readFileSync(file);
  if(warming&&helpers[name])data=Buffer.from(data.toString().replace(`export function ${helpers[name]}`,`function ${helpers[name]}`));
  // Simulate the pre-fix server: unversioned helpers remain fresh after an update.
@@ -33,7 +34,7 @@ const server=http.createServer((req,res)=>{
  res.setHeader('Content-Type',({'.html':'text/html','.mjs':'text/javascript','.js':'text/javascript','.css':'text/css','.mp4':'video/mp4'})[path.extname(file)]||'application/octet-stream');
  res.end(data);
 });
-await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`,url=`${base}/sam3d_funscript/assets/processing-timeline.html?session=${session}`;
+await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`,url=`${base}/api/sam3d_funscript/assets/processing-timeline.html?session=${session}`;
 const profile=path.join(temp,'chrome'),chrome=spawn('/opt/google/chrome/chrome',['--headless','--no-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-first-run','--no-default-browser-check','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:'ignore'});
 const pause=ms=>new Promise(r=>setTimeout(r,ms));let ws;
 async function until(fn,label){for(let i=0;i<150;i++){try{if(await fn())return;}catch(error){if(error.code!==-32000||!/context|navigated|closed/i.test(error.message))throw error;}await pause(50);}throw new Error('Timed out: '+label);}
@@ -58,6 +59,22 @@ try{
  await evaluate('document.querySelector("#selectionIn").value="1";document.querySelector("#selectionOut").value="3";document.querySelector("#selectionOut").dispatchEvent(new Event("change"))');
  const draft=await evaluate(`localStorage.getItem(${JSON.stringify(draftKey)})`);
  assert.deepEqual(JSON.parse(draft).plan.selection,[500,1500]);
+ // An updated frontend on a still-running backend cannot fetch the new EDL
+ // helper. It must nevertheless load the timeline and keep the draft usable.
+ assert.ok(!requests.some(p=>p.includes('cut-import.mjs')),'optional helper is not requested during startup');
+ await evaluate('document.querySelector("#importCuts").click()');
+ await until(()=>evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI")'),'optional EDL failure');
+ assert.equal(await evaluate('document.querySelector("main").inert'),false);
+ assert.equal(await evaluate('document.querySelector("#startupRecovery").hidden'),true);
+ assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(draftKey)})`),draft);
+ brokenEdl=false;await evaluate('document.querySelector("#importCuts").click()');
+ await until(()=>evaluate('document.querySelector("#cutImportDialog").open'),'EDL retry after backend restart');
+ const edlRequests=requests.filter(p=>p.includes('cut-import.mjs'));
+ assert.equal(edlRequests.length,2);assert.notEqual(edlRequests[0],edlRequests[1],'retry bypasses failed module cache');
+ assert.ok(edlRequests.every(p=>p.startsWith('/api/sam3d_funscript/assets/')),'preserve ComfyUI API prefix');
+ await evaluate('document.querySelector("#cancelCutImport").click()');
+ assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(draftKey)})`),draft);
+ console.log('PASS: unavailable EDL helper cannot block timeline; retry after backend restart preserves draft');
  brokenModule=true;await call('Page.reload');
  await until(()=>evaluate('document.querySelector("#startupRecovery")?.hidden===false'),'module failure feedback');
  assert.equal(await evaluate('document.querySelector("#status").textContent'),'Timeline could not load');

@@ -55,7 +55,7 @@ def predict_frame(info, at_ms, model_file, rois, *, use_cache=True, mask_video_r
             raise ValueError('The supplied person mask is empty on this reference frame')
         masks = [packed]
     model = SAM3DBody_Loader.execute(model_file).result[0]
-    people = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=max(1, len(boxes)), include_mesh=include_mesh,
+    people = predict_rgb(model, [rgb], boxes, packed_masks=masks, batch_size=min(8, max(1, len(boxes))), include_mesh=include_mesh,
                          **({'isolate_subject': True} if isolate_subject else {}))[0]
     if len(people) != (1 if masks is not None else len(boxes)):
         raise ValueError('SAM3D returned a different number of people than the requested ROI slots')
@@ -108,10 +108,12 @@ def video_input_range(video, start_seconds=0.0, duration_seconds=0.0):
 def parse_rois(value):
     """Ordered static normalized xywh rectangles; a slot is not a tracker ID."""
     boxes = json.loads(value) if isinstance(value, str) else value
-    if not isinstance(boxes, list) or not 1 <= len(boxes) <= 8:
-        raise ValueError("ROIs must be a list of 1–8 normalized [x,y,width,height] rectangles")
+    if not isinstance(boxes, list) or not boxes:
+        raise ValueError("ROIs must be a nonempty list of normalized [x,y,width,height] rectangles")
     for box in boxes:
-        if len(box) != 4 or not all(isinstance(x, (float, int)) and np.isfinite(x) for x in box):
+        if not isinstance(box, (list, tuple)) or len(box) != 4 or not all(
+            isinstance(x, (float, int)) and not isinstance(x, bool) and np.isfinite(x) for x in box
+        ):
             raise ValueError("Each ROI needs four finite numbers")
         x, y, w, h = box
         if min(x, y) < 0 or min(w, h) <= 0 or x + w > 1.000001 or y + h > 1.000001:

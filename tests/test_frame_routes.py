@@ -89,6 +89,52 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
             for relative in re.findall(r'''(?:from\s*|import\s*\()\s*["'](\./[^"']+)["']''', source):
                 pending.append(urlsplit(urljoin(url, relative)).path)
         self.assertIn('/sam3d_funscript/assets/timeline-restore.mjs', visited)
+        # EDL is deliberately optional at startup, including across a live
+        # file update before the server reloads its asset allowlist.
+        self.assertNotIn('/sam3d_funscript/assets/cut-import.mjs', visited)
+        response = await self.client.get('/sam3d_funscript/assets/cut-import.mjs')
+        self.assertEqual(response.status, 200)
+
+    def edl_request(self):
+        return {'source_id': self.info['source_id'], 'fps': '30', 'filename': 'montage.edl',
+                'text': 'TITLE: Test\nFCM: NON-DROP FRAME\n'
+                        '001 AX V C 08:00:00:00 08:00:00:03 01:00:00:00 01:00:00:03\n* FROM CLIP NAME: Opening\n'
+                        '002 AX V C 09:00:00:00 09:00:00:03 01:00:00:03 01:00:00:06\n* FROM CLIP NAME: Closing\n'}
+
+    async def test_edl_preview_import_and_restart_preserve_plan_and_motion(self):
+        state = self.store.read(self.session)
+        state['plan']['tracking'][0]['locked'] = True
+        state = self.store.save(self.session, state['revision'], state['plan'])
+        self.store.finish(self.session, state['revision'], {'regions': []}, self.root/'saved'/'project.json')
+        before = self.store.read(self.session)
+        self.assertTrue(before['result_current'])
+        body = self.edl_request()
+        response = await self.client.post(self.base+'/cuts/import', json=body)
+        self.assertEqual(response.status, 200, await response.text())
+        preview = await response.json()
+        self.assertEqual(preview['cuts']['times_ms'], [100])
+        self.assertEqual(preview['cuts']['segments'][1]['name'], 'Closing')
+        self.assertEqual(self.store.read(self.session), before)
+        response = await self.client.post(self.base+'/cuts/import', json={**body, 'preview': False, 'expected_cuts': preview['expected_cuts']})
+        self.assertEqual(response.status, 200, await response.text())
+        after = await response.json()
+        for key in ('plan', 'revision', 'project', 'report', 'result_current'):
+            self.assertEqual(after[key], before[key], key)
+        reopened = ProcessingStore(self.store.root).prepare(self.session, self.info)
+        self.assertEqual(reopened['scene_cuts'], preview['cuts'])
+
+    async def test_edl_invalid_or_stale_import_never_overwrites_saved_markers(self):
+        body = self.edl_request()
+        response = await self.client.post(self.base+'/cuts/import', json=body)
+        preview = await response.json()
+        self.store.update_cuts(self.session, self.info['source_id'], {'source_id':self.info['source_id'], 'times_ms':[50]})
+        before = self.store.read(self.session)
+        response = await self.client.post(self.base+'/cuts/import', json={**body, 'preview':False, 'expected_cuts':preview['expected_cuts']})
+        self.assertEqual(response.status, 409)
+        for update, status in [({'source_id':'other'},409), ({'text':'garbage'},400), ({'fps':25},400), ({'preview':False},400)]:
+            response = await self.client.post(self.base+'/cuts/import', json={**body, **update})
+            self.assertEqual(response.status, status, await response.text())
+        self.assertEqual(self.store.read(self.session), before)
 
     async def test_editor_assets_revalidate_after_updates(self):
         for name in ('processing-timeline.html', 'processing-timeline.js',

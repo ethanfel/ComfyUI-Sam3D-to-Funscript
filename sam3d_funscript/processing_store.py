@@ -5,7 +5,7 @@ import re
 import threading
 from pathlib import Path
 
-from .reference import atomic_json
+from .reference import atomic_json, digest
 
 LOCK = threading.RLock()
 
@@ -97,12 +97,14 @@ class ProcessingStore:
                 state["progress"] = value
                 self.write(state)
 
-    def update_cuts(self, session, source_id, result=None, progress=None):
+    def update_cuts(self, session, source_id, result=None, progress=None, *, expected=None):
         """Annotations never change a motion result, plan revision, or region lock."""
         with LOCK:
             state = self.read(session)
             if state is None or state["info"]["source_id"] != source_id:
-                raise PlanConflict("The source video changed while detecting cuts. Prepare the timeline again.")
+                raise PlanConflict("The source video changed while updating cuts. Prepare the timeline again.")
+            if expected is not None and digest(state.get('scene_cuts')) != expected:
+                raise PlanConflict('Cut markers changed in another tab or scan. Preview the import again before replacing them.')
             if result is not None:
                 if result.get("source_id") != source_id:
                     raise PlanConflict("Cut markers belong to another source video.")

@@ -18,4 +18,5 @@ def reference_preview(source):
     return {"version": 1, "reference": data["id"], "source": info["source"],
             "image_size": [info["height"], info["width"]], "padding_xy": video["padding_xy"],
             "times_ms": motion["times_ms"], "shift_xy": motion["shift_xy"],
-            "source_offset_ms": video["source_offset_ms"]}
+            "source_offset_ms": video["source_offset_ms"],
+            **({'transform_xy': motion['transform_xy']} if 'transform_xy' in motion else {})}

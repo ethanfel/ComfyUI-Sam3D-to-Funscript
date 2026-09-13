@@ -12,7 +12,7 @@ export async function queueReferenceTracking(api, prompt, nodeId, update, {pollM
     if (prompt.output?.[nodeId]?.class_type !== nodeType) {
         throw new Error("The reference node is missing or disabled. Enable it in the connected workflow.");
     }
-    let promptId, result, timer, settled = false, misses = 0;
+    let promptId, result, timer, settled = false, misses = 0, reconnecting = false, retryDelay = pollMs;
     const early = [], listeners = [];
     let resolve, reject;
     const completion = new Promise((a, b) => { resolve = a; reject = b; });
@@ -44,7 +44,7 @@ export async function queueReferenceTracking(api, prompt, nodeId, update, {pollM
     }
     const read = async path => {
         const response = await api.fetchApi(path, {cache: "no-store", signal: AbortSignal.timeout(15000)});
-        if (!response.ok) throw new Error(`Could not read tracking status (${response.status}). Check the ComfyUI connection.`);
+        if (!response.ok) throw Object.assign(new Error(`Could not read tracking status (${response.status}). Check the ComfyUI connection.`), {status: response.status});
         return response.json();
     };
     // History also handles cached outputs, a missed websocket event and reconnection.
@@ -62,12 +62,22 @@ export async function queueReferenceTracking(api, prompt, nodeId, update, {pollM
             }
             const queue = await read("/queue");
             if (settled) return;
-            const present = [...queue.queue_running, ...queue.queue_pending].some(item => item[1] === promptId);
+            const running = queue.queue_running.some(item => item[1] === promptId);
+            const present = running || queue.queue_pending.some(item => item[1] === promptId);
+            if (reconnecting && present) update({state: running ? "running" : "queued", text: running ? "ComfyUI is connected · existing job is still running" : "ComfyUI is connected · existing job is still queued"});
+            reconnecting = false; retryDelay = pollMs;
             misses = present ? 0 : misses + 1;
             if (misses >= 2) { finish("The tracking job left the queue without a result. It may have been cancelled; your settings are kept."); return; }
             timer = setTimeout(poll, pollMs);
         } catch (error) {
-            finish(new Error(`${errorMessage(error)} Tracking may still be running; check ComfyUI before retrying.`));
+            if (settled) return;
+            if (error.status >= 500 || ['TypeError', 'TimeoutError', 'AbortError'].includes(error.name)) {
+                misses = 0;
+                if (!reconnecting) update({state: "reconnecting", text: "Connection delayed · waiting for ComfyUI to report this job’s status"});
+                reconnecting = true;
+                timer = setTimeout(poll, retryDelay);
+                retryDelay = Math.min(15000, retryDelay * 2);
+            } else finish(new Error(`${errorMessage(error)} Tracking may still be running; check ComfyUI before retrying.`));
         }
     };
     try {

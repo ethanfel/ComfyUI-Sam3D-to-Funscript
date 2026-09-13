@@ -112,3 +112,22 @@ assert.deepEqual(trimmedStart.reference.keyframes.map(k=>k.frame),[2,4]);
 assert.equal(trimmedStart.reference.point_mask.frame,0);
 assert.deepEqual(markedPlan,untouched,'trims preserve the original plan for Undo');
 console.log('Reference trims retain in-range seeds, rebase exact source frames, and discard only excluded seeds');
+
+// The saved stabilization start and automatic cut are the same frame, serialized
+// with different decimal precision. A neighbour is not an anchor candidate.
+const {overlapsRange}=await import('../assets/processing-timeline-edit.mjs');
+const cut=161958.33333333334,stableStart=161958.333333;
+const adjacent={tracking:[createRegion('tracking','scene27',158000,cut,info),createRegion('tracking','scene28',cut,170250,info)],
+ stabilization:[],selected_ids:[],selection:[stableStart,170250]};
+adjacent.tracking[0].additional_anchors=['mouth','left_hand','right_hand'];
+const untouchedAdjacent=structuredClone(adjacent);
+assert.deepEqual(adjacent.tracking.filter(r=>overlapsRange(r,stableStart,170250)).map(r=>r.id),['scene28']);
+assert.deepEqual(adjacent.tracking.filter(r=>overlapsRange(r,158000,161958.333334)).map(r=>r.id),['scene27']);
+assert.deepEqual(adjacent.tracking.filter(r=>overlapsRange(r,cut-1000/24,170250)).map(r=>r.id),['scene27','scene28']);
+const configure=regionFromSelection(adjacent,'tracking',()=>{throw Error('No duplicate region should be created')},info);
+assert.equal(configure.selected_ids[0],'scene28');assert.deepEqual(configure.tracking,adjacent.tracking);
+assert.deepEqual(adjacent,untouchedAdjacent);
+const lockedAdjacent=structuredClone(adjacent);lockedAdjacent.tracking[1].locked=true;
+assert.equal(regionFromSelection(lockedAdjacent,'tracking',()=>'',info).selected_ids[0],'scene28');
+assert.throws(()=>regionFromSelection({...adjacent,selection:[cut-1000/24,170250]},'tracking',()=>'',info),/crosses existing/);
+console.log('Fractional cut boundaries: only the current scene is proposed, existing anchors and locks preserved, genuine overlaps retained');

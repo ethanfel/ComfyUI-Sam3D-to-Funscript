@@ -133,6 +133,67 @@ class ProcessingSessionTests(unittest.TestCase):
                 node.S3F_ProcessingTimeline().run(**kwargs)
                 self.assertEqual(scan.call_count,1)
                 self.assertEqual(worker.call_args.args[1]['selected_ids'],['auto_scene'])
+                # A single-clip EDL has zero internal cuts and is still a valid
+                # saved annotation set; automatic mode must not scan it again.
+                imported = {'source_id':'source','format':'edl','times_ms':[],
+                            'segments':[{'name':'Montage','start_ms':0,'end_ms':2000}]}
+                saved = store.update_cuts(session, 'source', imported)
+                kwargs['plan_json']=json.dumps({'revision':saved['revision'],'plan':saved['plan']})
+                node.S3F_ProcessingTimeline().run(**kwargs)
+                self.assertEqual(scan.call_count,1)
+                self.assertEqual(planner.call_args.args[2], imported)
+
+    def test_automatic_painted_reference_is_saved_before_models_and_failure_reaches_pose_pass(self):
+        import importlib
+        import json
+        node = self.node
+        timeline = importlib.import_module(node.__package__ + '.sam3d_funscript.processing_timeline')
+        automatic = importlib.import_module(node.__package__ + '.sam3d_funscript.automatic')
+        cuts = importlib.import_module(node.__package__ + '.sam3d_funscript.scene_cuts')
+        graph = types.ModuleType('comfy_execution.graph')
+        graph.ExecutionBlocker = type('Blocker', (), {'__init__': lambda self, value: None})
+        management = types.ModuleType('comfy.model_management')
+        management.throw_exception_if_processing_interrupted = lambda: None
+        management.InterruptProcessingException = type('Interrupted', (Exception,), {})
+        server = types.ModuleType('server')
+        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda *args: None))
+        current = {'source_id':'source', 'start':'0', 'end_ms':2000, 'width':640, 'height':480}
+        plan = timeline.normalize_plan({'tracking':[{'id':'auto', 'start_ms':0, 'end_ms':2000,
+            'automatic':{'version':1,'suggest':True,'people':[],'review':[]}}],
+            'stabilization':[{'id':'s', 'start_ms':0, 'end_ms':2000, 'reference':{
+                'transform_mode':'similarity','point_mask':{'frame':3,'spacing':8,'limit':20,
+                    'strokes':[{'erase':False,'radius':20,'points':[[50,50],[90,50]]}]}}}]}, current)
+        for mode in ('prepared_masks', 'existing'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder); session = 'f'*32; stages = []
+                node.folder_paths.get_output_directory = lambda: str(root)
+                node.folder_paths.get_full_path = lambda *args: None
+                store = node.ProcessingStore(root/'sam3d_funscript/processing')
+                state = store.prepare(session,current,plan)
+                def stabilize(info, saved_plan, directory, checkpoint, prepared, **kwargs):
+                    self.assertEqual(store.read(session)['plan'], saved_plan)
+                    reference = saved_plan['stabilization'][0]['reference']
+                    self.assertEqual(len(reference['points']),20)
+                    self.assertEqual(reference['keyframes'][0]['frame'],3)
+                    stages.append('stabilize')
+                    return {'regions':[], 'errors':{'s':'Reference needs correction'}, 'review':{}}
+                def process(*args, **kwargs):
+                    stages.append('poses')
+                    self.assertEqual(kwargs.get('stabilization_errors'),
+                        {'s':'Reference needs correction'} if mode=='prepared_masks' else None)
+                    return None, {'regions':[]}
+                with patch.dict(sys.modules, {'comfy_execution.graph':graph,'comfy.model_management':management,'server':server}), \
+                     patch.object(node,'video_input_range',return_value=('source',0,0)), patch.object(node,'source_info',return_value=current), \
+                     patch.object(cuts,'detect_cuts',return_value={'source_id':'source','times_ms':[1000]}), \
+                     patch.object(automatic,'prepare_automatic',return_value=(plan,{'scenes_added':0,'message':'Existing scenes.','review':[]})), \
+                     patch.object(automatic,'run_prepared_stabilization',side_effect=stabilize), \
+                     patch.object(timeline,'run_timeline',side_effect=process):
+                    result = node.S3F_ProcessingTimeline().run(video=object(), model_file='unused', unique_id='1', operation='automatic',
+                        plan_json=json.dumps({'revision':state['revision'],'plan':plan,'automatic_options':{'stabilization':mode}}),
+                        extra_pnginfo={'workflow':{'nodes':[{'id':1,'properties':{'s3f_timeline_session':session}}]}})
+                    self.assertEqual(stages, ['stabilize','poses'] if mode=='prepared_masks' else ['poses'])
+                    if mode=='prepared_masks':
+                        self.assertIn('1 failed',result['ui']['s3f_timeline_status'][0])
 
     def test_missing_ambiguous_or_ignored_connections_use_independent_stable_session(self):
         expected = self.node.motion_editor_session({}, "2", "b" * 32)
