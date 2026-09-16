@@ -51,6 +51,18 @@ export function validateReferenceKeys(reference, frameCount=Infinity) {
     const [x,y,w,h]=reference.crop_xywh;
     if(keys.some(k=>k.points.some(p=>p.length!==2||p.some(v=>!Number.isFinite(v))||p[0]<x||p[1]<y||p[0]>x+w-1||p[1]>y+h-1)))throw new Error('All reference keyframe points must be inside the tracking crop.');
 }
+export function validateOrientation(value, frameCount=Infinity, size=[Infinity,Infinity], complete=true) {
+    if(!value||!['features','manual'].includes(value.method)||!Number.isFinite(value.target_degrees)||Math.abs(value.target_degrees)>180||!Array.isArray(value.keys)||value.keys.length>128)throw new Error('Choose an orientation method and a target angle between −180° and 180°.');
+    if(complete&&!value.keys.length)throw new Error('Draw the head area, then draw its up direction on a clear frame.');
+    const seen=new Set();
+    for(const k of value.keys){
+        if(!k||!Number.isInteger(k.frame)||k.frame<0||k.frame>=frameCount||seen.has(k.frame))throw new Error('Head orientation frames must be distinct frames inside this region.');
+        seen.add(k.frame);
+        if(!Number.isFinite(k.angle_degrees)||Math.abs(k.angle_degrees)>180)throw new Error('Head tilt must be between −180° and 180°.');
+        const b=k.head_xywh;
+        if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite)||b[0]<0||b[1]<0||b[2]<16||b[3]<16||b[0]+b[2]>size[0]||b[1]+b[3]>size[1])throw new Error('Draw a head rectangle inside the image, at least 16 pixels wide and high.');
+    }
+}
 export function addReferenceKey(reference, frame) {
     const keys=referenceKeys(reference);
     if(keys.some(k=>k.frame===frame))return withReferenceKeys(reference,keys);

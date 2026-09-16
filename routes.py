@@ -253,7 +253,7 @@ def register_routes():
 
     @routes.get("/sam3d_funscript/reference-capabilities")
     async def reference_capabilities(request):
-        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1, "sam3_mask_seed": 1}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1, "orientation_stabilization": 1, "sam3_mask_seed": 1}, headers={"Cache-Control": "no-store"})
 
     @routes.get('/sam3d_funscript/mask-seed-models')
     async def mask_seed_models(request):

@@ -6,7 +6,7 @@
 <main inert>
 <div class="toolbar topbar"><button id="apply" class="primary" disabled>Apply to node</button><span id="applyStatus" role="status" aria-live="polite"></span><button id="undo" disabled>Undo</button><button id="download" disabled>Download plan</button><button id="restorePlan">Restore plan…</button><input id="restoreFile" type="file" accept=".json,application/json" hidden><button id="reload" hidden>Load latest plan</button><details class="layout-menu"><summary>Layout</summary><div class="toolbar layout-tools"><label><input id="wideLayout" type="checkbox" checked> Wide layout</label><button id="fullscreenLayout" aria-pressed="false">Full screen</button><button id="fitVideoLayout" title="Size the preview column to the source aspect ratio">Fit video shape</button><button id="resetLayout">Reset layout</button><span id="layoutStatus">Drag dividers to resize · double-click to reset</span></div></details><a id="openStudio" hidden target="_blank" rel="noopener">Open Motion Studio ↗</a></div>
 <div id="error" role="alert" hidden></div>
-<details id="automaticTools"><summary>Automatic mode</summary><div class="toolbar"><button id="processAutomatic" class="primary" disabled>Run automatic mode</button><label>People <select id="automaticPeople"><option value="all">All detected people</option><option value="prominent">Most prominent person</option></select></label><label>Stabilization <select id="automaticStabilization"><option value="prepared_masks">Use prepared masks</option><option value="existing">Use existing reference setup</option></select></label><button id="nextAutoReview" disabled>Next scene to review</button><span id="automaticSummary" role="status"></span></div><p class="muted">Use imported or detected scene cuts and find person crops, then prepare mouth, pelvis and both hands. Each scene keeps its candidates in Motion Studio’s anchor selector and suggests one for Main. Fills gaps; existing regions and edits are kept. Missing detections need manual crops. Use prepared masks completes propagation, point tracking and stabilization before anchor extraction. Paint or generate one reference mask in each gold section; manual points are kept. Review held intervals and hidden anchors.</p></details>
+<details id="automaticTools"><summary>Automatic mode</summary><div class="toolbar"><button id="processAutomatic" class="primary" disabled>Run automatic mode</button><label>People <select id="automaticPeople"><option value="all">All detected people</option><option value="prominent">Most prominent person</option></select></label><label>Stabilization <select id="automaticStabilization"><option value="prepared_masks">Use prepared stabilization</option><option value="existing">Use existing reference setup</option></select></label><button id="nextAutoReview" disabled>Next scene to review</button><span id="automaticSummary" role="status"></span></div><p class="muted">Use imported or detected scene cuts and find person crops, then prepare mouth, pelvis and both hands. Each scene keeps its candidates in Motion Studio’s anchor selector and suggests one for Main. Fills gaps; existing regions and edits are kept. Missing detections need manual crops. Use prepared stabilization completes propagation, point tracking and stabilization before anchor extraction. Prepare a reference mask or head orientation in each gold section. Existing manual points are kept. Review held intervals and hidden anchors.</p></details>
 
 <div id="previewWorkspace" class="workspace">
 <section id="sourcePreview" class="preview"><div class="panel-heading"><div class="preview-choice"><h2 id="previewTitle">Original source</h2><label><span class="sr-only">Preview video</span><select id="previewVariant" aria-label="Preview video"><option value="original">Original</option><option value="stabilized">Stabilized</option></select></label></div><span id="previewTool" class="tool-indicator">Review</span><span id="previewStatus" role="status">One source clock for every region</span></div><div class="source-frame"><canvas id="sourceCanvas" aria-label="Source video, stabilization references and painted anchor selection"></canvas></div><video id="source" preload="metadata" playsinline muted hidden></video>
@@ -60,7 +60,7 @@
 <button id="maskStepTab" type="button">1 · Mask <small id="maskReadiness">Optional</small></button><button id="trackStepTab" type="button">2 · Stabilize <small id="trackReadiness">Needs points</small></button><button id="anchorsStepTab" type="button">3 · Anchors <small id="anchorsReadiness">Configure</small></button>
 </nav>
 <div id="maskStep" hidden>
-<p>Paint a reference surface or generate its initial mask with SAM3 on a clear frame. Review it with Paint / Erase, then run Automatic mode with Use prepared masks to complete propagation, tracking and anchors.</p>
+<p>Paint a reference surface or generate its initial mask with SAM3 on a clear frame. Review it with Paint / Erase, then run Automatic mode with Use prepared stabilization to complete propagation, tracking and anchors.</p>
 <div class="toolbar"><button id="maskSeed" type="button">Use this frame</button><button id="maskGoSeed" type="button">Go to mask frame</button><span id="maskFrameLabel" class="muted"></span></div>
 <fieldset><legend>Initial mask from text · SAM3</legend>
 <div class="toolbar"><label class="mask-model">Model <select id="maskSeedModel"><option value="sam3matting">SAM3Matting</option></select></label><button id="refreshMaskSeedModels" type="button">Refresh models</button></div>
@@ -77,12 +77,21 @@
 <details><summary>Mask tracking tolerance</summary><label>Allow points within <input id="maskMargin" type="number" min="0" max="100" value="6"> px of the mask</label><p class="muted">A small margin tolerates texture holes and uncertain edges. Set 0 for strict filtering. Changing this only repeats stabilization, not propagation.</p></details>
 <div class="toolbar"><button id="manualPoints" type="button">Use manual points →</button></div>
 </div>
-<div class="toolbar"><label>Correction <select id="transformMode"><option value="similarity">Position, rotation &amp; scale</option><option value="translation">Position only</option></select></label></div>
+<div class="toolbar"><label>Correction <select id="transformMode"><option value="similarity">Position, rotation &amp; scale</option><option value="translation">Position only</option><option value="orientation">Orientation only · head</option></select></label></div>
 <div id="trackStep">
+<fieldset id="orientationSetup" hidden><legend>Keep the head upright</legend>
+<p>Pause on a clear original frame. Draw a tight head area, then draw an arrow from chin toward crown. Track region rotates the video before SAM3D extracts motion.</p>
+<div class="toolbar"><label>Tool <select id="orientationTool"><option value="review">Review</option><option value="box">Draw head area</option><option value="up">Draw head up · chin → crown</option></select></label><button id="orientationStart" type="button">Region start</button></div>
+<div class="toolbar"><label>Head tilt <input id="orientationAngle" type="number" min="-180" max="180" step="1" value="0"> °</label><label>Keep at <input id="orientationTarget" type="number" min="-180" max="180" step="1" value="0"> °</label><button id="orientationKeep" type="button">Keep this angle</button></div>
+<div class="toolbar"><label>Follow <select id="orientationMethod"><option value="features">Head area · image features</option><option value="manual">Manual angle keys</option></select></label></div>
+<div class="toolbar"><select id="orientationKeys" aria-label="Head orientation frames"></select><button id="orientationRemove" type="button">Remove angle frame</button></div>
+<p id="orientationStatus" role="status"></p>
+<p class="muted">0° is upright; positive tilt is clockwise. Rotates around the head without locking its position or scale. This also cancels real head tilts. For gaps or changes in head appearance, add an area and angle on another frame. Manual mode interpolates your marked angles.</p>
+</fieldset>
 <div class="stabilization-run">
   <div class="toolbar"><button id="trackStabilization" type="button" class="primary">Track region</button><label>Tracker <select id="trackingMode"><option value="online">Online</option><option value="offline">Offline · whole section</option></select></label><button id="cancelStabilization" type="button" class="danger" hidden>Cancel</button></div>
   <div id="stabilizationProgress" class="toolbar" hidden><progress id="stabilizationBar" aria-label="Reference tracking progress"></progress><span id="stabilizationProgressText" role="status" aria-live="polite"></span></div>
-  <p id="trackRequirement" class="muted" role="status"></p><span class="muted">Tracks this entire region and creates its preview. SAM3D runs separately in step 3. Manual points work with or without a mask.</span>
+  <p id="trackRequirement" class="muted" role="status"></p><span class="muted">Tracks this entire region and creates its preview. SAM3D runs separately in step 3. Set the reference above or below, then track and review it before extracting anchors.</span>
 </div>
 <div class="reference-setup">
   <div class="toolbar"><label>Tool <select id="referenceMode"><option value="review">Review</option><option value="crop">Draw crop</option><option value="points">Pick points</option></select></label><label><input id="cropZoom" type="checkbox"> Zoom to crop</label><button id="referenceFirst" type="button">Region start</button></div>
@@ -149,6 +158,6 @@
             clearTimeout(slow);if(!failed)panel.hidden=true;
         }
     }).observe(status,{childList:true});
-    import("./processing-timeline.js?v=manual-cuts-1").catch(window.s3fTimelineStartupFailed);
+    import("./processing-timeline.js?v=orientation-1").catch(window.s3fTimelineStartupFailed);
 })();
 </script></body></html>

@@ -511,9 +511,10 @@ def _stabilize_region(info, region, root, state, checkpoint, use_cache, progress
     stored = state.setdefault("stabilization", {}).get(sid)
     if region["locked"] and stored and Path(stored["manifest_path"]).is_file() and Path(stored["video_path"]).is_file():
         return json.loads(Path(stored["manifest_path"]).read_text()), Path(stored["video_path"])
-    if not region["reference"]["points"]:
+    orientation = region['reference'].get('transform_mode') == 'orientation'
+    if not orientation and not region["reference"]["points"]:
         raise ValueError(f"Mark reference points in stabilization region {region['name']}")
-    masks = current_reference_mask(region, state)
+    masks = None if orientation else current_reference_mask(region, state)
     tracked, rendered = run_reference(info["source"]["path"], Fraction(str(region["start_ms"]))/1000,
         Fraction(str(region["end_ms"]-region["start_ms"]))/1000,
         region["reference"], checkpoint, root / "reference", tolerance=region["agreement_pixels"],
@@ -619,11 +620,20 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             continue
         region_jobs = [deepcopy(j) for j in jobs if j["region_id"] == region["id"]]
         dependencies = {j["stabilization_id"] for j in region_jobs} - {None}
-        tracker_identity = {k: fingerprint(p) if (p := resolve_checkpoint(checkpoint, stabilizers[k]["reference"].get("tracking_mode", "online"))) else None for k in sorted(dependencies)}
+        tracker_identity = {}
+        for k in sorted(dependencies):
+            reference = stabilizers[k]['reference']
+            if reference.get('transform_mode') == 'orientation':
+                from .orientation import VERSION as orientation_version
+                tracker_identity[k] = {'orientation': orientation_version}
+            else:
+                p = resolve_checkpoint(checkpoint, reference.get('tracking_mode', 'online'))
+                tracker_identity[k] = fingerprint(p) if p else None
         # Preserve the existing signature for unchanged, online-only plans.
         if not dependencies:
             tracker_identity = None
-        elif all(stabilizers[k]["reference"].get("tracking_mode", "online") == "online" for k in dependencies):
+        elif all(stabilizers[k]['reference'].get('transform_mode') != 'orientation' and
+                 stabilizers[k]["reference"].get("tracking_mode", "online") == "online" for k in dependencies):
             tracker_identity = next(iter(tracker_identity.values()))
         signature = digest({"version": VERSION, "region": _stable(region), "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)],
                             "model": model, "checkpoint": tracker_identity,
@@ -636,7 +646,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             "checkpoint": tracker_identity, "sample_fps": sample_fps,
             "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
         mask_dependencies = {k: state.get("masks", {}).get(k, {}).get("id") for k in sorted(dependencies)
-                             if stabilizers[k]["reference"].get("point_mask", {}).get("strokes")}
+                             if stabilizers[k]['reference'].get('transform_mode') != 'orientation' and
+                             stabilizers[k]["reference"].get("point_mask", {}).get("strokes")}
         if mask_dependencies:
             signature = digest([signature, mask_dependencies])
             pose_signature = digest([pose_signature, mask_dependencies])

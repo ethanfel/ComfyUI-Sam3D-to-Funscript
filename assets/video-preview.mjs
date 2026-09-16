@@ -72,7 +72,7 @@ export function timelineRenderCurrent(render, region) {
     const maskKey=reference=>{const m=reference?.point_mask;return m?.strokes?.length?JSON.stringify({frame:m.frame,strokes:m.strokes,model:m.model||'sam2.1_base_plus',margin:m.margin??6}):'';};
     // Names, locks and enabled toggles do not change a rendered image.
     return maskKey(render.region.reference)===maskKey(region.reference)&&['start_ms','end_ms','agreement_pixels','max_step_pixels'].every(key=>render.region[key]===region[key])&&
-        ['crop_xywh','points','sections','keyframes'].every(key=>JSON.stringify(render.region.reference?.[key]||[])===JSON.stringify(region.reference?.[key]||[]))&&
+        ['crop_xywh','points','sections','keyframes','orientation'].every(key=>JSON.stringify(render.region.reference?.[key]||[])===JSON.stringify(region.reference?.[key]||[]))&&
         (render.region.reference?.tracking_mode||'online')===(region.reference?.tracking_mode||'online')&&
         (render.region.reference?.transform_mode||'translation')===(region.reference?.transform_mode||'translation');
 }
@@ -91,7 +91,7 @@ export function timelineTrackingHealth(manifest, render, source) {
         quality.some(q=>!['tracked','manual','held'].includes(q)))throw new Error('Tracking details do not match this render');
     const counts={tracked:0,manual:0,held:0},gaps=[];
     quality.forEach((q,i)=>{counts[q]++;if(q==='held'&&(i===0||quality[i-1]!=='held'))gaps.push(times[i]);});
-    return {times,quality,counts,gaps,total:times.length,points:data.points,visible:data.visible,inliers:data.inliers,config:manifest.config,
+    return {times,quality,counts,gaps,total:times.length,orientation:data.orientation_degrees,points:data.points,visible:data.visible,inliers:data.inliers,config:manifest.config,
         shifts:data.shift_xy,transforms:data.transform_xy,padding:manifest.video?.padding_xy||[0,0],reasons:data.reasons||[],end:render.region.end_ms};
 }
 export function trackingFrame(health, time) {
@@ -105,5 +105,5 @@ export function trackingSummary(health) {
     return `${tracked} tracked · ${manual?`${manual} corrected · `:''}${held} held / ${health.total} frames (${(held/health.total*100).toFixed(1)}% held)`;
 }
 export function trackingReason(reason) {
-    return ({reference_points_too_close:'reference points are too close together',scale_needs_review:'extreme scale change needs review',outside_reference_mask:'fewer than 3 points inside the propagated mask',insufficient_visible_points:'fewer than 3 visible reference points',points_disagree:'reference points disagree',tracking_passes_disagree:'tracking from reference keyframes disagrees',large_jump_needs_review:'sudden tracking jump'})[reason]||'tracking unavailable';
+    return ({orientation_few_features:'too few head features',orientation_few_matches:'head appearance changed or is hidden',orientation_no_consensus:'head features disagree',orientation_scale_change:'head size changed too much',orientation_outside_frame:'head moved outside the image',orientation_large_jump:'sudden head angle jump',reference_points_too_close:'reference points are too close together',scale_needs_review:'extreme scale change needs review',outside_reference_mask:'fewer than 3 points inside the propagated mask',insufficient_visible_points:'fewer than 3 visible reference points',points_disagree:'reference points disagree',tracking_passes_disagree:'tracking from reference keyframes disagrees',large_jump_needs_review:'sudden tracking jump'})[reason]||'tracking unavailable';
 }

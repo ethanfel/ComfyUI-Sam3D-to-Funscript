@@ -2,18 +2,18 @@ import {workflowHost,openWorkspacePage} from "./workflow-host.mjs";
 import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as basePanView, followView as baseFollowView, sliderSpan as baseSliderSpan, spanSlider as baseSpanSlider, formatTime, rulerTicks} from "./viewport.mjs";
 // These exports were added together. Bypass helper URLs cached by older servers;
 // updated servers revalidate all editor assets on subsequent loads.
-import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection,overlapsRange} from "./processing-timeline-edit.mjs?v=anchor-boundary-1";
+import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection,overlapsRange} from "./processing-timeline-edit.mjs?v=orientation-1";
 import {cutIndex,neighboringCut,snapCut,shotRange,cutSideRange,visibleCuts} from "./cut-markers.mjs?v=cut-selection-2";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs?v=timeline-audit-1";
 import {frameClock} from "./frame-clock.mjs";
-import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=reference-masks-1";
-import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason,transformPixel} from "./video-preview.mjs?v=stabilization-auto-1";
+import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=orientation-1";
+import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason,transformPixel} from "./video-preview.mjs?v=orientation-1";
 
 import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=anchor-boundary-1";
-import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=stabilization-auto-1";
+import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=orientation-1";
 import {subjectEditor} from "./timeline-subject.mjs?v=subject-crop-1";
 import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
-import {stabilizationSteps} from './stabilization-steps.mjs?v=sam3-models-1';
+import {stabilizationSteps,orientationEditor} from './stabilization-steps.mjs?v=orientation-1';
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
@@ -99,6 +99,17 @@ const maskSteps=stabilizationSteps({$,context:()=>{
     const next=regionFromSelection({...plan,selection:[r.start_ms,r.end_ms]},'tracking',uuid,state.info,frames);
     const id=next.selected_ids[0];anchorOrigin=r.id;edit({...next,selection:plan.selection});selectRegion(id);
 }});
+const orientation=orientationEditor({$,context:()=>{
+    const r=selected()?.lane==='stabilization'?selected().region:null;
+    return {region:r,first:r?frames.ceil(r.start_ms):0,frame:r?activeFrame()-frames.ceil(r.start_ms):0,
+        frameCount:r?frames.ceil(r.end_ms)-frames.ceil(r.start_ms):0,size:state?[state.info.width,state.info.height]:[1,1],
+        busy:busy||!!startingOperation,stabilized:!!previewClip,editable:referenceEditable()&&video.readyState>=2};
+},attempt,updateReference:reference=>updateRegion({reference}),prepareOriginal:()=>{
+    const r=selected().region;$('referenceMode').value='review';$('maskTool').value='review';$('cropZoom').checked=false;
+    $('previewVariant').value='original';pause();seek(playhead>=r.start_ms&&playhead<r.end_ms?playhead:r.start_ms);
+},seekOriginal:frame=>{
+    orientation.cancel();$('orientationTool').value='review';$('previewVariant').value='original';pause();seek(frames.at(frames.ceil(selected().region.start_ms)+frame));
+},draw:drawSource});
 const meshEditor=meshAnchorEditor({$,context:()=>{
     const r=selected()?.lane==='tracking'?selected().region:null;
     return {region:r,clock:frames,first:r?frames.ceil(r.start_ms):0,frame:r?activeFrame()-frames.ceil(r.start_ms):0,
@@ -127,8 +138,8 @@ function status(text) { $("status").textContent = text; }
 function fail(error) { $("error").textContent = error.message || String(error); $("error").hidden = false; }
 function clearError() { $("error").hidden = true; $("error").textContent = ""; }
 function reviewTools(){
-    meshEditor.cancel();maskSteps.cancel();subject.cancel();sourceDrag=null;
-    $('meshAnchorTool').value='review';$('maskTool').value='review';$('referenceMode').value='review';
+    meshEditor.cancel();maskSteps.cancel();orientation.cancel();subject.cancel();sourceDrag=null;
+    $('orientationTool').value='review';$('meshAnchorTool').value='review';$('maskTool').value='review';$('referenceMode').value='review';
 }
 function showInspectorTab(kind) {
     if(kind==='timeline')reviewTools();
@@ -269,7 +280,7 @@ function renderPreviewControls() {
     $("trackingHealth").dataset.held=String(!!health?.counts.held);
     $("showTrackedPoints").disabled=false;
     $("previousHeld").disabled=heldTarget(-1)===undefined;$("nextHeld").disabled=heldTarget(1)===undefined;
-    maskSteps.render();
+    maskSteps.render();orientation.render();
     const trackOnly=processPending?.operation==='stabilize';
     $("trackStabilization").disabled=busy||!!startingOperation||!region||region.locked||region.enabled===false||!!maskSteps.problem();
     $("trackStabilization").textContent=trackOnly?'Tracking…':startingOperation==='stabilize'?'Preparing…':'Track region';
@@ -369,16 +380,17 @@ function drawSource() {
     if(requestedSeek!==null||video.seeking||video.readyState<2)return;
     const [ctx,w,h] = prepare($("sourceCanvas"));
     const found = selected(), reference = !previewClip&&found?.lane === "stabilization" ? found.region.reference : null;
-    const zoom = reference && $("cropZoom").checked && $("referenceMode").value !== "crop";
+    const zoom = reference && reference.transform_mode!=='orientation' && $("cropZoom").checked && $("referenceMode").value !== "crop";
     const personCrop=subject.previewCrop();
     const crop = zoom ? reference.crop_xywh : personCrop || [0,0,previewClip?video.videoWidth:state.info.width,previewClip?video.videoHeight:state.info.height];
     const scale = Math.min(w / crop[2], h / crop[3]), ox = (w - crop[2] * scale) / 2, oy = (h - crop[3] * scale) / 2;
     sourceMap = {crop,scale,ox,oy};
     if (video.readyState >= 2) ctx.drawImage(video,...crop,ox,oy,crop[2]*scale,crop[3]*scale);
-    maskSteps.overlay(ctx,sourceMap,w,h);
+    maskSteps.overlay(ctx,sourceMap,w,h);orientation.overlay(ctx,sourceMap);
     meshEditor.overlay(ctx,sourceMap,w,h);subject.overlay(ctx,sourceMap);
     const point = p => [ox+(p[0]-crop[0])*scale, oy+(p[1]-crop[1])*scale];
-    if (reference) {
+    if(reference?.transform_mode==='orientation')$('previewStatus').textContent='Head orientation · '+$('orientationStatus').textContent;
+    else if (reference) {
         const key = referenceKeys(reference).find(k=>k.frame===frames.containing(playhead)-frames.ceil(found.region.start_ms));
         const [x,y] = point(reference.crop_xywh); ctx.strokeStyle = "#e2b672"; ctx.lineWidth = 1.5;
         ctx.strokeRect(x,y,reference.crop_xywh[2]*scale,reference.crop_xywh[3]*scale);
@@ -399,12 +411,12 @@ function drawSource() {
             for(const [i,p] of (health.points?.[index]||[]).entries()){
                 if(!health.visible?.[index]?.[i]||!p.every(Number.isFinite))continue;
                 const mapped=previewClip?(health.transforms?.[index]?transformPixel(p,health.transforms[index]):p.map((v,axis)=>v-health.shifts[index][axis])).map((v,axis)=>v+health.padding[axis]):p,[px,py]=point(mapped);
-                ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.stroke();ctx.fillText(String(i+1),px+8,py-7);
+                ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.stroke();ctx.fillText(health.orientation?(i?'Up':'Head'):String(i+1),px+8,py-7);
             }
         }
         if(held){ctx.font='bold 12px system-ui';ctx.fillStyle='#3b261dec';ctx.fillRect(8,8,Math.min(w-16,252),29);ctx.fillStyle='#ffd0a0';ctx.fillText('HELD · previous correction',16,27,Math.max(1,w-32));}
     }
-    const agreement=showReview?agreementText(health,index):'';
+    const agreement=showReview?(health.orientation?`${health.orientation[index].toFixed(1)}° head tilt${health.quality[index]==='tracked'?` · ${health.inliers[index]} matched features`:''}`:agreementText(health,index)):'';
     if(agreement)$('previewStatus').textContent+=' · '+agreement;
     drawAnchorPreview(ctx,point,w,h);
     if (sourceDrag) {const a=point(sourceDrag.start),b=point(sourceDrag.end);ctx.strokeStyle="#9fcaff";ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);}
@@ -657,7 +669,7 @@ function drawOverview() {
     ctx.strokeStyle="#fff";ctx.beginPath();ctx.moveTo((playhead-low)/d*w,0);ctx.lineTo((playhead-low)/d*w,h);ctx.stroke();
 }
 function renderInspector() {
-    const found=selected();$("regionForm").hidden=!found;$("noRegion").hidden=!!found;$("regionKind").textContent=found?found.lane==="tracking"?"SAM3D tracking":"CoTracker3 stabilization":"";
+    const found=selected();$("regionForm").hidden=!found;$("noRegion").hidden=!!found;$("regionKind").textContent=found?found.lane==="tracking"?"SAM3D tracking":found.region.reference.transform_mode==='orientation'?"Head orientation":"CoTracker3 stabilization":"";
     meshEditor.render();
     if(!found)return;
     const {region,lane}=found, disabled=busy||!!startingOperation||!!region.locked;
@@ -681,7 +693,7 @@ function renderInspector() {
     $("split").disabled=disabled||playhead<=region.start_ms+1||playhead>=region.end_ms-1;
     $("referenceMode").disabled=disabled;
     if(disabled)$("referenceMode").value="review";
-    if(lane==='stabilization'){renderReferenceKeys(region);maskSteps.render();}
+    if(lane==='stabilization'){renderReferenceKeys(region);maskSteps.render();orientation.render();}
     if(lane==="tracking"){
         $("additionalAnchors").replaceChildren(...ANCHORS.filter(anchor=>anchor!==region.anchor).map(anchor=>{
             const label=document.createElement("label"),input=document.createElement("input");
@@ -789,7 +801,11 @@ function renderReferenceKeys(region) {
     $("markReference").disabled=disabled||playhead<region.start_ms||playhead>=region.end_ms;
     $("removeReferenceKey").disabled=disabled||!key;
 }
-$("transformMode").onchange=()=>attempt(()=>updateRegion({reference:{...selected().region.reference,transform_mode:$("transformMode").value}}));
+$("transformMode").onchange=()=>attempt(()=>{
+    reviewTools();const reference={...selected().region.reference,transform_mode:$("transformMode").value};
+    if(reference.transform_mode==='orientation')reference.orientation??={method:'features',target_degrees:0,keys:[]};
+    updateRegion({reference});maskSteps.setStep('track');
+});
 $("trackingMode").onchange=()=>attempt(()=>updateRegion({reference:{...selected().region.reference,tracking_mode:$("trackingMode").value}}));
 $("markReference").onclick=()=>attempt(()=>{
     maskSteps.setStep("track");
@@ -823,21 +839,21 @@ $("sourceCanvas").onpointerdown=event=>{
     if(meshEditor.pointerDown(sourcePosition(event))){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
     if(!referenceEditable())return;
     const p=sourcePosition(event);if(!p)return;
-    if(maskSteps.pointerDown(p)){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
+    if(orientation.pointerDown(p)||maskSteps.pointerDown(p)){$("sourceCanvas").setPointerCapture(event.pointerId);event.preventDefault();return;}
     if($("referenceMode").value==="crop"){sourceDrag={start:p,end:p};$("sourceCanvas").setPointerCapture(event.pointerId);}
     else if($("referenceMode").value==="points")attempt(()=>{
         const region=selected().region,frame=activeFrame()-frames.ceil(region.start_ms),slot=Number($("referencePoint").value);
         updateRegion({reference:putReferencePoint(region.reference,frame,slot,p)});
     });
 };
-$("sourceCanvas").onpointermove=event=>{if(subject.move(sourcePosition(event))||meshEditor.pointerMove(sourcePosition(event))||maskSteps.pointerMove(sourcePosition(event)))return;if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
+$("sourceCanvas").onpointermove=event=>{if(subject.move(sourcePosition(event))||meshEditor.pointerMove(sourcePosition(event))||orientation.pointerMove(sourcePosition(event))||maskSteps.pointerMove(sourcePosition(event)))return;if(sourceDrag){const p=sourcePosition(event);if(p)sourceDrag.end=p;drawSource();}};
 $("sourceCanvas").onpointerup=()=>{
-    if(subject.up()||meshEditor.pointerUp()||maskSteps.pointerUp())return;
+    if(subject.up()||meshEditor.pointerUp()||orientation.pointerUp()||maskSteps.pointerUp())return;
     if(!sourceDrag)return;const {start:a,end:b}=sourceDrag;sourceDrag=null;
     const crop=[Math.floor(Math.min(a[0],b[0])),Math.floor(Math.min(a[1],b[1])),Math.round(Math.abs(a[0]-b[0])),Math.round(Math.abs(a[1]-b[1]))];
     if(crop[2]>=2&&crop[3]>=2)attempt(()=>{const reference=clone(selected().region.reference);reference.crop_xywh=crop;updateRegion({reference});});else drawSource();
 };
-$("sourceCanvas").onpointercancel=()=>{meshEditor.cancel();maskSteps.cancel();subject.cancel();sourceDrag=null;drawSource();};
+$("sourceCanvas").onpointercancel=()=>{meshEditor.cancel();maskSteps.cancel();orientation.cancel();subject.cancel();sourceDrag=null;drawSource();};
 $("sourceCanvas").oncontextmenu=event=>{
     if($("referenceMode").value!=="points"||!referenceEditable())return;event.preventDefault();const p=sourcePosition(event);if(!p)return;
     const region=selected().region,reference=region.reference,key=referenceKeys(reference).find(k=>k.frame===activeFrame()-frames.ceil(region.start_ms));let best=-1,distance=12/sourceMap.scale;
@@ -1067,7 +1083,7 @@ async function save() {
             if(capabilities.mask_anchors!==1)throw new Error('Restart ComfyUI to enable painted 3D anchors, then refresh its main tab and reopen this timeline. Your edits are kept.');
         }
         if(sent.stabilization.some(r=>r.reference.point_mask))await requireMaskBackend();
-        if(sent.stabilization.some(r=>r.reference.transform_mode==='similarity'))await requireTransformBackend();
+        if(sent.stabilization.some(r=>['similarity','orientation'].includes(r.reference.transform_mode)))await requireTransformBackend(sent);
         if(sent.stabilization.some(r=>r.reference.keyframes||r.reference.tracking_mode==='offline'))await requireReferenceBackend(location.href);
         let next;
         for(let attempt=0;attempt<3;attempt++){
@@ -1114,8 +1130,9 @@ async function applyWorkflow(){
     } catch(error){feedback("error",error.message);$("apply").disabled=busy;fail(error);throw error;}
 }
 $("apply").onclick=()=>window.s3fTimelineApply().catch(()=>{});
-async function requireTransformBackend(){
+async function requireTransformBackend(sent){
     const data=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+    if(sent.stabilization.some(r=>r.reference.transform_mode==='orientation')&&data.orientation_stabilization!==1)throw new Error('Restart ComfyUI to enable head orientation stabilization, then retry. Your edits are kept.');
     if(data.similarity_stabilization!==1)throw new Error('Restart ComfyUI to enable position, rotation and scale correction. Your edits are kept.');
 }
 async function requireMaskBackend(){

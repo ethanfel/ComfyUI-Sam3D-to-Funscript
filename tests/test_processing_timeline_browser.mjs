@@ -20,6 +20,7 @@ for(const args of [
 const stabilizedClip=path.join(temporary,'stabilized.mp4');
 const stableEncode=spawnSync('ffmpeg',['-v','error','-i',portraitClip,'-t','2.5','-vf','pad=220:360:20:20:color=black','-an','-c:v','libx264','-preset','ultrafast','-movflags','+faststart',stabilizedClip]);assert.equal(stableEncode.status,0,stableEncode.stderr.toString());
 const session='1234567890abcdef1234567890abcdef';
+let orientationCapabilities=true;
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
 let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true,meshCapabilities=true,automaticCapabilities=true;
 let importRequest=null,seedCapabilities=true;
@@ -33,7 +34,7 @@ const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript'
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({sam3_mask_seed:seedCapabilities?1:0,automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({sam3_mask_seed:seedCapabilities?1:0,automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,orientation_stabilization:orientationCapabilities?1:0,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
  if(url.pathname==='/sam3d_funscript/mask-seed-models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(seedModels));return;}
  if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
  if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
@@ -131,7 +132,8 @@ try{
  await page.evaluate('document.querySelector("#anchor").value="pelvis";document.querySelector("#anchor").dispatchEvent(new Event("change"))');
  await page.evaluate('document.querySelector("#regionIn").value=20;document.querySelector("#regionIn").dispatchEvent(new Event("change"))');assert.match(await page.evaluate('document.querySelector("#error").textContent'),/overlap/);
  await page.evaluate('document.querySelector("#selectionIn").value=0;document.querySelector("#selectionOut").value=15;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#addStabilization").click();document.querySelector("#fitSelection").click();document.querySelector("#referenceMode").value="points";document.querySelector("#referenceMode").dispatchEvent(new Event("change"))');
- await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'point frame');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking&&document.querySelector("#source").currentTime<.05'),'point frame');
+ await page.evaluate('document.querySelector("#sourceCanvas").scrollIntoView({block:"center"})');await wait(150);
  const map=await page.evaluate('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/160,r.height/120);return{x:r.x+(r.width-160*s)/2,y:r.y+(r.height-120*s)/2,s}})()');
  async function click(x,y){for(const type of ['mousePressed','mouseReleased'])await page.call('Input.dispatchMouseEvent',{type,x,y,button:'left',clickCount:1});}
  for(const[x,y]of[[40,40],[60,40],[80,40]])await click(map.x+x*map.s,map.y+y*map.s);
@@ -418,6 +420,7 @@ try{
  assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
  await until(()=>page.evaluate('document.querySelector("#thumbnails img")?.naturalHeight===320'),'filmstrip ready for narrow screenshot');
  fs.writeFileSync('development/timeline-tools-browser/narrow.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+
  assert.equal(errors.length,0,JSON.stringify(errors));
  // Rendered regions can be reviewed after reload without processing again.
  const stable={id:'preview-stable',name:'Rendered section',start_ms:2000,end_ms:4500,enabled:true,locked:false,reference:{crop_xywh:[0,0,180,320],points:[[20,20],[30,30],[40,40]],sections:[]},agreement_pixels:12,max_step_pixels:48};
@@ -802,6 +805,66 @@ try{
  fs.mkdirSync('development/manual-cuts-browser',{recursive:true});
  fs.writeFileSync('development/manual-cuts-browser/cut-menu.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  console.log('Manual cuts: exact first frame, adjacent sections, independent draft save, persistence, duplicate handling, stale-marker retry, removal, typing, Shift+O and narrow layout passed');
+
+
+ // Finish the prior draft before replacing this fixture's saved plan.
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'previous fixture saved');
+ // Head orientation uses an independent area and angle workflow, without points or masks.
+ state.plan={...state.plan,tracking:[],stabilization:[{...structuredClone(stable),id:'head',name:'Rotating head',start_ms:2000,end_ms:4500,locked:false,reference:{crop_xywh:[0,0,180,320],points:[],sections:[],transform_mode:'similarity'}}],selected_ids:['head'],selection:[2000,4500]};
+ state.revision++;renderedState=null;
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('localStorage.clear()');await page.call('Page.reload');
+ await until(()=>page.evaluate('document.querySelector("#regionName")?.value==="Rotating head"&&!document.querySelector("#apply").disabled'),'orientation fixture').catch(async error=>{console.error(await page.evaluate('({name:document.querySelector("#regionName")?.value,error:document.querySelector("#error")?.textContent,status:document.querySelector("#status")?.textContent,html:document.querySelector("#stabilizationLane")?.innerHTML})'),errors);throw error;});
+ await page.evaluate('document.querySelector("#transformMode").value="orientation";document.querySelector("#transformMode").dispatchEvent(new Event("change"));document.querySelector("#orientationStart").click()');
+ await until(()=>page.evaluate('document.querySelector("#source").readyState>=2&&!document.querySelector("#source").seeking&&document.querySelector("#goTime").value==="4"'),'head reference frame');
+ assert.equal(await page.evaluate('document.querySelector("#orientationSetup").hidden'),false);
+ assert.equal(await page.evaluate('document.querySelector("#maskStepTab").hidden'),true);
+ assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),true);
+ async function headDrag(a,b){
+  const r=await rect('#sourceCanvas'),s=Math.min(r.w/180,r.h/320),origin=[r.x+(r.w-180*s)/2,r.y+(r.h-320*s)/2];
+  const xy=p=>({x:origin[0]+p[0]*s,y:origin[1]+p[1]*s});
+  await page.call('Input.dispatchMouseEvent',{type:'mousePressed',...xy(a),button:'left',clickCount:1});
+  await page.call('Input.dispatchMouseEvent',{type:'mouseMoved',...xy(b),buttons:1});
+  await page.call('Input.dispatchMouseEvent',{type:'mouseReleased',...xy(b),button:'left',clickCount:1});
+ }
+ await page.evaluate('document.querySelector("#orientationTool").value="box";document.querySelector("#orientationTool").dispatchEvent(new Event("change"))');await wait(180);
+ await headDrag([40,90],[140,220]);
+ assert.equal(await page.evaluate('document.querySelector("#orientationTool").value'),'up');
+ await headDrag([70,190],[120,140]);
+ assert.equal(await page.evaluate('document.querySelector("#orientationTool").value'),'review');
+ assert.ok(Math.abs(Number(await page.evaluate('document.querySelector("#orientationAngle").value'))-45)<.1);
+ assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),false);
+ await page.evaluate('document.querySelector("#orientationKeep").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'head angle saved');
+ const savedHead=structuredClone(state.plan.stabilization[0].reference.orientation);
+ assert.equal(savedHead.keys.length,1);assert.equal(savedHead.keys[0].frame,0);assert.ok(Math.abs(savedHead.target_degrees-45)<.1);
+ assert.deepEqual(state.plan.stabilization[0].reference.points,[]);
+ const headReload=await page.evaluate('performance.timeOrigin');await page.call('Page.reload');
+ await until(()=>page.evaluate(`performance.timeOrigin!==${headReload}&&document.querySelector('#orientationSetup')&&!document.querySelector('#orientationSetup').hidden&&!document.querySelector('#apply').disabled`),'head setup reload');
+ await page.evaluate('document.querySelector("#orientationStart").click()');await wait(150);
+ assert.equal(await page.evaluate('document.querySelectorAll("#orientationKeys option").length'),2);
+ // Capability failure keeps the editable plan in this tab until the backend restarts.
+ orientationCapabilities=false;
+ await page.evaluate('document.querySelector("#orientationTarget").value=0;document.querySelector("#orientationTarget").dispatchEvent(new Event("change"));document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI to enable head")'),'orientation backend guard');
+ assert.ok(Math.abs(state.plan.stabilization[0].reference.orientation.target_degrees-45)<.1,'failed save preserves stored settings');
+ orientationCapabilities=true;
+ await page.evaluate('document.querySelector("#trackStabilization").click()');
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Tracking complete")'),'head tracking complete');
+ assert.equal(seenProcess.operation,'stabilize');assert.equal(seenProcess.plan.stabilization[0].reference.transform_mode,'orientation');
+ assert.equal(seenProcess.plan.stabilization[0].reference.orientation.target_degrees,0);
+ await until(()=>page.evaluate('document.querySelector("#previewTitle").textContent==="Stabilized source"&&!document.querySelector("#source").seeking'),'head result preview');
+ await page.evaluate('document.querySelector("#regionLock").click()');
+ assert.equal(await page.evaluate('document.querySelector("#orientationAngle").disabled'),true);
+ assert.equal(await page.evaluate('document.querySelector("#orientationTool").disabled'),true);
+ await page.evaluate('document.querySelector("#regionLock").click();document.querySelector("#orientationStart").click()');await wait(180);
+ await page.evaluate('document.querySelector("#orientationSetup").scrollIntoView({block:"center"})');
+ fs.mkdirSync('development/orientation-browser',{recursive:true});
+ fs.writeFileSync('development/orientation-browser/editor.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
+ assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'orientation controls fit narrow timeline');
+ console.log('Head orientation: source drawing, angle direction, save/reload, backend guard, tracking without points/masks, preview, lock and narrow layout passed');
 
  assert.equal(errors.length,0,JSON.stringify(errors));
  console.log(JSON.stringify({checks:['cut-menu split of both lanes, reference and mask preservation, independent right-side edits, atomic Undo, lock protection, S shortcut and reload','tracking-only action without pose regions','progress and cancel beside Track region','automatic stabilized preview','reference-only processing preserves motion and selection','tracking action lock protection and backend capability check','compact desktop and narrow stabilization controls','multiple reference keyframes in both editors','offline mode saved per region','reference navigation before first tracking','numbered point identities and keyframe removal/undo','neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport','clickable cut markers and keyboard boundary marks','Shift-click cut range in both directions','before/after and double-click shot selection','make tracking zone preserves anchors','locked region rejects cut split','make independent stabilization zone','Escape, hidden guides and refreshed scan clear cut selection','cut action panel fits narrow views','tools beside preview without pushing filmstrip','narrow tools below timeline','detailed anchor search and short main list','detailed extra tracks survive general toggles','detailed anchors save reload and lock','frame steps hold image until latest decoded frame','saved stabilized clip discovery without rerun','original/stabilized frame-aligned switching and stepping','point edits use original frame','stale render labeling','playback leaves stabilization at its end','held-frame counts and warnings','gap navigation and tracked-point overlay'],apiRequests,errors},null,2));

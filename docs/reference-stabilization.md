@@ -67,6 +67,44 @@ For the automatic painted-mask workflow, see
 
 ## Correct a gap
 
+### Head orientation in the Processing Timeline
+
+For a rotating shot, add a gold stabilization region and choose **Correction →
+Orientation only · head**. Pause on a clear original frame, choose **Draw head
+area**, and drag a tight rectangle around the head. Then draw **Head up** from
+chin toward crown. An upright head is 0°; clockwise tilt is positive. **Keep at**
+defaults to 0°, or **Keep this angle** retains the marked orientation.
+
+**Track region** follows image features in the marked head area and renders a
+counter-rotated video. It uses OpenCV SIFT matching with a robust similarity fit,
+independently of SAM3D, masks and CoTracker. Only rotation is applied, around the
+tracked head center; position and scale are not locked. **Preview stabilized**
+shows the result. In **3 · Anchors**, create or select the overlapping tracking
+region and **Extract anchors**. SAM3D receives these corrected frames, and its
+2D overlays are mapped back to the original source.
+
+Add another head area and angle on a later frame when the head changes appearance
+or following fails. The closest marked frame supplies the reference. Unreliable
+matches hold the previous correction and appear as review gaps. **Manual angle
+keys** interpolates marked angles and head centers using the actual frame times,
+holding the first/last key outside their range. It can handle a shot where feature
+matching fails; add intermediate keys for turns exceeding 180° between marks.
+
+Prepared orientation regions also run with Automatic mode's **Use prepared
+stabilization** option. Splitting or trimming keeps each angle mark on its original
+frame; a part without marks needs a new head selection. Orientation settings and
+rendered results are cached separately from point-based stabilization.
+
+This is an image-plane roll correction, not a 3D head-pose solver. It also removes
+real head tilt, and cannot undo perspective changes or guarantee better SAM3D
+results. Keep background out of the marked head area; check the preview and held
+intervals before extracting motion. Rendering preserves source frame timing and
+uses black padding without scaling the image.
+
+See OpenCV's [feature matching documentation](https://docs.opencv.org/4.x/dc/dc3/tutorial_py_matcher.html).
+
+### Point-based corrections
+
 The timeline distinguishes **tracked**, **manual**, and **held** frames. Held frames
 use the previous accepted transform because too few points were visible, points
 disagreed, or the displacement failed the jump check. The yellow cross marks the

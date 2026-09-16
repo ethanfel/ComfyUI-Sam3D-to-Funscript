@@ -30,12 +30,17 @@ def prepare_mask_references(info, plan):
     tracking = [r for r in plan['tracking'] if r['enabled'] and r.get('automatic') and not r['locked']]
     for region in output['stabilization']:
         reference = region['reference']; mask = reference.get('point_mask')
-        if not region['enabled'] or not mask or not mask.get('strokes') or not any(
+        orientation = reference.get('transform_mode') == 'orientation'
+        if not region['enabled'] or (not orientation and (not mask or not mask.get('strokes'))) or not any(
             overlaps_range(r, region['start_ms'], region['end_ms']) for r in tracking):
             continue
         report['regions'].append(region['id'])
         if region['locked']: continue
         try:
+            if orientation:
+                if not reference.get('orientation', {}).get('keys'):
+                    raise ValueError('Draw the head area and set its tilt before automatic stabilization')
+                continue
             keys = reference_keys(reference)
             stamp = reference.get('auto_points', {})
             geometry = digest([mask_geometry(mask), reference['crop_xywh'], mask['spacing'], mask['limit']])
@@ -59,7 +64,7 @@ def run_prepared_stabilization(info, plan, root, checkpoint, prepared, *, use_ca
         if sid in report['errors']: continue
         try:
             # Locked results reuse saved masks, points, and rendered transforms.
-            if not regions[sid]['locked']:
+            if not regions[sid]['locked'] and regions[sid]['reference'].get('transform_mode') != 'orientation':
                 run_mask_propagation(info, plan, root, region_ids=[sid], use_cache=use_cache,
                                      progress=progress, interrupt=interrupt)
             tracked = run_stabilization(info, plan, root, checkpoint, region_ids=[sid], use_cache=use_cache,

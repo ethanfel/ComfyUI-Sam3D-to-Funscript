@@ -1,13 +1,80 @@
 import {maskPoints,maskGeometry,drawPointMask} from './reference-mask.mjs';
 import {overlapsRange} from './processing-timeline-edit.mjs?v=anchor-boundary-1';
-import {referenceKeys,withReferenceKeys,validateReferenceKeys} from './reference-edit.mjs?v=reference-masks-1';
+import {referenceKeys,withReferenceKeys,validateReferenceKeys,validateOrientation} from './reference-edit.mjs?v=orientation-1';
+
+export function orientationEditor({$,context,attempt,updateReference,prepareOriginal,seekOriginal,draw}) {
+    let drag=null,lastRegion=null;
+    const current=()=>{const c=context();return c.region?.reference.transform_mode==='orientation'?c:null;};
+    const settings=c=>c.region.reference.orientation||{method:'features',target_degrees:0,keys:[]};
+    const key=c=>settings(c).keys.find(k=>k.frame===c.frame);
+    function change(value){
+        const c=current();if(!c||c.busy||c.region.locked)throw new Error('Select an unlocked orientation region first.');
+        validateOrientation(value,c.frameCount,c.size,false);
+        updateReference({...c.region.reference,orientation:value});
+    }
+    function put(value){const c=current();change({...settings(c),keys:[...settings(c).keys.filter(k=>k.frame!==c.frame),{...value,frame:c.frame}].sort((a,b)=>a.frame-b.frame)});}
+    $('orientationTool').onchange=()=>{drag=null;prepareOriginal();draw();};
+    $('orientationStart').onclick=()=>seekOriginal(0);
+    $('orientationAngle').onchange=()=>attempt(()=>{const c=current(),k=c&&key(c);if(!k)throw new Error('Draw the head area on this frame first.');put({...k,angle_degrees:Number($('orientationAngle').value)});});
+    $('orientationTarget').onchange=()=>attempt(()=>change({...settings(current()),target_degrees:Number($('orientationTarget').value)}));
+    $('orientationMethod').onchange=()=>attempt(()=>change({...settings(current()),method:$('orientationMethod').value}));
+    $('orientationKeep').onclick=()=>attempt(()=>change({...settings(current()),target_degrees:key(current()).angle_degrees}));
+    $('orientationRemove').onclick=()=>attempt(()=>{const c=current();change({...settings(c),keys:settings(c).keys.filter(k=>k.frame!==c.frame)});});
+    $('orientationKeys').onchange=()=>{if($('orientationKeys').value!=='')seekOriginal(Number($('orientationKeys').value));};
+    function render(){
+        const c=current();$('orientationSetup').hidden=!c;if(!c)return;
+        if(lastRegion!==c.region.id){lastRegion=c.region.id;drag=null;$('orientationTool').value='review';}
+        const value=settings(c),k=key(c),disabled=c.busy||c.region.locked;
+        for(const [id,v] of [['orientationAngle',k?.angle_degrees??0],['orientationTarget',value.target_degrees],['orientationMethod',value.method]])if(document.activeElement!==$(id))$(id).value=v;
+        for(const id of ['orientationTool','orientationMethod','orientationTarget'])$(id).disabled=disabled;
+        for(const id of ['orientationAngle','orientationKeep','orientationRemove'])$(id).disabled=disabled||!k;
+        if(disabled)$('orientationTool').value='review';
+        $('orientationStart').disabled=c.busy;$('orientationKeys').disabled=c.busy||!value.keys.length;
+        const select=$('orientationKeys'),signature=JSON.stringify([c.first,value.keys]);
+        if(select.dataset.keys!==signature){select.replaceChildren(new Option('Marked head frames…',''),...value.keys.map(k=>new Option(`F ${c.first+k.frame} · ${k.angle_degrees.toFixed(1)}°`,String(k.frame))));select.dataset.keys=signature;}
+        select.value=k?String(c.frame):'';
+        $('orientationStatus').textContent=k?`F ${c.first+c.frame} · head tilt ${k.angle_degrees.toFixed(1)}° · ${value.keys.length} marked frames`:
+            value.keys.length?'To correct another frame, pause there and draw its head area and up direction.':'Choose Draw head area, then Draw head up (chin → crown).';
+    }
+    function pointerDown(point){
+        const c=current();if(!c||$('orientationTool').value==='review')return false;
+        if(!c.editable||!point)return true;
+        if($('orientationTool').value==='up'&&!key(c)){attempt(()=>{throw new Error('Draw the head area on this frame first.');});return true;}
+        drag={region:c.region.id,frame:c.frame,tool:$('orientationTool').value,start:point,end:point};draw();return true;
+    }
+    function pointerMove(point){if(!drag)return false;if(point)drag.end=point;draw();return true;}
+    function pointerUp(){
+        if(!drag)return false;const d=drag;drag=null;
+        attempt(()=>{
+            const c=current();if(!c||!c.editable||c.region.id!==d.region||c.frame!==d.frame)return;
+            const [a,b]=[d.start,d.end];
+            if(d.tool==='box'){
+                const box=[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(b[0]-a[0]),Math.abs(b[1]-a[1])];
+                put({head_xywh:box,angle_degrees:key(c)?.angle_degrees??0});$('orientationTool').value='up';
+            }else{
+                if(Math.hypot(b[0]-a[0],b[1]-a[1])<8)throw new Error('Draw a longer arrow from chin toward crown.');
+                put({...key(c),angle_degrees:Math.atan2(b[0]-a[0],a[1]-b[1])*180/Math.PI});$('orientationTool').value='review';
+            }
+        });draw();return true;
+    }
+    function overlay(ctx,map){
+        const c=current();if(!c||c.stabilized)return;
+        const k=key(c),point=p=>[map.ox+(p[0]-map.crop[0])*map.scale,map.oy+(p[1]-map.crop[1])*map.scale];
+        ctx.save();ctx.strokeStyle=ctx.fillStyle='#9fe6db';ctx.lineWidth=2;
+        function arrow(a,b){const p=point(a),q=point(b),t=Math.atan2(q[1]-p[1],q[0]-p[0]);ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);for(const sign of [-1,1]){ctx.moveTo(...q);ctx.lineTo(q[0]-10*Math.cos(t+sign*.5),q[1]-10*Math.sin(t+sign*.5));}ctx.stroke();}
+        if(k){const [x,y,w,h]=k.head_xywh,[px,py]=point([x,y]),t=k.angle_degrees*Math.PI/180;ctx.strokeRect(px,py,w*map.scale,h*map.scale);const center=[x+w/2,y+h/2],length=Math.min(w,h)*.4;arrow(center,[center[0]+length*Math.sin(t),center[1]-length*Math.cos(t)]);ctx.font='13px system-ui';ctx.fillText(`Head up · ${k.angle_degrees.toFixed(1)}°`,px+4,py-7);}
+        if(drag){ctx.strokeStyle='#ffd28b';if(drag.tool==='up')arrow(drag.start,drag.end);else{const a=point(drag.start),b=point(drag.end);ctx.strokeRect(...a,b[0]-a[0],b[1]-a[1]);}}
+        ctx.restore();
+    }
+    return {render,overlay,pointerDown,pointerMove,pointerUp,cancel:()=>{drag=null;}};
+}
 
 export function stabilizationSteps({$,context,attempt,updateReference,seekOriginal,process,configureAnchors,selectRegion,draw}) {
     const steps=new Map(),images=new Map();let brush=null,request=null,error='',lastRegion=null;
     let models=null,loadingModels=false,modelError='';
     const promptSettings=c=>({text:'man',confidence:.15,backend:'sam3matting',checkpoint:'',...c.region.reference.mask_prompt});
     const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-    const current=()=>{const c=context();return c.region?{...c,mask:c.region.reference.point_mask,step:steps.get(c.region.id)||(c.region.reference.points?.length?'track':'mask')}:null;};
+    const current=()=>{const c=context();if(!c.region)return null;const orientation=c.region.reference.transform_mode==='orientation';let step=steps.get(c.region.id)||(c.region.reference.points?.length||orientation?'track':'mask');if(orientation&&step==='mask')step='track';return {...c,orientation,mask:orientation?null:c.region.reference.point_mask,step};};
     const ready=c=>!!c?.entry&&!!c.mask&&c.entry.region.start_ms===c.region.start_ms&&c.entry.region.end_ms===c.region.end_ms&&equal(c.entry.mask,maskGeometry(c.mask));
     const setStep=name=>{const c=current();if(!c)return;steps.set(c.region.id,name);brush=null;$('maskTool').value='review';if(name==='mask')seekOriginal(c.mask?.frame??Math.max(0,Math.min(c.frame,c.frameCount-1)));render();draw();};
     const emptyMask=c=>({frame:c.frame,spacing:12,limit:500,model:'sam2.1_base_plus',strokes:[]});
@@ -68,7 +135,7 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
     function problem(){
         const c=current();if(!c)return 'Select a stabilization region.';
         if(c.region.enabled===false)return 'Enable this region first.';
-        try{validateReferenceKeys(c.region.reference,c.frameCount);}catch(e){return e.message;}
+        try{if(c.orientation)validateOrientation(c.region.reference.orientation,c.frameCount);else validateReferenceKeys(c.region.reference,c.frameCount);}catch(e){return e.message;}
         if(c.mask?.strokes.length&&!ready(c))return 'Propagate the updated mask before tracking.';
         return '';
     }
@@ -98,6 +165,10 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
             'Uses the current original frame and the best matching subject. Paint / Erase refines the result; existing points are kept.'+(prompt.backend==='sam3matting'?' Missing SAM3Matting weights download automatically to ComfyUI’s model folder.':'')+
             (modelError?' '+modelError:loadingModels?' Checking installed SAM3 / SAM3.1 models…':models?.length===0?' No core SAM3 / SAM3.1 checkpoints found.':'');
         const issue=problem();
+        $('maskStepTab').hidden=c.orientation;
+        $('trackingMode').closest('label').hidden=c.orientation;
+        for(const id of ['referenceAdvanced','referenceHelp'])$(id).hidden=c.orientation;
+        $('referenceMode').closest('.reference-setup').hidden=c.orientation;
         $('maskReadiness').textContent=hasMask?(ready(c)?'Ready':'Needs propagation'):'Optional';
         $('trackReadiness').textContent=issue?'Needs setup':c.tracked?'Ready · rendered':'Ready to track';
         $('anchorsReadiness').textContent=c.tracked?'Ready to extract':'Track first';
@@ -137,7 +208,7 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
     function pointerMove(point){if(!brush)return false;if(point&&Math.hypot(...point.map((v,i)=>v-brush.points.at(-1)[i]))>=Math.max(1,brush.radius/4))brush.points.push(point);draw();return true;}
     function pointerUp(){if(!brush)return false;const stroke=brush;brush=null;attempt(()=>{const c=current();change({...c.mask||emptyMask(c),strokes:[...(c.mask?.strokes||[]),stroke]});});return true;}
     function overlay(ctx,map,width,height){
-        const c=current();if(!c||c.stabilized||!$('showReferenceMask').checked)return;
+        const c=current();if(!c||c.orientation||c.stabilized||!$('showReferenceMask').checked)return;
         if(c.mask?.frame===c.frame){drawPointMask(ctx,c.mask,map,width,height,brush);return;}
         if(brush){drawPointMask(ctx,null,map,width,height,brush);return;}
         if(!ready(c)||c.frame<0||c.frame>=c.entry.frames)return;

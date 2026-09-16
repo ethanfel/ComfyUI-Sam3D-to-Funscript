@@ -97,6 +97,8 @@ detection, and names new regions after the EDL clips where available. It fills
 uncovered intervals as usual; import alone does not split or reprocess existing
 regions. To replace imported markers with a visual scan, use **Detect cuts**.
 
+For rotating shots, **Correction → Orientation only · head** follows a marked head area and rotates the source before pose extraction. See [head orientation](reference-stabilization.md#head-orientation-in-the-processing-timeline) for setup, gap correction and manual keys. Prepared orientation regions also participate in Automatic mode.
+
 ## Automatic stabilization from a prepared mask
 
 1. Add a gold stabilization section over the interval needing correction. Keep
@@ -106,7 +108,7 @@ regions. To replace imported markers with a visual scan, use **Detect cuts**.
    You can leave it at this stage; separate propagation and tracking runs are optional.
 3. Choose **Correction → Position, rotation & scale** for rotation or zoom. New
    stabilization sections default to this; existing sections keep their old mode.
-4. Open **Automatic mode**, leave **Use prepared masks** selected, and run it.
+4. Open **Automatic mode**, leave **Use prepared stabilization** selected, and run it.
    It prepares scene/person candidates, saves points sampled inside the painted
    reference, propagates the mask in both directions, tracks and renders each
    section, then extracts the four anchor candidates for each detected person.

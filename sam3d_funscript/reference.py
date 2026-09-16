@@ -125,9 +125,12 @@ def config_for_source(raw, info):
     if "tracking_mode" in config:
         result["tracking_mode"] = mode
     if "transform_mode" in config:
-        if config['transform_mode'] not in ('translation', 'similarity'):
-            raise ValueError('Stabilization correction must be translation or similarity')
+        if config['transform_mode'] not in ('translation', 'similarity', 'orientation'):
+            raise ValueError('Stabilization correction must be translation, similarity or orientation')
         result['transform_mode'] = config['transform_mode']
+    if 'orientation' in config or config.get('transform_mode') == 'orientation':
+        from .orientation import normalize_orientation
+        result['orientation'] = normalize_orientation(config.get('orientation', {}), info['width'], info['height'])
     if config.get("point_mask") is not None:
         from .reference_mask import normalize_mask
         result["point_mask"] = normalize_mask(config["point_mask"], info["width"], info["height"])
@@ -341,6 +344,9 @@ def run_reference(path, start, duration, raw_config, checkpoint, root, tolerance
     root.mkdir(parents=True, exist_ok=True)
     info = source_info(path, start, duration)
     config, changed = config_for_source(raw_config, info)
+    if config.get('transform_mode') == 'orientation':
+        from .orientation import run_orientation
+        return run_orientation(info, config, root, use_cache, progress, interrupt)
     from .reference_tracker import resolve_checkpoint
     checkpoint = resolve_checkpoint(checkpoint, config.get("tracking_mode", "online"))
     render_config = {**config}

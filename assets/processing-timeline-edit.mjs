@@ -1,5 +1,5 @@
 // Region edits retain the original-video clock. This module is also used by tests.
-import {validateReferenceKeys,referenceKeys,withReferenceKeys} from './reference-edit.mjs?v=reference-keys-1';
+import {validateOrientation,validateReferenceKeys,referenceKeys,withReferenceKeys} from './reference-edit.mjs?v=orientation-1';
 export const LANES = ["tracking", "stabilization"];
 // Match frame-clock's tolerance for serialized fractional frame timestamps.
 export const TIME_EPSILON_MS = .000002;
@@ -71,12 +71,13 @@ export function changeRegion(plan, id, patch, info, clock=null) {
 }
 function sliceReference(reference, region, start, end, clock) {
     const result=clone(reference);
-    const timed=reference.keyframes||reference.point_mask||(reference.sections||[]).some(s=>s.keys?.length);
+    const timed=reference.orientation?.keys?.length||reference.keyframes||reference.point_mask||(reference.sections||[]).some(s=>s.keys?.length);
     if(timed&&!clock)throw new Error('Load the source frame index before changing reference bounds.');
     if(!clock){result.points=start===region.start_ms?clone(reference.points||[]):[];result.sections=[];return result;}
     const origin=clock.ceil(region.start_ms),first=clock.ceil(start),stop=clock.ceil(end),offset=first-origin;
     const keys=referenceKeys(reference).filter(k=>k.frame>=offset&&k.frame<stop-origin).map(k=>({...clone(k),frame:k.frame-offset}));
     Object.assign(result,withReferenceKeys(result,keys));
+    if(result.orientation)result.orientation.keys=result.orientation.keys.filter(k=>k.frame>=offset&&k.frame<stop-origin).map(k=>({...k,frame:k.frame-offset}));
     const mask=result.point_mask;
     if(mask&&mask.frame>=offset&&mask.frame<stop-origin)mask.frame-=offset;
     else delete result.point_mask;
@@ -130,7 +131,8 @@ export function splitAtTime(plan, lanes, at, newId, info, clock) {
 export function validateReference(region) {
     const reference = region.reference || {}, crop = reference.crop_xywh;
     if (!Array.isArray(crop) || crop.length !== 4 || crop.some(value => !Number.isFinite(value)) || crop[2] < 2 || crop[3] < 2) throw new Error("Draw a reference crop at least two pixels wide and high.");
-    validateReferenceKeys(reference);
+    if(reference.transform_mode==='orientation')validateOrientation(reference.orientation);
+    else validateReferenceKeys(reference);
 }
 export function regionRows(regions) {
     const rows = [], positions = new Map();
