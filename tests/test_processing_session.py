@@ -55,7 +55,7 @@ class ProcessingSessionTests(unittest.TestCase):
         server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda *args: None))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); session = 'c' * 32
-            current = {'source_id': 'source', 'start': '0', 'end_ms': 2000, 'width': 640, 'height': 480}
+            current = {'source_id': 'source', 'source': {'path': 'source.mp4'}, 'start': '0', 'end_ms': 2000, 'width': 640, 'height': 480}
             node.folder_paths.get_output_directory = lambda: str(root)
             node.folder_paths.get_full_path = lambda *args: None
             kwargs = dict(video=object(), model_file='unused-model', operation='prepare', unique_id='1', plan_json='',
@@ -65,7 +65,10 @@ class ProcessingSessionTests(unittest.TestCase):
                  patch.object(node, 'source_info', return_value=current), \
                  patch.object(module, 'run_timeline', side_effect=AssertionError('Prepare must not run inference')) as worker:
                 result = node.S3F_ProcessingTimeline().run(**kwargs)
-                self.assertIsInstance(result['result'][0], Blocker)
+                project = result['result'][0]
+                self.assertTrue(project['metadata']['manual_only'])
+                self.assertEqual(project['timeline']['tracks'], [])
+                self.assertEqual(project['scripts']['L0']['actions'], [{'at': 0, 'pos': 50}, {'at': 2000, 'pos': 50}])
                 worker.assert_not_called()
                 store = node.ProcessingStore(root/'sam3d_funscript/processing')
                 state = store.read(session)
@@ -80,6 +83,81 @@ class ProcessingSessionTests(unittest.TestCase):
 
     def test_single_direct_standalone_shares_its_session(self):
         self.assertEqual(self.node.motion_editor_session(self.workflow(), "2", "b" * 32), "a" * 32)
+
+    def test_prepare_editor_keeps_audio_edits_separate_for_each_video(self):
+        import json
+        from sam3d_funscript.processing_store import ProcessingStore, PlanConflict
+        from sam3d_funscript.editor import EditorStore, Conflict
+        with tempfile.TemporaryDirectory() as directory:
+            plans = ProcessingStore(Path(directory)/'processing'); editors = EditorStore(directory)
+            session = 'c'*32; owner = 'a'*32
+            info = {'source_id': 'first', 'source': {'path': 'first.mp4'}, 'start': '1/2',
+                    'source_origin': '1/10', 'end_ms': 12000, 'width': 160, 'height': 120}
+            plans.prepare(session, info)
+            plans.bind_editor(session, owner)
+            ready = plans.prepare_editor(session, info['source_id'], owner)
+            first = editors.read(owner)
+            self.assertTrue(ready['editor_only'])
+            self.assertFalse(ready['result_current'])
+            self.assertIsNone(ready['report'])
+            self.assertEqual(first['project']['times_ms'], [500, 12000])
+            self.assertEqual(first['project']['metadata']['source_origin_ms'], 100)
+            self.assertEqual(json.loads(Path(ready['project_path']).read_text()), first['project'])
+            self.assertEqual(plans.prepare_editor(session, info['source_id'], owner), ready)
+            self.assertEqual(editors.read(owner), first, 'Repeated Prepare does not cause revision conflicts')
+            with self.assertRaises(PlanConflict): plans.prepare_editor(session, 'stale-source', owner)
+            with self.assertRaises(PlanConflict): plans.prepare_editor(session, 'first', 'b'*32)
+            first['project']['timeline']['main']['L0'].update(locked=True, edited=True)
+            first['project']['audio_patterns'] = {'sections': [{'id': 'beat_0'}]}
+            saved = editors.save(owner, first['project'], first['revision'])
+            empty = plans.finish(session, ready['revision'], {})
+            self.assertEqual(empty['project_path'], ready['project_path'], 'An empty pose pass retains the authoring canvas')
+            second = {**info, 'source_id': 'second', 'source': {'path': 'second.mp4'}}
+            plans.prepare(session, second); plans.bind_editor(session, owner)
+            plans.prepare_editor(session, 'second', owner)
+            self.assertNotIn('audio_patterns', editors.read(owner)['project'])
+            self.assertEqual(editors.read_video(owner, first['project']), saved)
+            with self.assertRaises(Conflict): editors.save(owner, first['project'], saved['revision'])
+            plans.prepare(session, info); plans.bind_editor(session, owner)
+            plans.prepare_editor(session, 'first', owner)
+            self.assertEqual(editors.read(owner)['project'], saved['project'], 'Returning to the first video restores its edits and locks')
+
+    def test_initial_mask_job_returns_editable_seed_without_processing_motion(self):
+        import importlib
+        import json
+        node = self.node
+        timeline = importlib.import_module(node.__package__ + '.sam3d_funscript.processing_timeline')
+        masks = importlib.import_module(node.__package__ + '.sam3d_funscript.mask_seed')
+        graph = types.ModuleType('comfy_execution.graph')
+        graph.ExecutionBlocker = type('Blocker', (), {'__init__': lambda self, value: None})
+        management = types.ModuleType('comfy.model_management')
+        management.throw_exception_if_processing_interrupted = lambda: None
+        management.InterruptProcessingException = type('Interrupted', (Exception,), {})
+        server = types.ModuleType('server')
+        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda *args: None))
+        info = {'source_id':'source', 'start':'0', 'end_ms':2000, 'width':640, 'height':480}
+        plan = timeline.normalize_plan({'stabilization':[{'id':'s','start_ms':0,'end_ms':2000,
+            'reference':{'points':[[20,20],[40,20],[60,20]]}}]}, info)
+        request = {'region_id':'s','at_ms':500,'settings':{'text':'man','confidence':.15}}
+        seed = {**request,'frame':5,'strokes':[{'erase':False,'radius':20,'points':[[50,50]]}]}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); session = 'd'*32
+            node.folder_paths.get_output_directory = lambda: str(root)
+            store = node.ProcessingStore(root/'sam3d_funscript/processing')
+            before = store.prepare(session,info,plan)
+            with patch.dict(sys.modules, {'comfy_execution.graph':graph,'comfy.model_management':management,'server':server}), \
+                 patch.object(node,'video_input_range',return_value=('source',0,0)), patch.object(node,'source_info',return_value=info), \
+                 patch.object(masks,'seed_mask',return_value=seed) as detector, \
+                 patch.object(timeline,'run_timeline',side_effect=AssertionError('Mask seeding must not run SAM3D')) as motion, \
+                 patch.object(node,'publish_motion',side_effect=AssertionError('Mask seeding must not export motion')) as publish:
+                result = node.S3F_ProcessingTimeline().run(video=object(),model_file='unused',unique_id='1',operation='seed_mask',
+                    plan_json=json.dumps({'revision':before['revision'],'plan':plan,'mask_seed':request}),
+                    extra_pnginfo={'workflow':{'nodes':[{'id':1,'properties':{'s3f_timeline_session':session}}]}})
+                self.assertEqual(detector.call_args.args[2],request)
+                self.assertEqual(result['ui']['s3f_mask_seed'],[seed])
+                self.assertIsInstance(result['result'][0],graph.ExecutionBlocker)
+                self.assertEqual(store.read(session),before)
+                motion.assert_not_called();publish.assert_not_called()
 
     def test_automatic_node_saves_new_scenes_then_processes_only_their_ids(self):
         import importlib

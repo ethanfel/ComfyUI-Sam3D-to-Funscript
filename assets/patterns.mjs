@@ -2,7 +2,21 @@ import {evaluate, roundEven, validateReference, reduceActions} from "./curve.mjs
 
 // Shape names/formulas from the user-supplied Pattern_Generation/main.lua
 // (Pattern Generator by Nerfarious837). Editor integration is independent of OFS.
-export const PATTERNS = ["Heartbeat", "Jigsaw", "Jigsaw Squiggle", "Pulse", "Ramp Down", "Ramp Up", "Random", "River Bed Center", "River Bed High", "River Bed Low", "Sine Squiggle", "Sine Wave", "Square", "Triangle"];
+export const RHYTHM_PATTERNS = {
+    'Smooth Bounce':[[0,-1],[.5,1],[1,-1]],
+    'Quick Rise':[[0,-1],[.2,1],[1,-1]],
+    'Quick Fall':[[0,-1],[.8,1],[1,-1]],
+    'Double Tap':[[0,-1],[.2,1],[.4,-1],[.6,.6],[.8,-1],[1,-1]],
+    'Triple Tap':[[0,-1],[1/6,1],[1/3,-1],[.5,.7],[2/3,-1],[5/6,.4],[1,-1]],
+    'Hold High':[[0,-1],[.2,1],[.7,1],[1,-1]],
+    'Hold Low':[[0,-1],[.55,-1],[.75,1],[1,-1]],
+    'Swing':[[0,-1],[2/3,1],[1,-1]],
+    'Staircase Up':[[0,-1],[.15,-.4],[.3,-.4],[.45,.2],[.6,.2],[.75,1],[1,-1]],
+    'Staircase Down':[[0,-1],[.15,1],[.3,1],[.45,.2],[.6,.2],[.75,-.4],[1,-1]],
+    'Accent & Echo':[[0,-1],[.125,1],[.25,-1],[.5,.2],[.75,-1],[1,-1]],
+    'Half Stroke':[[0,-1],[.25,0],[.5,-1],[.75,1],[1,-1]],
+};
+export const PATTERNS = ["Heartbeat", "Jigsaw", "Jigsaw Squiggle", "Pulse", "Ramp Down", "Ramp Up", "Random", "River Bed Center", "River Bed High", "River Bed Low", "Sine Squiggle", "Sine Wave", "Square", "Triangle",...Object.keys(RHYTHM_PATTERNS)];
 const TAU = 2 * Math.PI, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const ease = u => u * u * (3 - 2 * u);
 const wrap = p => ((p + Math.PI) % TAU + TAU) % TAU - Math.PI;
@@ -70,6 +84,14 @@ function random(seed, index) {
     x = Math.imul(x ^ x >>> 16, 0x21f0aaad); x = Math.imul(x ^ x >>> 15, 0x735a2d97);
     return ((x ^ x >>> 15) >>> 0) / 4294967296;
 }
+export function rhythmValue(shape,phase){
+    const knots=RHYTHM_PATTERNS[shape];
+    if(!knots)throw new Error('Choose a rhythm pattern.');
+    phase=clamp(phase,0,1);
+    const i=Math.max(1,knots.findIndex(p=>p[0]>=phase)),a=knots[i-1],b=knots[i];
+    let u=(phase-a[0])/(b[0]-a[0]);if(shape==='Smooth Bounce')u=ease(u);
+    return a[1]+(b[1]-a[1])*u;
+}
 export function generatePattern(actions, start, end, options = {}) {
     [start,end] = range(actions,start,end);
     const {shape="Sine Wave", cycleMs=2000, amplitude=40, center=50, fadeInMs=0, fadeOutMs=0, reverse=false, seed=1, stepMs=20, joinMs=0} = options;
@@ -83,6 +105,7 @@ export function generatePattern(actions, start, end, options = {}) {
         const t=at-start, c=t/cycleMs, phase=c-Math.floor(c);
         let v;
         switch (shape) {
+        default: v=rhythmValue(shape,phase);break;
         case "Heartbeat": case "Sine Wave": v=Math.sin(c*TAU); break;
         case "Jigsaw": v=phase*2-1; break;
         case "Jigsaw Squiggle": v=phase*2-1+Math.sin(c*16)*.35; break;

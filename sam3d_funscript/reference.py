@@ -131,6 +131,9 @@ def config_for_source(raw, info):
     if config.get("point_mask") is not None:
         from .reference_mask import normalize_mask
         result["point_mask"] = normalize_mask(config["point_mask"], info["width"], info["height"])
+    if config.get('mask_prompt') is not None:
+        from .mask_seed import prompt_settings
+        result['mask_prompt'] = prompt_settings(config['mask_prompt'])
     if 'auto_points' in config:
         stamp = config['auto_points']
         if not isinstance(stamp, dict) or set(stamp) != {'mask', 'keys'} or any(not isinstance(v, str) for v in stamp.values()):

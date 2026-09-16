@@ -52,6 +52,7 @@ window.s3fConfigureWorkspace=configuration=>{
     // only for the first selection; background configuration never navigates.
     select(active||configuration.active||pages.keys().next().value);
     if(hostChanged)void reconnectPages({hostChanged:true});
+    else refreshPage(pages.get(active));
 };
 window.s3fSelectWorkspacePage=key=>select(key,true);
 window.s3fWorkspaceIdentity=()=>anchor;

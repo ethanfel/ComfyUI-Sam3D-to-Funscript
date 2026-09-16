@@ -3,11 +3,14 @@ import {initializeTimeline, trackLabel, processingTrackState, latestTrack, recre
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {cutIndex, neighboringCut, cutSideRange} from "./cut-markers.mjs";
 import {smoothActions} from "./curve-edit.mjs";
-import {PATTERNS, generatePattern, continuePattern, rememberPattern, patternRemovalProblem, removePattern} from "./patterns.mjs";
+import {PATTERNS, RHYTHM_PATTERNS, rhythmValue, generatePattern, continuePattern, rememberPattern, patternRemovalProblem, removePattern} from "./patterns.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
 import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
 import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
+import {decodeBeatAudio, analyzeBeatAudio} from "./audio-analysis.mjs";
+import {BEAT_SHAPES, beatGrid, generateBeatSection, insertBeatSection} from "./audio-patterns.mjs";
+import {audioLane} from "./audio-lane.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
 const trackName = track => trackLabel(project,track);
@@ -18,6 +21,7 @@ const ANCHORS = {pelvis:[9,10],chest:[5,6],nose:[0],left_wrist:[62],right_wrist:
 let project, history = [], currentMs = 0, dragging = null, bounds = [0, 1], videoURL;
 let videoVariant="stabilized",videoMapping=null,videoOutput=null,mediaLoading=false,mediaRevision=0;
 const localVideos={stabilized:null,original:null};
+const localVideoFiles={stabilized:null,original:null};
 let comparisonRevision=0, comparisonCache=null;
 let deviceOutputCache=null;
 let patternDraft=null, patternTimer=null;
@@ -123,8 +127,38 @@ const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
-function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output})); if(history.length>40)history.shift(); $("undo").disabled=false; }
+async function motionAvailability(incoming) {
+    const params=new URLSearchParams(location.search),owner=params.get('session');
+    let connected=[];
+    try{connected=(window.parent.s3fWorkspaceFrames?.()||[]).filter(page=>page.key.startsWith('timeline:')).map(page=>page.key.slice(9));}catch{}
+    // The current workspace owns this choice. An old project's saved Timeline
+    // link must not override a new Timeline node in the same workspace.
+    const ids=connected.length?connected:[params.get('timeline')||incoming?.metadata?.processing_timeline?.session];
+    for(const id of new Set(ids.filter(id=>/^[a-f0-9]{32}$/.test(id||'')))){
+        const response=await fetch(`../timelines/${id}`,{cache:'no-store',signal:AbortSignal.timeout(8000)});
+        if(response.status===404)continue;
+        if(!response.ok)throw new Error('Could not check the current Timeline video. Reconnect ComfyUI and reopen this tab.');
+        const state=await response.json();
+        if(state.editor_session!==owner)continue;
+        const name=state.info?.source?.path?.split('/').at(-1)||'this video';
+        if(!state.project)return `Prepare ${name} in Timeline to open an audio and manual-pattern project. Tracking is optional. Your previous project's saved edits are kept.`;
+        const sourceId=incoming?.metadata?.processing_timeline?.plan?.source_id;
+        if(!sameVideoSource(incoming?.metadata?.source,state.info?.source)||(sourceId&&sourceId!==state.info.source_id))
+            return `Waiting for the Motion Studio result for ${name}. Your previous project's saved edits are kept.`;
+    }
+    return null;
+}
+function waitForMotion(message) {
+    video.pause();playingSelection=false;video.onloadedmetadata=null;video.removeAttribute('src');video.load();++mediaRevision;
+    closeSceneCut();project=null;history=[];videoOutput=null;
+    document.body.classList.add('waiting-for-workflow');$('workflowWaiting').hidden=false;
+    $('workflowWaiting').querySelector('h2').textContent='Prepare this video for editing';
+    $('workflowWaiting').querySelector('p').textContent=message;
+    $('name').textContent='';$('undo').disabled=true;$('save').disabled=true;
+}
+function record() { history.push(JSON.stringify({scripts:project.scripts, config:project.config,references:project.references,metrics:project.metrics,timeline:timelineState(project),device_output:project.device_output,audio_patterns:project.audio_patterns})); if(history.length>40)history.shift(); $("undo").disabled=false; }
 const session = editorSession({install, snapshot:()=>project?({...project,preview:previewState()}):null, status,
+    validate:motionAvailability,waiting:waitForMotion,
     recovery:message=>{$('saveRecovery').hidden=!message;$('saveRecoveryMessage').textContent=message||'';},
     downloadDraft:json=>{
         const url=URL.createObjectURL(new Blob([json],{type:'application/json'})),a=document.createElement('a');
@@ -240,6 +274,46 @@ video.addEventListener('pause',()=>{if(loopFrame!==null)cancelAnimationFrame(loo
 video.addEventListener('ended',()=>enforcePlaybackRange(video.currentTime,true));
 fullscreenLabel();
 function dirty(authored=true) { if(authored&&!locked()){const {track}=selected();(track||project.timeline.main[$("axis").value]).edited=true;} project.manual_edits = true; session?.changed(); ++comparisonRevision; delete project.reference_comparison; status("Unsaved edits · download the project to keep them"); }
+function videoAudioSource(){
+    if(!project)return null;
+    // Reference renders omit audio; their original source has the soundtrack.
+    const variant=videoMapping?'original':videoVariant,file=localVideoFiles[variant];
+    if(!file&&!videoOutput)return null;
+    const offset=-previewMediaTime(0,variant,videoMapping,project.metadata.source_origin_ms||0)*1000;
+    return {file,offset,variant,key:JSON.stringify([videoOutput,variant,offset,localVideos[variant]]),
+        url:videoOutput?`../video/${encodeURIComponent(videoOutput)}/audio?variant=${variant}`:null};
+}
+async function readVideoAudio(signal){
+    const source=videoAudioSource();if(!source)throw new Error('Open the source video in the preview first.');
+    if(source.file)return {file:source.file,offset_ms:source.offset};
+    const response=await fetch(source.url,{signal});
+    if(!response.ok){
+        const detail=await response.text();
+        throw new Error(response.status===404?'Video audio is unavailable. Restart ComfyUI after updating, or choose a full-mix file.':detail||`Could not read video audio (${response.status}).`);
+    }
+    const start=Number(response.headers.get('X-S3F-Audio-Start-Ms')||0);
+    if(!Number.isFinite(start))throw new Error('The video audio has invalid timing. Choose a full-mix file instead.');
+    const name=decodeURIComponent(response.headers.get('X-S3F-Audio-Name')||'Video');
+    return {file:new File([await response.blob()],`${name} · audio.wav`,{type:'audio/wav'}),offset_ms:source.offset+start};
+}
+const beats=audioLane({$,context:()=>({project,audio:project?.audio_patterns,revision:comparisonRevision,selection:project?.timeline.selection||[0,0],
+    duration:roundEven(project?.metadata.duration_ms||1),bounds,now:currentMs,axis:$('axis').value,mainLocked:project?.timeline.main[$('axis').value]?.locked,videoAudioKey:videoAudioSource()?.key}),
+    readVideoAudio,
+    change:audio=>{record();project.audio_patterns=audio;dirty(false);render();},
+    selectRange:(start,end)=>{
+        discardPattern();discardReduction();closeSceneCut();project.timeline.active='main';project.timeline.selection_lane='audio';delete project.timeline.selection_track;
+        project.timeline.selection=boundedSelection(project,start,end,'main');controls();render();
+    },seek,render,wheel:timelineWheel,
+    copyToMain:section=>{
+        const axis=$('axis').value,main=project.timeline.main[axis];
+        if(main.locked)throw new Error(`Unlock Main ${axis} before copying an audio block.`);
+        if(section.end>roundEven(project.metadata.duration_ms))throw new Error('This block extends past the current video. Shorten its range first.');
+        const actions=project.scripts[axis].actions,blend=$('join').value==='blend'?$('blendMs').valueAsNumber:0;
+        const result=insertBeatSection(actions,section,blend);
+        record();main.patterns=rememberPattern(main.patterns||[],actions,section.start,section.end,'Audio · '+section.summary);
+        project.scripts[axis]={...project.scripts[axis],actions:result};main.edited=true;main.assembled=true;delete project.metrics?.[axis];
+        project.timeline.active='main';discardPattern();discardReduction();dirty(false);controls();render();
+    }});
 function videoChoices(){
     $("videoVariantLabel").hidden=!videoMapping;$("videoVariant").value=videoVariant;
     $("videoFile").parentElement.title=videoMapping?`Choose the ${videoVariant} video for this view`:"Choose the source video";
@@ -268,11 +342,11 @@ async function loadVideoComparison(data,output){
 function install(data, keepPlayback=false, output=null) {
     const oldAxis=$("axis").value, previousMs=currentMs, hadVideo=!!video.getAttribute("src");
     if (data.schema !== "sam3d-funscript/1" || !data.scripts || !data.times_ms?.length) throw new Error("Unsupported project file");
-    document.body.classList.remove("waiting-for-workflow");$("workflowWaiting").hidden=true;
+    document.body.classList.remove("waiting-for-workflow");$("workflowWaiting").hidden=true;$("save").disabled=false;
     keepPlayback=!!(keepPlayback&&sameVideoSource(project?.metadata?.source,data.metadata.source));
     dragging=null;discardPattern();discardReduction();
     if(!keepPlayback){video.pause();video.onloadedmetadata=null;video.removeAttribute("src");video.load();++mediaRevision;mediaLoading=false;
-    for(const key of Object.keys(localVideos)){if(localVideos[key])URL.revokeObjectURL(localVideos[key]);localVideos[key]=null;}
+    for(const key of Object.keys(localVideos)){if(localVideos[key])URL.revokeObjectURL(localVideos[key]);localVideos[key]=null;localVideoFiles[key]=null;}
     videoURL=null;videoVariant="stabilized";videoMapping=null;}
     closeSceneCut();
     initializeTimeline(data);
@@ -282,6 +356,8 @@ function install(data, keepPlayback=false, output=null) {
         if(data.preview?.section_choices)data.preview={...data.preview,section_choices:[...new Set(data.preview.section_choices.map(follow))]};
     }
     restoreView(data,keepPlayback); project = data; history=[]; ++comparisonRevision; $("undo").disabled=true;
+    document.body.classList.toggle('manual-project',!!data.metadata.manual_only);
+    $('videoGrip').querySelector('h2').textContent=data.metadata.manual_only?'Source video':'Source & projected pose';
     sectionPreferences=Array.isArray(data.preview?.section_choices)?data.preview.section_choices:[];
     $("sourceLayout").value=data.preview?.source_layout==='rows'?'rows':'sections';
     $("sectionLane").classList.toggle('collapsed',!!data.preview?.sections_collapsed);
@@ -427,6 +503,10 @@ function locked(id=project.timeline.active) {return !!(id==="main"?project.timel
 function assembled() {return project.timeline.active==="main"&&project.timeline.main[$("axis").value].assembled;}
 function controls() {
     const {data,axis,track}=selected(), s=data.config.axis_settings[axis];
+    const manual=!!data.metadata.manual_only;
+    for(const id of ['component','calibration','range','center'])$(id).parentElement.hidden=manual;
+    for(const id of ['rebuild','autoFit','fitSelection'])$(id).hidden=manual;
+    $('addTrack').disabled=!sourceChoices(project).length;
     if(track)project.timeline.selection_track=track.id;
     $("component").value=s.component; $("range").value=s.range; $("center").value=s.center; $("invert").checked=s.invert;
     $("unit").textContent=axis.startsWith("R")?"degrees":"metres";
@@ -439,12 +519,14 @@ function controls() {
     $("fitSelection").disabled=!track;
     if(track?.window)$("editing").textContent=`Editing ${trackName(track)} · ${axis} · local origin within ${track.window.map(t=>(t/1000).toFixed(3)).join("–")} s. Apply a selection to update main.`;
     if(locked())$("editing").textContent="Locked · curve, calibration and source are protected across reruns. Unlock this track to edit it.";
+    else if(manual)$("editing").textContent=`Editing Main ${axis} · add audio or manual patterns, or edit points. Tracking is optional.`;
     $("lockMain").textContent=locked("main")?"Unlock":"Lock";$("lockMain").setAttribute("aria-pressed",String(locked("main")));
     const ref=project.references?.[$("axis").value];$("referenceOffset").disabled=!ref;$("referenceOffset").value=ref?.offset_ms||0;
     document.querySelectorAll(".track").forEach(row=>row.classList.toggle("selected",row.dataset.track===project.timeline.active));
     $("selectMain").textContent=`Main · ${$("axis").value} · export`;
     const main=project.timeline.main[$("axis").value];
     $("mainDescription").textContent=main.assembled?`${main.regions.length} source sections · device preview and exports follow main`:"Device preview and exported scripts follow this track";
+    if(project.metadata.manual_only)$("mainDescription").textContent='Audio and manual patterns · device preview and exports follow Main';
     selectionControls();
     sectionControls();
 }
@@ -883,7 +965,7 @@ function render() {
     const pose=selectedContext.track?selectedContext:project.timeline.main[outputAxis].assembled?mainPoseProject(project,outputAxis,currentMs):selectedContext;
     const data=pose.data,i=sampleIndex(data),available=data.valid[i]&&currentMs>=data.times_ms[0]&&currentMs<=data.metadata.duration_ms&&Math.abs(currentMs-data.times_ms[i])<=data.config.max_gap_ms;
     if(available){drawOverlay(i,data);drawSkeleton(i,data,pose.axis);}
-    else for(const name of ["overlay","skeleton"]){const[ctx,w,h]=resize($(name));ctx.fillStyle="#eabf71";ctx.font="13px system-ui";ctx.fillText("No analysed pose at this time",12,h/2);}
+    else for(const name of ["overlay","skeleton"]){const[ctx,w,h]=resize($(name));if(!data.metadata.manual_only){ctx.fillStyle="#eabf71";ctx.font="13px system-ui";ctx.fillText("No analysed pose at this time",12,h/2);}}
     if(!video.paused&&view.follow&&!dragging)view=followView(project.metadata.duration_ms,view,currentMs);
     navigationControls();renderSceneCutActions();
     $("sceneCutCount").textContent=sceneCuts.length?`${sceneCuts.length} cuts`:"";
@@ -898,6 +980,7 @@ function render() {
         const canvas=[...$("tracks").children].find(row=>row.dataset.track===track.id).querySelector("canvas"),rect=canvas.getBoundingClientRect();
         if(track.id===project.timeline.active||rect.bottom>=Math.max(0,listRect.top)&&rect.top<=Math.min(innerHeight,listRect.bottom))drawCurve(canvas,trackProject(project,track),track.axis,false,track.id===project.timeline.active,track.window);else curveLayers.delete(canvas);
     }
+    beats.render();
 }
 function updateVideoTime(seconds){
     if(mediaLoading||!project||!video.getAttribute("src")||!video.readyState)return;
@@ -986,7 +1069,7 @@ $("fitSelection").addEventListener("click",()=>{
         status("Selection fitted as a new track · review its motion, then use selection in main");
     }catch(error){status(error.message);}
 });
-$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;project.device_output=old.device_output;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();deviceOutputControls();dirty(false);render();});
+$("undo").addEventListener("click",()=>{if(!history.length)return;const old=JSON.parse(history.pop());project.scripts=old.scripts;project.config=old.config;project.references=old.references;project.metrics=old.metrics;project.device_output=old.device_output;project.audio_patterns=old.audio_patterns;restoreTimeline(project,old.timeline);$("undo").disabled=!history.length;buildTracks();selectionControls();controls();deviceOutputControls();dirty(false);render();});
 function pointer(event,canvas){const rect=canvas.getBoundingClientRect();return {at:roundEven(Math.max(0,Math.min(project.metadata.duration_ms,bounds[0]+(event.clientX-rect.left-42)/(rect.width-54)*(bounds[1]-bounds[0])))),pos:roundEven(Math.max(0,Math.min(100,(rect.height-25-(event.clientY-rect.top))/(rect.height-40)*100)))};}
 function nearest(event,canvas,actions){
     const a=pointer(event,canvas),rect=canvas.getBoundingClientRect(),[first,stop]=visibleRange(actions.length,i=>actions[i].at,...bounds);
@@ -1225,7 +1308,7 @@ bindCurve($('sectionCurve'),time=>sectionAt(sectionBlocks,time)?.id??null);
 $("selectMain").onclick=()=>selectLane("main");
 $("tracks").addEventListener("scroll",render,{passive:true});
 window.addEventListener("scroll",render,{passive:true});
-$("addTrack").onclick=()=>{if(!project)return;const current=selected().track,source=current?.source||project.timeline.sources[0].id;record();const track=newTrack(project,source,current?.axis||$("axis").value);project.timeline.active=track.id;buildTracks();dirty();controls();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});};
+$("addTrack").onclick=()=>{if(!project)return;const current=selected().track,source=current?.source||sourceChoices(project)[0]?.id;if(!source)return;record();const track=newTrack(project,source,current?.axis||$("axis").value);project.timeline.active=track.id;buildTracks();dirty();controls();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});};
 $("markIn").onclick=()=>{if(project){const at=selectedCut?.at??currentMs;setSelection(at,Math.max(at,project.timeline.selection[1]));}};
 $("markOut").onclick=()=>{if(project){const at=selectedCut?.at??currentMs;setSelection(Math.min(at,project.timeline.selection[0]),at);}};
 for(const id of ["selectionStart","selectionEnd"])$(id).onchange=()=>{
@@ -1260,7 +1343,15 @@ document.addEventListener("keydown",event=>{
             if(['i','o'].includes(event.key.toLowerCase())){event.preventDefault();$(event.key.toLowerCase()==='i'?'sceneCutIn':'sceneCutOut').click();return;}
         }
     }
-    if(!project||event.ctrlKey||event.metaKey||event.altKey||event.target.closest("input,select,textarea,button"))return;
+    if(!project||event.defaultPrevented||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||event.target.closest('input,select,textarea,button,[role="textbox"]'))return;
+    if(event.code==='Space'||event.key===' '){
+        // Native controls keep their own Space action, including the video player.
+        if(event.target.closest('video,audio,summary,a[href],[role="button"]'))return;
+        event.preventDefault();
+        if(event.repeat||mediaLoading||!video.getAttribute('src'))return;
+        if(video.paused)video.play().catch(error=>status(error.message));else video.pause();
+        return;
+    }
     if(["+","=","-"].includes(event.key)&&event.target.closest(".curves")){event.preventDefault();zoomTimeline(view.span_ms*(event.key==="-"?2:.5));}
     if(event.key.toLowerCase()==="i"){$("markIn").click();event.preventDefault();}
     if(event.key.toLowerCase()==="o"){$("markOut").click();event.preventDefault();}
@@ -1291,7 +1382,7 @@ $("robot").addEventListener("keydown",e=>{
     deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch));deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom));render();
 });
 $("projectFile").addEventListener("change",async e=>{try{install(JSON.parse(await e.target.files[0].text()));dirty(false);}catch(error){status(error.message);}});
-$("videoFile").addEventListener("change",e=>{if(!e.target.files[0])return;const resume=!video.paused;if(localVideos[videoVariant])URL.revokeObjectURL(localVideos[videoVariant]);videoURL=URL.createObjectURL(e.target.files[0]);localVideos[videoVariant]=videoURL;loadPreviewVideo(resume);status(`Local ${videoMapping?videoVariant:"source"} video loaded`);e.target.value="";});
+$("videoFile").addEventListener("change",e=>{if(!e.target.files[0])return;const resume=!video.paused;if(localVideos[videoVariant])URL.revokeObjectURL(localVideos[videoVariant]);localVideoFiles[videoVariant]=e.target.files[0];videoURL=URL.createObjectURL(e.target.files[0]);localVideos[videoVariant]=videoURL;loadPreviewVideo(resume);status(`Local ${videoMapping?videoVariant:"source"} video loaded`);e.target.value="";render();});
 $("videoVariant").onchange=()=>{const resume=!video.paused;videoVariant=$("videoVariant").value;videoChoices();loadPreviewVideo(resume);render();};
 $("referenceFile").addEventListener("change",async e=>{if(!project){status("Open a project first");return;}try{const file=e.target.files[0],data=JSON.parse(await file.text()),actions=validateReference(data);record();project.references={...project.references,[$("axis").value]:{actions,offset_ms:0,source:{path:file.name},header_inverted:!!data.inverted,interpretation:"Positions compared as written; legacy headers not applied"}};dirty(false);controls();render();}catch(error){status(error.message);}});
 $("referenceOffset").addEventListener("change",()=>{const ref=project?.references?.[$("axis").value],offset=Number($("referenceOffset").value);if(!ref||!Number.isFinite(offset))return;record();ref.offset_ms=offset;dirty(false);render();});

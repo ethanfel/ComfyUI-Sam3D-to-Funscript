@@ -59,9 +59,13 @@ app.registerExtension({
                     if(!['range','regions'].includes(message.processing_scope?.kind))throw new Error('Choose a marked range or selected regions.');
                     message.operation='selected';
                 }
-                if(!["automatic","all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors","preview_anchor"].includes(message.operation))throw new Error("Unknown timeline operation");
-                const cutScan=message.operation==="detect_cuts",anchorPreview=message.operation==='preview_anchor';
-                const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly&&!anchorPreview;
+                if(!["automatic","all","selected","unfinished","detect_cuts","stabilize","propagate_mask","extract_anchors","preview_anchor","seed_mask"].includes(message.operation))throw new Error("Unknown timeline operation");
+                const cutScan=message.operation==="detect_cuts",anchorPreview=message.operation==='preview_anchor',maskSeed=message.operation==='seed_mask';
+                const trackOnly=["stabilize","propagate_mask"].includes(message.operation),targeted=trackOnly||message.operation==="extract_anchors",motionRun=!cutScan&&!trackOnly&&!anchorPreview&&!maskSeed;
+                if(maskSeed){
+                    const seed=message.mask_seed,region=message.plan.stabilization.find(r=>r.id===seed?.region_id&&r.enabled!==false&&!r.locked);
+                    if(!region||!Number.isFinite(seed.at_ms)||seed.at_ms<region.start_ms||seed.at_ms>=region.end_ms)throw new Error('Choose an unlocked stabilization region and frame for SAM3.');
+                }
                 if(anchorPreview){
                     const request=message.anchor_preview,region=message.plan.tracking.find(r=>r.id===request?.region_id&&r.enabled!==false);
                     if(!region||!Number.isFinite(request.at_ms)||request.at_ms<region.start_ms||request.at_ms>=region.end_ms)throw new Error('Select a frame inside an enabled tracking region to preview');
@@ -71,7 +75,7 @@ app.registerExtension({
                 if(jobs.has(node))throw new Error("This timeline is already processing.");
                 const job={reply};jobs.set(node,job);
                 try{
-                    setPlan();reply({state:"queued",text:anchorPreview?'Preparing anchor preview…':cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
+                    setPlan();reply({state:"queued",text:maskSeed?'Preparing initial SAM3 mask…':anchorPreview?'Preparing anchor preview…':cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
                     const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(!stateResponse.ok)throw new Error("Could not read the saved timeline before processing.");
                     const state=await stateResponse.json();
@@ -86,6 +90,7 @@ app.registerExtension({
                     }
                     if(message.operation==='automatic')prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,automatic_options:message.automatic_options});
                     if(targeted)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,stabilization_ids:[message.stabilization_id]});
+                    if(maskSeed)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,mask_seed:message.mask_seed});
                     if(anchorPreview)prompt.output[String(node.id)].inputs.plan_json=JSON.stringify({revision:message.revision,plan:message.plan,anchor_preview:message.anchor_preview});
                     if(cutScan||message.operation==='automatic'){
                         prompt.output[String(node.id)].inputs.cut_sensitivity=message.cut_sensitivity;
@@ -100,7 +105,7 @@ app.registerExtension({
                     const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
                     if(latestResponse.ok&&motionRun){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
                     reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0],
-                        ...(anchorPreview?{anchor_preview:output.s3f_anchor_preview?.[0]}:{})});
+                        ...(anchorPreview?{anchor_preview:output.s3f_anchor_preview?.[0]}:{}),...(maskSeed?{mask_seed:output.s3f_mask_seed?.[0]}:{})});
                 }finally{jobs.delete(node)}
             }catch(error){reply({state:"error",error:errorMessage(error)})}
         });
@@ -112,8 +117,12 @@ app.registerExtension({
                     job.reply({state:"running",text:`Scanning hard cuts · ${data.frames||0} frames · ${data.cuts||0} markers`,
                         value:Math.max(0,(data.position_ms||0)-(data.start_ms||0)),max:(data.end_ms||0)-(data.start_ms||0)});continue;
                 }
+                if(data.stage==='mask_model_download'){
+                    const total=data.total_bytes||0,done=data.downloaded_bytes||0;
+                    job.reply({state:'running',text:`Downloading ${data.model_file}${total?` · ${Math.floor(done*100/total)}%`:''}`,value:done,max:total});continue;
+                }
                 const done=data.completed_jobs??0,total=data.total_jobs??0;
-                const text=[({auto_people:'Detecting people in scenes',auto_ready:'Automatic scenes prepared',anchor_preview:'Inspecting source frame',mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
+                const text=[({mask_seed:'Generating initial SAM3 mask',auto_people:'Detecting people in scenes',auto_ready:'Automatic scenes prepared',anchor_preview:'Inspecting source frame',mask_anchor:"Binding painted 3D anchor",stabilization:"Tracking reference",mask_decode:"Reading mask source",mask_propagation:"Propagating mask"})[data.stage]||data.stage||"Processing",data.region_name||data.region_id,total>1?`${done} / ${total} jobs`:null,data.frames?`${data.frames} frames`:null].filter(Boolean).join(" · ");
                 job.reply({state:"running",text,value:data.total_frames?data.frames:done,max:data.total_frames||total});
             }
         });

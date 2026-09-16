@@ -3,6 +3,7 @@ import copy
 import json
 import re
 import threading
+from fractions import Fraction
 from pathlib import Path
 
 from .reference import atomic_json, digest
@@ -97,17 +98,20 @@ class ProcessingStore:
                 state["progress"] = value
                 self.write(state)
 
-    def update_cuts(self, session, source_id, result=None, progress=None, *, expected=None):
+    def update_cuts(self, session, source_id, result=None, progress=None, *, expected=None, preserve_manual=False):
         """Annotations never change a motion result, plan revision, or region lock."""
         with LOCK:
             state = self.read(session)
             if state is None or state["info"]["source_id"] != source_id:
                 raise PlanConflict("The source video changed while updating cuts. Prepare the timeline again.")
             if expected is not None and digest(state.get('scene_cuts')) != expected:
-                raise PlanConflict('Cut markers changed in another tab or scan. Preview the import again before replacing them.')
+                raise PlanConflict('Cut markers changed in another tab or scan. Reload the markers and try again; for an EDL import, preview it again.')
             if result is not None:
                 if result.get("source_id") != source_id:
                     raise PlanConflict("Cut markers belong to another source video.")
+                if preserve_manual:
+                    from .scene_cuts import preserve_cut_edits
+                    result = preserve_cut_edits(result, state.get('scene_cuts'))
                 state["scene_cuts"] = copy.deepcopy(result)
             if progress is not None:
                 state["cut_progress"] = copy.deepcopy(progress)
@@ -137,6 +141,26 @@ class ProcessingStore:
                 state["project"] = Path(project_path).parent.name
             return self.write(state)
 
+    def prepare_editor(self, session, source_id, editor_session):
+        """Open authoring before inference, preserving the owner's video history."""
+        from .core import export_project
+        from .editor import EditorStore, blank_project
+        with LOCK:
+            state = self.read(session)
+            if not state or state['info']['source_id'] != source_id or state.get('editor_session') != editor_session:
+                raise PlanConflict('The Timeline video or editor changed. Reopen Motion Studio from the current Timeline.')
+            if state.get('project_path') and Path(state['project_path']).is_file():
+                return state
+            info = state['info']
+            project = blank_project(dict(source=info['source'], duration_ms=info['end_ms'],
+                source_origin_ms=float(Fraction(info.get('source_origin', '0'))*1000), image_size=[info['height'], info['width']],
+                processing_timeline=dict(session=session, plan=state['plan'], coverage=[])), float(Fraction(info['start'])*1000))
+            editors = EditorStore(self.root.parent)
+            path, _ = editors.export(editor_session, project, lambda data: export_project(data, self.root.parent, 'timeline'))
+            state.update(project_path=str(path), project=path.parent.name,
+                         editor_only=bool(editors.read(editor_session)['project']['metadata'].get('manual_only')))
+            return self.write(state)
+
     def finish(self, session, revision, report, project_path=None, error=None):
         with LOCK:
             state = self.read(session)
@@ -149,7 +173,8 @@ class ProcessingStore:
             if project_path is not None:
                 state["project_path"] = str(project_path)
                 state["project"] = Path(project_path).parent.name
-            elif error is None:
+                state['editor_only'] = False
+            elif error is None and not state.get('editor_only'):
                 # An empty successful assembly must clear the old motion output.
                 state["project_path"] = None
                 state["project"] = None

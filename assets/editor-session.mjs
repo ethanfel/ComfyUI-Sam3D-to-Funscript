@@ -62,11 +62,12 @@ export function withEditorView(project, local) {
     return {...project, preview: local.preview, timeline};
 }
 
-export function editorSession({install, snapshot, status, recovery = () => {}, downloadDraft}) {
+export function editorSession({install, snapshot, status, recovery = () => {}, downloadDraft, validate = async () => null, waiting = () => {}}) {
     const params = new URLSearchParams(location.search), session = params.get('session');
     if (!session || document.getElementById('s3f-project')) return null;
     const endpoint = `../editors/${encodeURIComponent(session)}`;
     let revision = 0, baseContent, unconfirmed, pending = false, timer, retryTimer, retryDelay = 1000, saving, recovering, refreshing, failure, output = params.get('project');
+    let unavailable = false;
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(`s3f-editor-${session}`) : null;
     const editor = Array.from(crypto.getRandomValues(new Uint8Array(16)), b=>b.toString(16).padStart(2,'0')).join('');
     async function read() {
@@ -89,7 +90,11 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
         // Installation normalizes older project formats before editing begins.
         baseContent = editorContent(snapshot());
         saved();
+        unavailable = false;
         return sameMedia;
+    }
+    function waitForProject(reason) {
+        unavailable = true; waiting(reason); status(reason);
     }
     async function savePending() {
         let conflicts = 0;
@@ -168,9 +173,11 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
         refreshing = (async () => {
             await flush();
             const state = await read();
+            const reason = await validate(state?.project);
             // Do not install over an edit made while the network read was in flight.
             if (pending || saving || recovering || failure) return;
-            if (state && state.revision > revision) {
+            if (reason) {waitForProject(reason); return;}
+            if (state && (state.revision > revision || unavailable)) {
                 const sameMedia = accept(state, true, id);
                 status(sameMedia ? 'Latest run loaded · locked curves and composed sections preserved' : 'Source video changed · new project loaded');
             }
@@ -184,6 +191,8 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
             if (saving) await saving.catch(() => {});
             const state = await read();
             if (!state) throw new Error('No saved project is available yet. Download your current project before closing this tab.');
+            const reason = await validate(state.project);
+            if (reason) throw new Error(reason);
             if (!downloadDraft) throw new Error('Download your current project before reloading this tab.');
             // Read first; capture last so edits made during that read also reach
             // the download. Never replace the draft if the download cannot start.
@@ -212,6 +221,8 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
     return {
         async load(fallback) {
             const state = await read();
+            const reason = await validate(state?.project);
+            if (reason) {waitForProject(reason); return;}
             if (state) {accept(state, false); status('Saved editor restored · locks survive reruns');}
             else {
                 const data=await fallback();
@@ -219,7 +230,7 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
                 install(data, false, output); baseContent = editorContent(snapshot()); pending = true; await flush();
             }
         },
-        changed() {pending = true; clearTimeout(timer); if (!failure) timer = setTimeout(() => flush().catch(() => {}), 300);},
+        changed() {if(unavailable&&!snapshot())return; unavailable = false; pending = true; clearTimeout(timer); if (!failure) timer = setTimeout(() => flush().catch(() => {}), 300);},
         flush, recover,
     };
 }

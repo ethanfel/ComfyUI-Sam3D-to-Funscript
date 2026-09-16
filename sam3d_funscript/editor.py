@@ -8,10 +8,27 @@ from pathlib import Path
 
 import numpy as np
 
-from .core import SCHEMA, AXES, validate_actions
+from .core import SCHEMA, AXES, default_config, validate_actions
 from .timeline import GEOMETRY, SOURCE_FIELDS
 
 LOCK = threading.RLock()
+
+
+def blank_project(metadata, start_ms=0):
+    """An authoring canvas with no inferred people or motion samples."""
+    end = max(1, round(metadata['duration_ms']))
+    config = default_config()
+    project = dict(schema=SCHEMA, metadata={**copy.deepcopy(metadata), 'manual_only': True}, config=config,
+        scripts={axis: dict(version='1.0', inverted=False, range=100,
+            actions=[{'at': 0, 'pos': 50}, {'at': end, 'pos': 50}]) for axis in AXES},
+        times_ms=[start_ms, metadata['duration_ms']], valid=[False, False], segments=[0, 0],
+        points=[[], []], pixels=[[], []], raw=[[None]*6, [None]*6], processed=[[None]*6, [None]*6],
+        anchor_indices={'target': [], 'reference': None}, orientation_hints={}, metrics={}, warnings=[])
+    data = {key: copy.deepcopy(project[key]) for key in SOURCE_FIELDS if key in project}
+    project['timeline'] = dict(version=1, sources=[dict(id='blank', input='blank', label='Blank canvas', geometry='base', data=data)],
+        latest={}, geometries={}, tracks=[], main={axis: dict(assembled=True, source='blank', regions=[], processing_generated=True)
+        for axis in AXES}, active='main', selection=[0, 0])
+    return project
 
 
 def same_video(a, b):
@@ -178,6 +195,13 @@ def merge_projects(previous, incoming):
         if locked:
             raise ValueError('This editor has locked tracks from another video. Use a new Preview node for the new video, or explicitly unlock those tracks first.')
         return new
+    if new['metadata'].get('manual_only'):
+        # Preparing a canvas must never replace saved curves or detections.
+        context = new['metadata'].get('processing_timeline')
+        if context:
+            old['metadata'].setdefault('processing_timeline', {}).update(
+                {key: copy.deepcopy(context[key]) for key in ('session', 'plan') if key in context})
+        return old
     out, timeline = old, old['timeline']
     sources = {s['id']: s for s in timeline['sources']}
     geometries = {digest(geometry(out, s)): s['geometry'] for s in timeline['sources']}
@@ -248,7 +272,7 @@ def merge_projects(previous, incoming):
     out['config']['enabled_axes'] = list(out['scripts'])
     generated_main = bool(timeline['main']) and all(main.get('processing_generated') and not main.get('edited')
         and not main.get('locked') for main in timeline['main'].values())
-    retained_tracks = any(track.get('edited') or track.get('locked') or track.get('window') for track in timeline['tracks'])
+    retained_tracks = any(track.get('edited') or track.get('locked') or track.get('window') for track in timeline['tracks']) or bool(out.get('audio_patterns', {}).get('sections'))
     if was_processing_generated and 'processing_timeline' in new['metadata'] and generated_main and not retained_tracks:
         # A shorter processing trim replaces the generated result's extent.
         # Authored/locked lanes retain the historical ruler they may still use;
@@ -256,6 +280,7 @@ def merge_projects(previous, incoming):
         out['metadata']['duration_ms'] = new['metadata']['duration_ms']
     else:
         out['metadata']['duration_ms'] = max(out['metadata']['duration_ms'], new['metadata']['duration_ms'])
+    out['metadata'].pop('manual_only', None)
     if 'processing_timeline' in new['metadata']:
         out['metadata']['processing_timeline'] = copy.deepcopy(new['metadata']['processing_timeline'])
         if 'scene_cuts' in new['metadata']:

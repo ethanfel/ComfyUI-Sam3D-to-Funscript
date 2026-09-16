@@ -77,7 +77,7 @@ class S3F_ProcessingTimeline:
             "sample_fps": ("FLOAT", {"default": 0, "min": 0, "max": 120, "step": 1, "tooltip": "0 analyzes every source frame. Original timestamps are retained."}),
             "batch_size": ("INT", {"default": 8, "min": 1, "max": 128}),
             "tracker_model": (folder_paths.get_filename_list("cotracker") or ["cotracker3_scaled_online.pth"],),
-            "operation": (["prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"], {"default": "prepare", "tooltip": "Automatic fills uncovered scenes with person crops and four anchor candidates. Prepare opens/restores the editor. Stabilize runs without SAM3D."}),
+            "operation": (["prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor", "seed_mask"], {"default": "prepare", "tooltip": "Automatic fills uncovered scenes with person crops and four anchor candidates. Prepare opens/restores the editor. Stabilize runs without SAM3D."}),
             "plan_json": ("STRING", {"default": "{}", "multiline": True, "tooltip": "The timeline editor saves its source-bound regions and revision here. Blank or {} reuses the saved plan; a new session starts with a full-video region."}),
             "use_cache": ("BOOLEAN", {"default": True}),
         }, "optional": {"mask_video": ("VIDEO", {"tooltip": "Optional person mask matching the original video. Used by tracking regions."}),
@@ -102,7 +102,7 @@ class S3F_ProcessingTimeline:
         from server import PromptServer
         from .sam3d_funscript.processing_timeline import run_timeline, parse_plan
 
-        if operation not in ("prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor"):
+        if operation not in ("prepare", "automatic", "all", "selected", "unfinished", "detect_cuts", "stabilize", "propagate_mask", "extract_anchors", "preview_anchor", "seed_mask"):
             raise ValueError("Unknown timeline processing operation")
         submitted = parse_plan(plan_json)
         path, start, duration = video_input_range(video)
@@ -137,14 +137,15 @@ class S3F_ProcessingTimeline:
                     expected_cuts = digest(cuts)
                     cuts = detect_cuts(info, output_root/'cut_cache', cut_sensitivity, use_cache,
                         progress=auto_progress, interrupt=throw_exception_if_processing_interrupted)
-                    state = store.update_cuts(session, info['source_id'], cuts, expected=expected_cuts)
+                    state = store.update_cuts(session, info['source_id'], cuts, expected=expected_cuts, preserve_manual=True)
+                    cuts = state['scene_cuts']
                 options = submitted.get('automatic_options', {})
                 if not isinstance(options, dict): raise ValueError('Invalid automatic mode options')
                 stabilization_mode = options.get('stabilization', 'prepared_masks')
                 if stabilization_mode not in ('prepared_masks', 'existing'):
                     raise ValueError('Invalid automatic stabilization mode')
                 plan, automatic_report = prepare_automatic(info, state['plan'], cuts, store.directory(session),
-                    replace_default=not state.get('report') and not state.get('project_path'),
+                    replace_default=not state.get('report') and (state.get('editor_only') or not state.get('project_path')),
                     people_mode=options.get('people', 'all'), use_cache=use_cache, progress=auto_progress,
                     interrupt=throw_exception_if_processing_interrupted)
                 if stabilization_mode == 'prepared_masks':
@@ -167,6 +168,14 @@ class S3F_ProcessingTimeline:
             # available to the assembly but are not newly processed by this pass.
             submitted['processing_scope'] = {'kind': 'regions', 'ids': [r['id'] for r in state['plan']['tracking'] if r.get('automatic') and r['enabled']]}
             operation = 'selected' if submitted['processing_scope']['ids'] else 'prepare'
+        if operation == 'seed_mask':
+            from .sam3d_funscript.mask_seed import seed_mask
+            seed = seed_mask(info, state['plan'], submitted.get('mask_seed'), store.directory(session),
+                use_cache=use_cache, interrupt=throw_exception_if_processing_interrupted,
+                progress=lambda event: PromptServer.instance.send_sync('s3f_timeline_progress', {'session': session, **event}))
+            return {'ui': {'s3f_timeline': [session], 's3f_timeline_status': ['Initial mask ready · review with Paint / Erase'],
+                           's3f_mask_seed': [seed], 's3f_timeline_project': [state.get('project')]},
+                    'result': (ExecutionBlocker(None), str(store.directory(session) / 'timeline.json'))}
         if operation == 'preview_anchor':
             from .sam3d_funscript.anchor_preview import preview_anchor
             preview = preview_anchor(info, state['plan'], submitted.get('anchor_preview'), model_file,
@@ -189,7 +198,8 @@ class S3F_ProcessingTimeline:
                 cut_progress({"stage": "scene_cuts", "frames": 0, "cuts": 0})
                 cuts = detect_cuts(info, output_root / "cut_cache", cut_sensitivity, use_cache,
                                    progress=cut_progress, interrupt=throw_exception_if_processing_interrupted)
-                state = store.update_cuts(session, info["source_id"], cuts, {"stage": "complete"}, expected=expected_cuts)
+                state = store.update_cuts(session, info["source_id"], cuts, {"stage": "complete"}, expected=expected_cuts, preserve_manual=True)
+                cuts = state['scene_cuts']
             except (Exception, InterruptProcessingException) as error:
                 store.update_cuts(session, info["source_id"], progress={"stage": "error", "error": str(error) or "Cut detection cancelled"})
                 raise
@@ -280,10 +290,13 @@ class S3F_ProcessingTimeline:
             # or when a newly connected standalone becomes their session owner.
             result_path = publish_motion(load_project(state["project_path"]), editor_session, output_root, state)
             state = store.bind_editor(session, editor_session, result_path)
+        if operation == 'prepare':
+            state = store.prepare_editor(session, info['source_id'], editor_session)
         project = load_project(state["project_path"]) if state.get("project_path") and Path(state["project_path"]).is_file() else ExecutionBlocker(None)
         summary = "Timeline ready · select regions and process in the editor."
         if state.get("project"):
-            summary = "Motion result ready." + (" Plan changed since this result; process affected regions to update it." if not state.get("result_current") else "")
+            summary = ("Motion Studio ready · audio and manual patterns are available without tracking." if state.get('editor_only') else
+                "Motion result ready." + (" Plan changed since this result; process affected regions to update it." if not state.get("result_current") else ""))
         if automatic_report is not None:
             if not automatic_report['scenes_added']:
                 summary = automatic_report['message']

@@ -14,12 +14,18 @@
 .device-output{border:1px solid #66523e;border-radius:7px;padding:12px;margin-top:10px}.device-output summary{color:#ffc07d}.device-output .controls{gap:10px;margin-top:12px}.device-output select{max-width:260px}.device-output input[type=number]{width:95px}.device-output .setup-label{flex:1;min-width:0;flex-wrap:wrap}.device-output input[type=text]{flex:1;min-width:160px;border:1px solid #3b5266;background:#223343;color:inherit;border-radius:6px;padding:8px;font:inherit}.device-output a{color:#9cccf1}#outputStatus{color:#ffc07d;font-size:12px;line-height:1.6}#downloadDevice{background:#62472e;border-color:#94704c}.output-preview{margin:10px 0}#deviceMotionStatus{min-height:28px}#outputEvidence{line-height:1.6}
 #mainOutputBadge{color:#ffc07d;font-size:11px}
 .waiting-for-workflow .stage,.waiting-for-workflow .curves,.waiting-for-workflow main>details{display:none}#workflowWaiting{margin-bottom:16px}
+.manual-project .source-head,.manual-project #sectionControls,.manual-project #tracks,.manual-project #sectionLane,.manual-project #posePanel,.manual-project .legend .raw,.manual-project .legend .filtered{display:none}
+.manual-project .stage{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:700px){.manual-project .stage{grid-template-columns:1fr}}
+.manual-project .video-panel{grid-column:auto}.controls label[hidden]{display:none}
 
 .editing-points .track canvas{cursor:crosshair}
 
 .video-panel .curve-head{margin-bottom:14px}
 .pattern-panel{margin:12px 0;padding:12px;border:1px solid #3c4e62;border-radius:7px;background:#1b2935}.pattern-panel summary{cursor:pointer;color:#efb1cd}.pattern-panel .controls{margin:12px 0;flex-wrap:wrap}.pattern-panel input[type=number]{width:85px}.pattern-panel [hidden]{display:none!important}.pattern-panel p{margin:10px 0;color:#a9bbc9}.pattern-panel #patternStatus{color:#f3b0ce}.pattern-panel #applyPattern{background:#245748}.pattern-panel button{max-width:100%;white-space:normal}
 .pattern-panel select{max-width:min(100%,300px)}.pattern-panel label{max-width:100%;flex-wrap:wrap}
+.audio-lane{margin:16px 0;border:1px solid #65563f;border-radius:7px;padding:12px;background:#1a2933;min-width:0}.audio-lane h2{color:#ffc875}.audio-lane .controls{margin-top:10px;gap:10px}.audio-lane label{flex-wrap:wrap;max-width:100%}.audio-lane select{max-width:min(100%,260px)}.audio-lane button{max-width:100%;white-space:normal}.audio-lane [hidden]{display:none!important}#beatAudioInfo{font-size:11px;color:#a7bac9;overflow-wrap:anywhere}#beatCurve{display:block;width:100%;height:210px;margin-top:10px;touch-action:none}#beatCurve:focus-visible{outline:2px solid #ffc875;outline-offset:-2px}#beatStatus{color:#ffda9f;font-size:12px}#beatSave,#beatCopy{background:#245748}#beatOffset{width:105px}
+#beatCurve{width:calc(100% + 24px);margin-left:-12px}
+#beatMixInfo{font-size:11px;color:#bd96dc;overflow-wrap:anywhere;min-width:0;flex:1}#beatMixOffset{width:105px}#beatExplanation{font-size:12px;color:#d5bbec}#beatDecisions{max-height:160px;overflow:auto;padding-left:20px}
 
 .track.collapsed>canvas,.track.collapsed>#curve{display:none}.track-head .collapse-track{font-size:16px;min-width:26px;padding:2px 6px;color:#9cccf1}#sceneCutCount{font-size:11px;color:#d9c57e}
 
@@ -50,3 +56,5 @@ body.video-floating .stage{grid-template-columns:1fr 1fr}.video-panel.floating{p
 body.source-sections #mainLane{scrollbar-gutter:auto}
 
 .track-result{font-weight:600;padding:4px 8px;border-radius:4px;background:#24483f;color:#9ce9cb}.track-result[data-current="false"]{background:#594323;color:#ffcf88}.track-source-settings{font-size:12px}.track-source-settings summary,#sectionHistory summary{cursor:pointer;color:#9db5c7}.track-source-settings[open] label{margin-top:6px}#sectionHistory{font-size:12px}#sectionHistory[open] label{display:flex;margin-top:6px}#latestDetection{border-color:#75e2ba;color:#9ce9cb}
+
+.audio-range input[type=number]{width:110px}#beatRangeHint{color:#ffda9f}#beatPreview{background:#245748}

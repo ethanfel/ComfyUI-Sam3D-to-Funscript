@@ -76,7 +76,7 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeline_import_graph_is_served(self):
         import re
         from urllib.parse import urljoin, urlsplit
-        pending = ['/sam3d_funscript/assets/processing-timeline.js']
+        pending = ['/sam3d_funscript/assets/processing-timeline.js', '/sam3d_funscript/assets/viewer.js']
         visited = set()
         while pending:
             url = pending.pop()
@@ -89,11 +89,69 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
             for relative in re.findall(r'''(?:from\s*|import\s*\()\s*["'](\./[^"']+)["']''', source):
                 pending.append(urlsplit(urljoin(url, relative)).path)
         self.assertIn('/sam3d_funscript/assets/timeline-restore.mjs', visited)
+        self.assertIn('/sam3d_funscript/assets/audio-lane.mjs', visited)
+        self.assertIn('/sam3d_funscript/assets/audio-analysis.mjs', visited)
+        self.assertIn('/sam3d_funscript/assets/audio-patterns.mjs', visited)
         # EDL is deliberately optional at startup, including across a live
         # file update before the server reloads its asset allowlist.
         self.assertNotIn('/sam3d_funscript/assets/cut-import.mjs', visited)
         response = await self.client.get('/sam3d_funscript/assets/cut-import.mjs')
         self.assertEqual(response.status, 200)
+
+    async def test_video_soundtrack_uses_project_source_and_original_variant(self):
+        from test_video_audio import audio_video
+        import io
+        import wave
+        from urllib.parse import quote
+        source = self.root / 'music with spaces.mkv'
+        audio_video(source)
+        directory = self.root / 'sam3d_funscript' / 'neutral_aaaaaaaaaaaa'
+        directory.mkdir()
+        atomic_json(directory / 'project.json', {})
+        atomic_json(directory / 'source.json', {'path': str(self.video)})
+        atomic_json(directory / 'original-source.json', {'path': str(source)})
+        url = '/sam3d_funscript/video/neutral_aaaaaaaaaaaa/audio'
+        before = self.store.read(self.session)
+        response = await self.client.get(url)
+        self.assertEqual(response.status, 400)
+        self.assertIn('no audio track', await response.text())
+        response = await self.client.get(url, params={'variant': 'original'})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.content_type, 'audio/wav')
+        self.assertEqual(float(response.headers['X-S3F-Audio-Start-Ms']), 2000)
+        self.assertEqual(response.headers['X-S3F-Audio-Name'], quote(source.name))
+        data = await response.read()
+        with wave.open(io.BytesIO(data)) as audio:
+            self.assertEqual(audio.getframerate(), 11025)
+            self.assertGreater(audio.getnframes(), 4000)
+        response = await self.client.get(url, params={'variant': 'original'})
+        self.assertEqual(await response.read(), data)
+        for suffix, status in [('?variant=arbitrary', 400), ('?variant=../../source', 400)]:
+            response = await self.client.get(url + suffix)
+            self.assertEqual(response.status, status)
+        response = await self.client.get('/sam3d_funscript/video/missing_aaaaaaaaaaaa/audio')
+        self.assertEqual(response.status, 404)
+        self.assertEqual(self.store.read(self.session), before)
+
+    async def test_initial_mask_capability_and_installed_core_model_list(self):
+        folders = sys.modules['folder_paths']
+        folders.folder_names_and_paths = {'checkpoints': [], 'diffusion_models': [], 'sam3': []}
+        folders.get_filename_list = lambda group: {
+            'checkpoints':['sam3.pt','sam_3d_body.safetensors','other-model.safetensors'],
+            'diffusion_models':['SAM3/full.safetensors','SAM3/sam3.1.safetensors'],
+            'sam3':['sam3.1_multiplex.pt','SAM2Matting-SAM3.pt','sam3.json','sam3d_body.pt']}[group]
+        before = self.store.read(self.session)
+        response = await self.client.get('/sam3d_funscript/reference-capabilities')
+        self.assertEqual((await response.json())['sam3_mask_seed'],1)
+        response = await self.client.get('/sam3d_funscript/mask-seed-models')
+        self.assertEqual(response.status,200)
+        self.assertEqual(response.headers['Cache-Control'],'no-store')
+        self.assertEqual(await response.json(),[
+            {'value':'checkpoints:sam3.pt','label':'SAM3 · sam3.pt (checkpoints)'},
+            {'value':'diffusion_models:SAM3/full.safetensors','label':'SAM3 · SAM3/full.safetensors (diffusion_models)'},
+            {'value':'diffusion_models:SAM3/sam3.1.safetensors','label':'SAM3.1 · SAM3/sam3.1.safetensors (diffusion_models)'},
+            {'value':'sam3:sam3.1_multiplex.pt','label':'SAM3.1 · sam3.1_multiplex.pt (sam3)'}])
+        self.assertEqual(self.store.read(self.session),before)
 
     def edl_request(self):
         return {'source_id': self.info['source_id'], 'fps': '30', 'filename': 'montage.edl',
@@ -134,6 +192,52 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         for update, status in [({'source_id':'other'},409), ({'text':'garbage'},400), ({'fps':25},400), ({'preview':False},400)]:
             response = await self.client.post(self.base+'/cuts/import', json={**body, **update})
             self.assertEqual(response.status, status, await response.text())
+        self.assertEqual(self.store.read(self.session), before)
+
+    async def test_manual_cut_exact_frame_persists_without_changing_locked_motion(self):
+        state = self.store.read(self.session)
+        state['plan']['tracking'][0]['locked'] = True
+        state = self.store.save(self.session, state['revision'], state['plan'])
+        self.store.finish(self.session, state['revision'], {'regions': []}, self.root/'saved'/'project.json')
+        before = self.store.read(self.session)
+        index = await (await self.client.get(self.base + '/frames', params={'source_id': self.info['source_id']})).json()
+        at = index['times_ms'][1]
+        body = {'source_id': self.info['source_id'], 'action': 'add', 'frame': 1, 'expected_cuts': None}
+        response = await self.client.post(self.base + '/cuts/edit', json=body)
+        self.assertEqual(response.status, 200, await response.text())
+        added = await response.json()
+        self.assertEqual(added['scene_cuts']['times_ms'], [at])
+        self.assertEqual(added['scene_cuts']['manual_times_ms'], [at])
+        for key in ('plan', 'revision', 'project', 'report', 'result_current'):
+            self.assertEqual(added[key], before[key], key)
+        reopened = ProcessingStore(self.store.root).prepare(self.session, self.info)
+        self.assertEqual(reopened, added)
+        body['expected_cuts'] = added['scene_cuts']
+        duplicate = await self.client.post(self.base + '/cuts/edit', json=body)
+        self.assertEqual(await duplicate.json(), added)
+        response = await self.client.post(self.base + '/cuts/edit', json={**body, 'action': 'remove'})
+        removed = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(removed['scene_cuts']['times_ms'], [])
+        self.assertEqual(removed['scene_cuts']['manual_times_ms'], [])
+        for key in ('plan', 'revision', 'project', 'report', 'result_current'):
+            self.assertEqual(removed[key], before[key], key)
+
+    async def test_manual_cut_rejects_invalid_and_stale_edits(self):
+        body = {'source_id': self.info['source_id'], 'action': 'add', 'frame': 1, 'expected_cuts': None}
+        before = self.store.read(self.session)
+        for change in ({'frame': True}, {'frame': 1.5}, {'frame': -1}, {'frame': 0}, {'frame': 6}, {'action': 'clear'}):
+            response = await self.client.post(self.base + '/cuts/edit', json={**body, **change})
+            self.assertEqual(response.status, 400, await response.text())
+        response = await self.client.post(self.base + '/cuts/edit', json={k:v for k,v in body.items() if k!='expected_cuts'})
+        self.assertEqual(response.status, 400)
+        response = await self.client.post(self.base + '/cuts/edit', json={**body, 'source_id': 'old'})
+        self.assertEqual(response.status, 409)
+        self.assertEqual(self.store.read(self.session), before)
+        await self.client.post(self.base + '/cuts/edit', json=body)
+        before = self.store.read(self.session)
+        response = await self.client.post(self.base + '/cuts/edit', json={**body, 'frame': 2})
+        self.assertEqual(response.status, 409)
         self.assertEqual(self.store.read(self.session), before)
 
     async def test_editor_assets_revalidate_after_updates(self):

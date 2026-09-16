@@ -4,12 +4,33 @@ import {referenceKeys,withReferenceKeys,validateReferenceKeys} from './reference
 
 export function stabilizationSteps({$,context,attempt,updateReference,seekOriginal,process,configureAnchors,selectRegion,draw}) {
     const steps=new Map(),images=new Map();let brush=null,request=null,error='',lastRegion=null;
+    let models=null,loadingModels=false,modelError='';
+    const promptSettings=c=>({text:'man',confidence:.15,backend:'sam3matting',checkpoint:'',...c.region.reference.mask_prompt});
     const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
     const current=()=>{const c=context();return c.region?{...c,mask:c.region.reference.point_mask,step:steps.get(c.region.id)||(c.region.reference.points?.length?'track':'mask')}:null;};
     const ready=c=>!!c?.entry&&!!c.mask&&c.entry.region.start_ms===c.region.start_ms&&c.entry.region.end_ms===c.region.end_ms&&equal(c.entry.mask,maskGeometry(c.mask));
     const setStep=name=>{const c=current();if(!c)return;steps.set(c.region.id,name);brush=null;$('maskTool').value='review';if(name==='mask')seekOriginal(c.mask?.frame??Math.max(0,Math.min(c.frame,c.frameCount-1)));render();draw();};
     const emptyMask=c=>({frame:c.frame,spacing:12,limit:500,model:'sam2.1_base_plus',strokes:[]});
     const change=mask=>updateReference({...current().region.reference,point_mask:mask});
+    async function loadModels(){
+        if(models||loadingModels)return;loadingModels=true;
+        try{
+            const response=await fetch(new URL('../mask-seed-models',location.href),{cache:'no-store',signal:AbortSignal.timeout(15000)});
+            if(!response.ok)throw new Error('Restart ComfyUI to load the SAM3 mask tools.');
+            models=await response.json();modelError='';
+        }catch(e){modelError=e.message;}finally{loadingModels=false;render();}
+    }
+    $('refreshMaskSeedModels').onclick=()=>{models=null;modelError='';void loadModels();render();};
+    $('maskSeedModel').onchange=()=>attempt(()=>{
+        const value=$('maskSeedModel').value,c=current();
+        if(value!=='sam3matting'&&!(models||[]).some(m=>value==='core:'+m.value))throw new Error('Choose an installed SAM3 / SAM3.1 model or SAM3Matting.');
+        updateReference({...c.region.reference,mask_prompt:{...promptSettings(c),backend:value==='sam3matting'?'sam3matting':'core',checkpoint:value==='sam3matting'?'':value.slice(5)}});
+    });
+    for(const [id,field,convert] of [['maskSeedText','text',String],['maskSeedConfidence','confidence',Number]])$(id).onchange=()=>attempt(()=>{
+        const c=current();updateReference({...c.region.reference,mask_prompt:{...promptSettings(c),[field]:convert($(id).value)}});
+    });
+    $('generateSeedMask').onclick=()=>process('seed_mask');
+    $('cancelSeedMask').onclick=()=>$('cancel').click();
     const generate=()=>{
         const c=current();if(!c.mask?.strokes.length)throw new Error('Paint a reference mask first.');
         if(c.region.reference.points.length&&!$('replaceMaskPoints').checked)throw new Error('Enable Replace existing points and reference keyframes to generate a new point set. Undo can restore it.');
@@ -56,6 +77,26 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
         if(!steps.has(c.region.id))steps.set(c.region.id,c.step);
         if(lastRegion!==c.region.id){lastRegion=c.region.id;$('replaceMaskPoints').checked=false;error='';}
         const disabled=c.busy||c.region.locked,hasMask=!!c.mask?.strokes.length;
+        const prompt=promptSettings(c),seeding=c.operation==='seed_mask';
+        for(const [id,value] of [['maskSeedText',prompt.text],['maskSeedConfidence',prompt.confidence]]){
+            $(id).disabled=disabled;if(document.activeElement!==$(id))$(id).value=value;
+        }
+        if(c.step==='mask'&&models===null&&!modelError)void loadModels();
+        const select=$('maskSeedModel'),choices=models||[],value=prompt.backend==='core'?'core:'+prompt.checkpoint:'sam3matting';
+        const available=prompt.backend!=='core'||choices.some(m=>m.value===prompt.checkpoint);
+        const signature=JSON.stringify([choices,value,loadingModels]);
+        if(select.dataset.models!==signature){
+            select.replaceChildren(new Option('SAM3Matting','sam3matting'),...choices.map(m=>new Option(m.label,'core:'+m.value)));
+            if(!available){const missing=new Option((prompt.checkpoint||'SAM3 / SAM3.1')+(loadingModels?' · checking…':' · unavailable'),value);missing.disabled=true;select.add(missing);}
+            select.value=value;select.dataset.models=signature;
+        }
+        select.disabled=disabled;$('refreshMaskSeedModels').disabled=disabled||loadingModels;
+        $('generateSeedMask').disabled=disabled||!available||c.region.enabled===false||c.frame<0||c.frame>=c.frameCount;
+        $('generateSeedMask').textContent=seeding?'Generating…':hasMask?'Replace mask with SAM3':'Generate initial mask';
+        $('cancelSeedMask').hidden=!seeding;$('cancelSeedMask').disabled=$('cancel').disabled;
+        $('maskSeedStatus').textContent=seeding?$('progressText').textContent:!available?modelError||'This saved model is unavailable. Refresh models or choose another model.':
+            'Uses the current original frame and the best matching subject. Paint / Erase refines the result; existing points are kept.'+(prompt.backend==='sam3matting'?' Missing SAM3Matting weights download automatically to ComfyUI’s model folder.':'')+
+            (modelError?' '+modelError:loadingModels?' Checking installed SAM3 / SAM3.1 models…':models?.length===0?' No core SAM3 / SAM3.1 checkpoints found.':'');
         const issue=problem();
         $('maskReadiness').textContent=hasMask?(ready(c)?'Ready':'Needs propagation'):'Optional';
         $('trackReadiness').textContent=issue?'Needs setup':c.tracked?'Ready · rendered':'Ready to track';
@@ -112,5 +153,13 @@ export function stabilizationSteps({$,context,attempt,updateReference,seekOrigin
         }).catch(e=>{images.set(key,null);error=e.message;}).finally(()=>{request=null;render();if(!error)draw();});
     }
     function validate(){const c=current();if(c?.mask?.strokes.length&&!ready(c))throw new Error('Propagate the updated reference mask before tracking.');}
-    return {render,setStep,overlay,pointerDown,pointerMove,pointerUp,cancel:()=>{brush=null;},problem,validate,reset:()=>{images.clear();error='';}};
+    function seedRequest(){
+        const c=current();if(!c||c.region.locked||c.region.enabled===false||c.frame<0||c.frame>=c.frameCount)throw new Error('Pause inside an unlocked stabilization region first.');
+        const settings=promptSettings(c);
+        if(!settings.text.trim()||!Number.isFinite(settings.confidence)||settings.confidence<0||settings.confidence>1)throw new Error('Enter a prompt and confidence between 0 and 1.');
+        settings.text=settings.text.trim();
+        if(settings.backend==='core'&&!(models||[]).some(m=>m.value===settings.checkpoint))throw new Error('Choose an installed SAM3 / SAM3.1 model; refresh the list if you just installed it.');
+        seekOriginal(c.frame);return {region_id:c.region.id,frame:c.frame,settings};
+    }
+    return {render,setStep,overlay,pointerDown,pointerMove,pointerUp,seedRequest,cancel:()=>{brush=null;},problem,validate,reset:()=>{images.clear();error='';}};
 }

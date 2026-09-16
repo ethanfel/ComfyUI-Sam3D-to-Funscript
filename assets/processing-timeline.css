@@ -95,6 +95,7 @@ body.resizing-columns,body.resizing-columns *{cursor:col-resize!important;user-s
 #stabilizationSettings .toolbar:last-child{margin-bottom:0}
 #stabilizationSettings .muted{font-size:11px;line-height:1.5}
 #stabilizationSettings .reference-frames select{flex:1;min-width:150px;max-width:260px}
+#maskStep .mask-model{flex:1;min-width:0;max-width:100%}#maskSeedModel{flex:1;min-width:0;max-width:100%}
 #stabilizationSettings #pointCount{margin-left:auto}
 #stabilizationSettings #trackingHealth{font-size:12px;line-height:1.5;margin:0 0 8px}
 #stabilizationSettings #stabilizedStatus{flex-basis:100%}

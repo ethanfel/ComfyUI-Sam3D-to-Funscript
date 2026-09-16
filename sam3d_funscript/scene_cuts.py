@@ -1,5 +1,6 @@
 """Cached hard-cut annotations, streamed on the source video's presentation clock."""
 from collections import OrderedDict
+import copy
 from fractions import Fraction
 import json
 from pathlib import Path
@@ -13,6 +14,52 @@ from .video import fingerprint
 
 VERSION = 1
 PRESETS = {"low": (4.5, 22.0), "normal": (3.0, 15.0), "high": (2.3, 10.0)}
+
+
+def _same_cut(a, b):
+    # The frame index stores nanosecond-rounded PTS; detection uses rational PTS.
+    return abs(a - b) < .001
+
+
+def edit_cut(previous, source_id, at_ms, action):
+    """Edit an annotation at a validated frame boundary, leaving regions alone."""
+    if action not in ('add', 'remove'):
+        raise ValueError('Cut action must be add or remove.')
+    result = copy.deepcopy(previous) if previous else {
+        'version': VERSION, 'source_id': source_id, 'detector': 'manual', 'times_ms': []}
+    if result['source_id'] != source_id:
+        raise ValueError('Cut markers belong to another source video.')
+    times = result['times_ms']
+    exists = any(_same_cut(t, at_ms) for t in times)
+    if exists == (action == 'add'):
+        return result
+    added = [t for t in result.get('manual_times_ms', []) if not _same_cut(t, at_ms)]
+    removed = [t for t in result.get('removed_times_ms', []) if not _same_cut(t, at_ms)]
+    if action == 'add':
+        times.append(at_ms)
+        added.append(at_ms)
+    else:
+        times = [t for t in times if not _same_cut(t, at_ms)]
+        removed.append(at_ms)
+    result.update(times_ms=sorted(times), manual_times_ms=sorted(added), removed_times_ms=sorted(removed))
+    return result
+
+
+def preserve_cut_edits(detected, previous):
+    """Apply saved corrections to a fresh scan without altering the detector cache."""
+    result = copy.deepcopy(detected)
+    if not previous or previous.get('source_id') != detected['source_id']:
+        return result
+    added = previous.get('manual_times_ms', [])
+    removed = previous.get('removed_times_ms', [])
+    if not added and not removed:
+        return result
+    times = [t for t in result['times_ms'] if not any(_same_cut(t, r) for r in removed)]
+    for at in added:
+        times = [t for t in times if not _same_cut(t, at)]
+        times.append(at)
+    result.update(times_ms=sorted(times), manual_times_ms=copy.deepcopy(added), removed_times_ms=copy.deepcopy(removed))
+    return result
 
 
 def small_frames(info, interrupt=None):

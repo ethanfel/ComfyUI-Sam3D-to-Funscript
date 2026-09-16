@@ -16,3 +16,12 @@ assert.equal(prefillReferenceKey({...ref,crop_xywh:[0,0,40,40]},ref,data,1),null
 assert.equal(prefillReferenceKey({...ref,keyframes:[{frame:0,points:[[21,20],[40,20],[60,20]]}]},ref,data,1),null);
 assert.equal(agreementText({inliers:[3],visible:[[true,true,true,false]]},0),'3 / 3 visible points agree · 4 total');
 console.log('Masks: paint/erase, distributed density cap, reference identity matching, lost-point review and agreement feedback passed');
+
+const generated={frame:2,spacing:5,limit:500,strokes:[{erase:false,radius:1,shape:'polygon',
+    points:[[5,5],[80,5],[80,70],[5,70]],holes:[[[20,20],[40,20],[40,40],[20,40]]]}]};
+assert(maskContains(generated,10,10));assert(!maskContains(generated,30,30));assert(!maskContains(generated,90,50));
+generated.strokes.push({erase:true,radius:5,points:[[10,10]]},{erase:false,radius:5,points:[[90,50]]});
+assert(!maskContains(generated,10,10));assert(maskContains(generated,90,50));
+assert(maskPoints(generated,[0,0,100,80]).points.every(p=>maskContains(generated,...p)));
+assert.notDeepEqual(maskGeometry(generated),maskGeometry({...generated,strokes:generated.strokes.slice(0,1)}));
+console.log('SAM3 mask polygons retain holes and accept manual Paint/Erase and point sampling');

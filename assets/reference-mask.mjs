@@ -1,7 +1,20 @@
 // Source-pixel brush strokes; the mask selects point seeds, never point identities.
+function polygonContains(points,x,y){
+    let inside=false;
+    for(let i=0,j=points.length-1;i<points.length;j=i++){
+        const [ax,ay]=points[j],[bx,by]=points[i];
+        if(Math.abs((x-ax)*(by-ay)-(y-ay)*(bx-ax))<1e-8&&x>=Math.min(ax,bx)&&x<=Math.max(ax,bx)&&y>=Math.min(ay,by)&&y<=Math.max(ay,by))return true;
+        if((ay>y)!==(by>y)&&x<(bx-ax)*(y-ay)/(by-ay)+ax)inside=!inside;
+    }
+    return inside;
+}
 export function maskContains(mask,x,y){
     let inside=false;
     for(const stroke of mask?.strokes||[]){
+        if(stroke.shape==='polygon'){
+            if(polygonContains(stroke.points,x,y)&&!(stroke.holes||[]).some(p=>polygonContains(p,x,y)))inside=!stroke.erase;
+            continue;
+        }
         const points=stroke.points,r2=stroke.radius**2;
         for(let i=0;i<points.length;i++){
             const a=points[Math.max(0,i-1)],b=points[i],dx=b[0]-a[0],dy=b[1]-a[1];
@@ -33,6 +46,11 @@ export function drawPointMask(ctx,mask,map,width,height,draft=null){
     for(const s of strokes){
         paint.globalCompositeOperation=s.erase?'destination-out':'source-over';paint.lineWidth=2*s.radius*map.scale;
         const xy=p=>[map.ox+(p[0]-map.crop[0])*map.scale,map.oy+(p[1]-map.crop[1])*map.scale];
+        if(s.shape==='polygon'){
+            paint.beginPath();
+            for(const ring of [s.points,...s.holes||[]]){paint.moveTo(...xy(ring[0]));for(const p of ring.slice(1))paint.lineTo(...xy(p));paint.closePath();}
+            paint.fill('evenodd');continue;
+        }
         const start=xy(s.points[0]);paint.beginPath();paint.arc(...start,s.radius*map.scale,0,Math.PI*2);paint.fill();
         paint.beginPath();paint.moveTo(...start);for(const p of s.points.slice(1))paint.lineTo(...xy(p));paint.stroke();
     }

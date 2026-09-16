@@ -37,7 +37,16 @@ def normalize_mask(mask, width, height):
             raise ValueError('Brush radius must be positive')
         if points.ndim != 2 or points.shape[1] != 2 or not len(points) or not np.isfinite(points).all() or np.any(points < 0) or np.any(points > [width-1, height-1]):
             raise ValueError('Mask strokes must lie inside the source frame')
-        result.append({'erase': s['erase'], 'radius': radius, 'points': points.tolist()})
+        stroke = {'erase': s['erase'], 'radius': radius, 'points': points.tolist()}
+        if s.get('shape') == 'polygon':
+            holes = s.get('holes', [])
+            if not isinstance(holes, list):
+                raise ValueError('Mask polygon holes must be a list')
+            rings = [points, *(np.asarray(hole, float) for hole in holes)]
+            if any(p.ndim != 2 or p.shape[1] != 2 or len(p) < 3 or not np.isfinite(p).all() or np.any(p < 0) or np.any(p > [width-1, height-1]) for p in rings):
+                raise ValueError('Mask polygons must lie inside the source frame')
+            stroke.update(shape='polygon', holes=[p.tolist() for p in rings[1:]])
+        result.append(stroke)
     return {'frame': mask['frame'], 'spacing': spacing, 'limit': limit, 'margin': margin, 'model': model, 'strokes': result}
 
 
@@ -52,6 +61,10 @@ def raster_mask(mask, width, height):
         points = np.rint(stroke['points']).astype(np.int32)
         radius = max(1, round(stroke['radius']))
         color = 0 if stroke['erase'] else 255
+        if stroke.get('shape') == 'polygon':
+            rings = [points, *(np.rint(p).astype(np.int32) for p in stroke.get('holes', []))]
+            cv2.fillPoly(image, rings, color)
+            continue
         cv2.polylines(image, [points], False, color, radius*2, lineType=cv2.LINE_8)
         for p in (points[0], points[-1]):
             cv2.circle(image, tuple(p), radius, color, -1)
@@ -98,15 +111,36 @@ def matting_backend():
     return sys.modules[name]
 
 
-def mask_checkpoint(model):
+def mask_checkpoint(model, *, download=False, progress=None, interrupt=None):
     import folder_paths
-    path = folder_paths.get_full_path('sam2matting', MODEL_FILES[model]) if 'sam2matting' in folder_paths.folder_names_and_paths else None
-    if path is None:
-        candidate = Path(folder_paths.models_dir)/'sam2matting'/MODEL_FILES[model]
-        path = str(candidate) if candidate.is_file() else None
-    if path is None:
-        raise ValueError(f'Missing {MODEL_FILES[model]}; install it using Load SAM2Matting Video Model, then retry')
-    return Path(path)
+    filename = MODEL_FILES[model]
+    registered = 'sam2matting' in folder_paths.folder_names_and_paths
+    path = folder_paths.get_full_path('sam2matting', filename) if registered else None
+    if path is not None:
+        return Path(path)
+    directories = folder_paths.get_folder_paths('sam2matting') if registered else []
+    destination = (Path(directories[0]) if directories else Path(folder_paths.models_dir)/'sam2matting')/filename
+    if destination.is_file():
+        return destination
+    if not download:
+        raise ValueError(f'Missing {filename}; install it using Load SAM2Matting Video Model, then retry')
+    backend = matting_backend()
+    if interrupt: interrupt()
+    if progress: progress({'stage':'mask_model_download', 'model_file':filename, 'downloaded_bytes':0, 'total_bytes':0})
+    last_percent = -1
+
+    def report(done, total):
+        nonlocal last_percent
+        if interrupt: interrupt()
+        percent = int(done*100/total) if total else 0
+        if progress and percent != last_percent:
+            progress({'stage':'mask_model_download', 'model_file':filename, 'downloaded_bytes':done, 'total_bytes':total})
+            last_percent = percent
+
+    # The package owns the official URL, atomic replacement and partial cleanup.
+    backend.download_checkpoint(model, destination, report)
+    if interrupt: interrupt()
+    return destination
 
 
 class MaskReader:

@@ -9,7 +9,7 @@ import av
 import numpy as np
 
 from sam3d_funscript.reference import source_info
-from sam3d_funscript.scene_cuts import detect_cuts
+from sam3d_funscript.scene_cuts import detect_cuts, edit_cut, preserve_cut_edits
 from sam3d_funscript.processing_store import ProcessingStore, PlanConflict
 
 
@@ -119,6 +119,37 @@ class CutDetectionTests(unittest.TestCase):
         self.assertEqual(stopped["scene_cuts"], result)
         with self.assertRaises(PlanConflict):
             store.update_cuts(state["session"], "other-source", result)
+
+    def test_rescan_preserves_added_and_removed_cuts_without_changing_cache(self):
+        result = self.scan([self.a] * 10 + [self.b] * 10 + [self.c] * 10)
+        original = deepcopy(result)
+        sid = result['source_id']
+        corrected = edit_cut(result, sid, 400, 'remove')
+        corrected = edit_cut(corrected, sid, 240, 'add')
+        store = ProcessingStore(self.root / 'plans')
+        state = store.prepare('a' * 32, source_info(self.root / 'source.mkv'))
+        store.update_cuts(state['session'], sid, corrected)
+        rescanned = store.update_cuts(state['session'], sid, result, preserve_manual=True)
+        self.assertEqual(rescanned['scene_cuts']['times_ms'], [240, 800])
+        self.assertEqual(rescanned['scene_cuts']['manual_times_ms'], [240])
+        self.assertEqual(rescanned['scene_cuts']['removed_times_ms'], [400])
+        cached = detect_cuts(state['info'], self.root / 'cache')
+        self.assertEqual(cached['times_ms'], [400, 800])
+        self.assertEqual(result, original)
+        # An explicitly imported replacement does not retain old corrections.
+        imported = {**original, 'format': 'edl', 'times_ms': [600]}
+        self.assertEqual(store.update_cuts(state['session'], sid, imported)['scene_cuts'], imported)
+
+    def test_fractional_pts_edits_match_detector_boundaries(self):
+        original = {'source_id': 'source', 'times_ms': [1000/30, 2000/30]}
+        unchanged = edit_cut(original, 'source', 33.333333, 'add')
+        self.assertEqual(unchanged, original)
+        corrected = edit_cut(original, 'source', 33.333333, 'remove')
+        self.assertEqual(preserve_cut_edits(original, corrected)['times_ms'], [2000/30])
+        restored = edit_cut(corrected, 'source', 33.333333, 'add')
+        self.assertEqual(preserve_cut_edits(original, restored)['times_ms'], [33.333333, 2000/30])
+        self.assertEqual(restored['removed_times_ms'], [])
+        self.assertEqual(preserve_cut_edits({**original, 'source_id': 'new'}, corrected)['times_ms'], original['times_ms'])
 
 
 if __name__ == "__main__":

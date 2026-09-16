@@ -7,6 +7,7 @@ import json
 import math
 import re
 import uuid
+from urllib.parse import quote
 
 from aiohttp import web
 import folder_paths
@@ -17,6 +18,7 @@ from .sam3d_funscript.standalone import standalone_html
 from .sam3d_funscript.editor import EditorStore, Conflict
 from .sam3d_funscript.reference_preview import reference_preview
 from .sam3d_funscript.processing_store import ProcessingStore, PlanConflict
+from .sam3d_funscript.video_audio import extract_video_audio
 
 
 def register_routes():
@@ -24,6 +26,7 @@ def register_routes():
     assets = Path(__file__).parent / "assets"
     thumbnail_slots = asyncio.Semaphore(2)
     frame_index_slots = asyncio.Semaphore(1)
+    audio_slots = asyncio.Semaphore(1)
 
     def editor_store():
         return EditorStore(Path(folder_paths.get_output_directory()) / "sam3d_funscript")
@@ -62,6 +65,39 @@ def register_routes():
         if not path.is_file():
             raise web.HTTPNotFound(text="Source video moved; choose its new location in the workflow.")
         return web.FileResponse(path)
+
+    @routes.post("/sam3d_funscript/timelines/{session}/cuts/edit")
+    async def processing_edit_cut(request):
+        from .sam3d_funscript.frame_index import frame_index
+        from .sam3d_funscript.scene_cuts import edit_cut
+        from .sam3d_funscript.reference import digest
+        request = request.clone(client_max_size=4 * 1024 * 1024)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('Cut edit must be a JSON object.')
+            state = processing_state(request)
+            if body['source_id'] != state['info']['source_id']:
+                raise PlanConflict('The source video changed. Reload the timeline before editing cuts.')
+            expected = digest(body['expected_cuts'])
+            if expected != digest(state.get('scene_cuts')):
+                raise PlanConflict('Cut markers changed in another tab or scan. Reload the markers and try again.')
+            frame = body['frame']
+            if type(frame) is not int or body['action'] not in ('add', 'remove'):
+                raise ValueError('Choose a source frame and an add or remove action.')
+            async with frame_index_slots:
+                index = await asyncio.to_thread(frame_index, state['info'], processing_store().root / 'frame-index')
+            if not index['first_frame'] < frame < index['end_frame']:
+                raise ValueError('A cut must be inside the video, on the first frame of the new shot.')
+            at = index['times_ms'][frame - index['first_frame']]
+            result = edit_cut(state.get('scene_cuts'), body['source_id'], at, body['action'])
+            updated = processing_store().update_cuts(state['session'], body['source_id'], result,
+                {'stage': 'complete'}, expected=expected)
+            return web.json_response(updated)
+        except PlanConflict as error:
+            raise web.HTTPConflict(text=str(error))
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
 
     @routes.post("/sam3d_funscript/timelines/{session}/cuts/import")
     async def processing_import_cuts(request):
@@ -209,7 +245,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
+        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
             raise web.HTTPNotFound()
         # Module entry points and imported helpers must revalidate together after
         # an update. Heuristic caching can otherwise mix incompatible exports.
@@ -217,7 +253,12 @@ def register_routes():
 
     @routes.get("/sam3d_funscript/reference-capabilities")
     async def reference_capabilities(request):
-        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1, "sam3_mask_seed": 1}, headers={"Cache-Control": "no-store"})
+
+    @routes.get('/sam3d_funscript/mask-seed-models')
+    async def mask_seed_models(request):
+        from .sam3d_funscript.mask_seed import core_models
+        return web.json_response(await asyncio.to_thread(core_models), headers={'Cache-Control': 'no-store'})
 
     def reference_path(request):
         identifier = request.match_info["reference"]
@@ -279,8 +320,7 @@ def register_routes():
             return web.FileResponse(preview)
         return web.json_response(reference_preview(video_source(project_file)))
 
-    @routes.get("/sam3d_funscript/video/{project}")
-    async def video(request):
+    def preview_video_path(request):
         project_file = project_path(request)
         source = video_source(project_file)
         variant = request.query.get("variant", "stabilized")
@@ -298,4 +338,20 @@ def register_routes():
         path = Path(source["path"])
         if path.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v") or not path.is_file():
             raise web.HTTPNotFound(text="Source video moved or unsupported; select a local file in the preview.")
-        return web.FileResponse(path)
+        return path
+
+    @routes.get("/sam3d_funscript/video/{project}/audio")
+    async def video_audio(request):
+        source = preview_video_path(request)
+        directory = Path(folder_paths.get_output_directory()) / 'sam3d_funscript' / 'audio-previews'
+        try:
+            async with audio_slots:
+                path, start_ms = await asyncio.to_thread(extract_video_audio, source, directory)
+            return web.FileResponse(path, headers={'Content-Type': 'audio/wav', 'Cache-Control': 'no-cache',
+                'X-S3F-Audio-Start-Ms': str(start_ms), 'X-S3F-Audio-Name': quote(source.name)})
+        except (ValueError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
+
+    @routes.get("/sam3d_funscript/video/{project}")
+    async def video(request):
+        return web.FileResponse(preview_video_path(request))

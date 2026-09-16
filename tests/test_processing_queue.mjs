@@ -11,6 +11,7 @@ let attached,prepared=0,notified=0,queued;
 class API extends EventTarget{
  fetchApi=async()=>({ok:true,json:async()=>({editor_session:'b'.repeat(32),project:'authored'})});
  async queuePrompt(number,prompt,options){
+  if(prompt.output[1].inputs.operation==='seed_mask')this.dispatchEvent(new CustomEvent('s3f_timeline_progress',{detail:{session,stage:'mask_model_download',model_file:'SAM2Matting-SAM3.pt',downloaded_bytes:25,total_bytes:100}}));
   queued={prompt,options};const detail={prompt_id:'synthetic',node:'1',output:{s3f_timeline:[session],s3f_timeline_status:['Tracking complete'],s3f_anchor_preview:[{frame:3,anchors:[{name:'pelvis'}]}]}};
   this.dispatchEvent(new CustomEvent('executed',{detail}));this.dispatchEvent(new CustomEvent('execution_success',{detail}));
   return {prompt_id:'synthetic'};
@@ -83,3 +84,20 @@ assert.deepEqual(JSON.parse(queued.prompt.output[1].inputs.plan_json),{revision:
 assert.deepEqual(JSON.parse(node.widgets[0].value),{revision:4,plan});
 assert.equal(prepared,beforeAutomatic.prepared+1);assert.equal(notified,beforeAutomatic.notified+1);
 console.log('Automatic pass forwards people and cut settings, flushes edits, and preserves the saved selection');
+
+const seedPlan={...plan,stabilization:[{id:'s1',start_ms:1000,end_ms:3000,enabled:true,locked:false,reference:{points:[[1,1],[2,2],[3,3]]}}]};
+const seedRequest={region_id:'s1',frame:2,at_ms:2000,settings:{text:'man',confidence:.15,backend:'sam3matting',checkpoint:''}};
+const seedCounts={prepared,notified};
+await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'seed',operation:'seed_mask',mask_seed:seedRequest,revision:4,plan:seedPlan}});
+assert.equal(replies.at(-1).state,'complete');
+assert.deepEqual(queued.options.partialExecutionTargets,['1']);
+assert.deepEqual(JSON.parse(queued.prompt.output[1].inputs.plan_json),{revision:4,plan:seedPlan,mask_seed:seedRequest});
+assert.equal(queued.prompt.output[1].inputs.operation,'seed_mask');
+assert.deepEqual({prepared,notified},seedCounts,'initial-mask preview does not run or reload Motion Studio');
+assert.deepEqual(JSON.parse(node.widgets[0].value),{revision:4,plan:seedPlan},'one-frame generation remains a one-shot request');
+for(const at_ms of [0,3000]){
+ queued=null;await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'bad-seed',operation:'seed_mask',mask_seed:{...seedRequest,at_ms},plan:seedPlan}});
+ assert.equal(queued,null);assert.match(replies.at(-1).error,/stabilization region and frame/);
+}
+console.log('SAM3 seed mask: targeted single-frame job, preserved reference points, and no Motion Studio side effects');
+assert.ok(replies.some(r=>r.text==='Downloading SAM2Matting-SAM3.pt · 25%'&&r.value===25&&r.max===100),'download progress reaches the mask job');

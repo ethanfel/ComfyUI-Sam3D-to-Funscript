@@ -13,7 +13,7 @@ import {trackingResultCurrent,processingScope,planForScope} from "./processing-s
 import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=stabilization-auto-1";
 import {subjectEditor} from "./timeline-subject.mjs?v=subject-crop-1";
 import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
-import {stabilizationSteps} from './stabilization-steps.mjs?v=anchor-boundary-1';
+import {stabilizationSteps} from './stabilization-steps.mjs?v=sam3-models-1';
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
@@ -26,6 +26,7 @@ let appliedPlan = null, pollTimer = null, loading = false, thumbTimer = null, th
 let frames = null, presentedTime = null, frameCuts = [];
 let requestedSeek = null, decodingSeek = null;
 let selectedCut = null, cutRangeReady = false;
+let cutEditPending = false;
 let propagatedMasks = {};
 let renderedClips = [], previewClip = null, previewURL = '', previewLoading = false, resumePlayback = false;
 let anchorPreview=null,processedRegions={},anchorOrigin=null;
@@ -39,6 +40,7 @@ const sourceBounds = () => {const [a,b]=bounds(state.info);return frames?[Math.m
 const duration = () => sourceBounds()[1];
 const clipDuration = () => sourceBounds()[1]-sourceBounds()[0];
 const cuts = () => frameCuts;
+const manualCut = at => state.scene_cuts?.manual_times_ms?.some(t=>frames.snap(t)===at);
 const cutClipName = at => state.scene_cuts?.segments?.find(s=>s.start_ms<=at&&at<s.end_ms)?.name||'';
 let cutImportLoading=false, cutImportAttempt=0;
 $('importCuts').onclick=async()=>{
@@ -185,6 +187,11 @@ function updateRegion(patch) {
 }
 function selectRegion(id, additive = false, seekAt = null) {
     if(startingOperation)return;
+    // Timeline pointerdown prevents the browser's normal blur. Finish the old
+    // field while its region is still active, then let the inspector load the
+    // new region's values instead of preserving the focused control's value.
+    const control=document.activeElement;
+    if(control?.matches("input,textarea,select")&&control.closest("#regionForm"))control.blur();
     reviewTools();
     activeId = id;
     showInspectorTab("region");
@@ -470,21 +477,24 @@ function renderNavigation() {
     $('processSelected').title=b>a?`Process only ${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:'Mark In and Out first';
     $('processRegions').title=enabledSelected.length?`Process full regions: ${enabledSelected.map(r=>r.name).join(', ')}`:'Select enabled regions first';
     $("processAutomatic").disabled=busy;$("automaticPeople").disabled=busy;$("automaticStabilization").disabled=busy;
-    $("detectCuts").disabled=busy;$("cutSensitivity").disabled=busy;
-    $("importCuts").disabled=busy||!!startingOperation||cutImportLoading;
+    $("detectCuts").disabled=busy||cutEditPending;$("cutSensitivity").disabled=busy;
+    $("importCuts").disabled=busy||!!startingOperation||cutImportLoading||cutEditPending;
+    $("addCut").disabled=busy||!!startingOperation||cutEditPending||activeFrame()<=frames.first;
+    $("addCut").title="Place a cut before the displayed frame: seek to the first frame of the new shot (C). Saves immediately.";
+    $("removeCut").disabled=busy||!!startingOperation||cutEditPending||selectedCut===null;
     $("previousCut").disabled=neighboringCut(cuts(),playhead,-1)===null;
     $("nextCut").disabled=neighboringCut(cuts(),playhead,1)===null;
     const hasScan=state.scene_cuts?.source_id===state.info.source_id;
     $("selectShot").disabled=!hasScan||busy;
     $("cutStatus").textContent=busy&&processPending?.operation==="detect_cuts"?"Scanning…":hasScan?`${cuts().length} cut markers${state.scene_cuts.format==='edl'?" · imported EDL":state.scene_cuts.cache_hit?" · cached":""}`:"No cut markers yet";
     $("markOut").title=selectedCut!==null?"End the selection exactly at this cut, before its first frame (O)":"End the selection after the displayed frame, including it (O)";
-    $("selectionHint").textContent=selectedCut!==null?"Cut selected: In / Out use the boundary before this frame.":"Mark Out includes the displayed frame. Out is the boundary after the selection.";
+    $("selectionHint").textContent=selectedCut!==null?"Cut selected: In / Out use the boundary before this frame.":"Mark Out includes this frame. Shift+O ends before it. C adds a missing cut.";
     $("cutActions").hidden=selectedCut===null;
     const active=selected()?.region;
     for(const id of ['timelineSplit','split'])$(id).disabled=busy||!active||active.locked||playhead<=active.start_ms+1||playhead>=active.end_ms-1;
     $("timelineSplit").title=active?`Split ${active.name} at ${positionLabel(playhead)} (S)`:'Select a region, then seek to the frame where it changes';
     if(selectedCut!==null){
-        $("selectedCutLabel").textContent=`Cut ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}${cutClipName(selectedCut)?' · '+cutClipName(selectedCut):''}`;
+        $("selectedCutLabel").textContent=`${manualCut(selectedCut)?'Manual cut':'Cut'} ${cutIndex(cuts(),selectedCut)+1} · Frame ${frames.ceil(selectedCut)}${cutClipName(selectedCut)?' · '+cutClipName(selectedCut):''}`;
         for(const [id,direction]of [["cutBefore",-1],["cutAfter",1]]){const range=cutSideRange(cuts(),selectedCut,direction,...sourceBounds());$(id).disabled=!range||range[1]-range[0]<1;}
         $("cutRegion").disabled=busy||!cutRangeReady||b-a<1;
         $("cutRegionRange").textContent=cutRangeReady&&b>a?`${positionLabel(a)} – ${positionLabel(b)} (exclusive)`:"Select a shot, set In / Out, or Shift-click another cut";
@@ -581,7 +591,7 @@ function renderCutButtons(width){
         }
         button.style.left=`${(at-view.start_ms)/view.span_ms*100}%`;
         button.setAttribute("aria-pressed",String(at===selectedCut));
-        button.setAttribute("aria-label",`Cut ${cutIndex(cuts(),at)+1}, frame ${frames.ceil(at)}${cutClipName(at)?', '+cutClipName(at):''}`);
+        button.setAttribute("aria-label",`${manualCut(at)?'Manual cut':'Cut'} ${cutIndex(cuts(),at)+1}, frame ${frames.ceil(at)}${cutClipName(at)?', '+cutClipName(at):''}`);
         button.title=`${button.getAttribute("aria-label")} · click for In / Out · Shift-click another cut to select between · double-click for the following shot`;
     }
     for(const button of existing.values())button.remove();
@@ -601,6 +611,44 @@ function selectCutSide(direction){
     if(!range||range[1]-range[0]<1)return;
     cutRangeReady=true;setSelection(...range);
 }
+function receiveCutMarkers(next, sourceId){
+    if(next.info.source_id!==sourceId||state.info.source_id!==sourceId)return false;
+    // A marker edit must not replace an unsaved region draft or roll back a
+    // concurrent plan save. Polling handles plan/result revisions separately.
+    state={...state,scene_cuts:next.scene_cuts,cut_progress:next.cut_progress};
+    frameCuts=[...new Set((next.scene_cuts?.times_ms||[]).map(t=>frames.snap(t)))].sort((a,b)=>a-b);
+    if(!frameCuts.includes(selectedCut)){selectedCut=null;cutRangeReady=false;}
+    return true;
+}
+async function editCutMarker(action){
+    if(!state||!frames||busy||startingOperation||cutEditPending)return;
+    if(action==='remove'&&selectedCut===null)return;
+    const frame=action==='add'?activeFrame():frames.nearest(selectedCut),at=frames.at(frame);
+    if(frame<=frames.first||frame>=frames.end)return;
+    $("showCuts").checked=true;
+    if(action==='add'&&cuts().includes(at)){selectCut(at);status('Cut already exists at this frame');return;}
+    const sourceId=state.info.source_id,expected=clone(state.scene_cuts??null);
+    seek(at);cutEditPending=true;clearError();renderNavigation();
+    try{
+        const response=await fetch(new URL(`${api.pathname}/cuts/edit`,location.origin),{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({source_id:sourceId,action,frame,expected_cuts:expected})});
+        if(response.status===404||response.status===405)throw new Error('Restart ComfyUI once to enable adding cut markers, then reload this timeline. Your regions are kept.');
+        if(response.status===409){
+            const message=await response.text();
+            const latest=await jsonResponse(await fetch(api,{cache:'no-store'}));
+            receiveCutMarkers(latest,sourceId);
+            throw new Error(message+' Your region edits are kept.');
+        }
+        const next=await jsonResponse(response);
+        if(!receiveCutMarkers(next,sourceId))throw new Error('The source video changed. Reload the timeline to see its cuts.');
+        if(action==='add')selectCut(at);
+        status(action==='add'?`Cut saved at frame ${frame} · choose Shot before / Shot after, then Make region`:'Cut removed · existing regions are kept');
+    }catch(error){fail(error);}
+    finally{cutEditPending=false;renderNavigation();renderTimelines();}
+}
+$("addCut").onclick=()=>editCutMarker('add');
+$("removeCut").onclick=()=>editCutMarker('remove');
 function drawOverview() {
     const [ctx,w,h]=prepare($("overview")),d=clipDuration(),low=sourceBounds()[0];
     for(const [i,lane] of LANES.entries())for(const region of plan[lane]){ctx.fillStyle=region.enabled===false?"#40505b":i?"#ad925d":"#4d987e";ctx.fillRect((region.start_ms-low)/d*w,5+i*12,Math.max(1,(region.end_ms-region.start_ms)/d*w),9);}
@@ -872,7 +920,7 @@ $("cutSplit").onclick=()=>attempt(()=>{
     const lane=$("cutSplitLane").value;
     finishSplit(splitAtTime(plan,lane==='both'?LANES:[lane],selectedCut,uuid,state.info,frames));
 });
-document.addEventListener("pointerdown",event=>{if(selectedCut!==null&&!event.target.closest(".ruler-track,#markIn,#markOut"))clearCut();});
+document.addEventListener("pointerdown",event=>{if(selectedCut!==null&&!event.target.closest(".ruler-track,#markIn,#markOut,#markOutBefore"))clearCut();});
 let overviewDrag=null;
 $("overview").onpointerdown=event=>{if(event.button!==0)return;const r=$("overview").getBoundingClientRect(),time=sourceBounds()[0]+(event.clientX-r.left)/r.width*clipDuration();overviewDrag={x:event.clientX,start:view.start_ms,width:r.width};if(time<view.start_ms||time>view.start_ms+view.span_ms){view=panView(duration(),view,time-view.span_ms/2);overviewDrag.start=view.start_ms;}$("overview").setPointerCapture(event.pointerId);renderNavigation();renderTimelines();};
 $("overview").onpointermove=event=>{if(!overviewDrag)return;view=panView(duration(),view,overviewDrag.start+(event.clientX-overviewDrag.x)/overviewDrag.width*clipDuration());renderNavigation();renderTimelines();};
@@ -952,6 +1000,7 @@ $("follow").onchange=()=>{view.follow=$("follow").checked;};
 $("pan").oninput=()=>{view=panView(duration(),view,useFrames()?frames.at(Number($("pan").value)):Number($("pan").value));renderNavigation();renderTimelines();scheduleThumbs();};
 $("markIn").onclick=()=>{const at=selectedCut??frames.at(activeFrame()),[,b]=selectionRange(plan,state.info);cutRangeReady=selectedCut!==null;setSelection(at,Math.max(at,b));};
 $("markOut").onclick=()=>{const f=activeFrame(),[a]=selectionRange(plan,state.info);cutRangeReady=selectedCut!==null;setSelection(Math.min(a,selectedCut??frames.at(f)),selectedCut??frames.at(f+1));};
+$("markOutBefore").onclick=()=>{const at=selectedCut??frames.at(activeFrame()),[a]=selectionRange(plan,state.info);cutRangeReady=selectedCut!==null;setSelection(Math.min(a,at),at);};
 $("selectFrame").onclick=()=>{const f=activeFrame();clearCut();setSelection(frames.at(f),frames.at(f+1));};
 for(const id of ['selectionIn','selectionOut'])$(id).onchange=()=>{
     const at=positionTime($(id).value),a=positionTime($('selectionIn').value),b=positionTime($('selectionOut').value);
@@ -970,7 +1019,8 @@ window.addEventListener("keydown",event=>{
     if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();seek(frames.step(frames.at(activeFrame()),(event.key==="ArrowLeft"?-1:1)*(event.shiftKey?10:1)));}
     if(event.key==="Home"||event.key==="End"){event.preventDefault();seek(frames.at(event.key==="Home"?frames.first:frames.end-1));}
     if(event.key.toLowerCase()==="s"&&!event.repeat){event.preventDefault();$("timelineSplit").click();}
-    if(event.key.toLowerCase()==="i"){event.preventDefault();$("markIn").click();}if(event.key.toLowerCase()==="o"){event.preventDefault();$("markOut").click();}
+    if(event.key.toLowerCase()==="c"&&!event.repeat){event.preventDefault();$("addCut").click();}
+    if(event.key.toLowerCase()==="i"){event.preventDefault();$("markIn").click();}if(event.key.toLowerCase()==="o"){event.preventDefault();$(event.shiftKey?"markOutBefore":"markOut").click();}
 });
 video.onloadeddata=()=>{finishSourceSeek();draw();};video.onseeked=finishSourceSeek;
 video.onended=()=>{
@@ -1072,9 +1122,13 @@ async function requireMaskBackend(){
     const data=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
     if(data.reference_masks!==1)throw new Error('Restart ComfyUI to enable reference masks, then refresh its main tab and reopen this timeline. Your edits are kept.');
 }
+function maskSeedKey(id){
+    const r=regionById(plan,id)?.region;
+    return r?JSON.stringify([state.info.source_id,r.id,r.start_ms,r.end_ms,r.locked,r.reference]):null;
+}
 function validateProcessing(operation,scope=null) {
     const candidatePlan=scope?planForScope(plan,scope):plan;
-    if(["detect_cuts","automatic"].includes(operation))return;
+    if(["detect_cuts","automatic","seed_mask"].includes(operation))return;
     if(operation==='preview_anchor'){
         const r=selected()?.lane==='tracking'?selected().region:null,at=frames.at(activeFrame());
         if(!r||r.enabled===false||at<r.start_ms||at>=r.end_ms)throw new Error('Choose a frame inside an enabled tracking region.');
@@ -1097,7 +1151,7 @@ function validateProcessing(operation,scope=null) {
     }
 }
 async function process(operation,scopeKind=null) {
-    if(busy||startingOperation)return;
+    if(busy||startingOperation||cutEditPending)return;
     if(document.activeElement?.matches('input,textarea,select'))document.activeElement.blur();
     startingOperation=operation;renderPreviewControls();
     if(operation==="detect_cuts")$("sceneTools").open=true;
@@ -1114,6 +1168,13 @@ async function process(operation,scopeKind=null) {
             const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
             if(capabilities.timeline_scope!==1)throw new Error('Restart ComfyUI to enable explicit processing scopes, then refresh the main tab and reopen this timeline.');
         }
+        let seedRequest=null;
+        if(operation==='seed_mask'){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+            if(capabilities.sam3_mask_seed!==1)throw new Error('Restart ComfyUI and refresh its main tab to enable SAM3 initial masks.');
+            seedRequest=maskSteps.seedRequest();
+            seedRequest.at_ms=frames.at(frames.ceil(selected().region.start_ms)+seedRequest.frame);
+        }
         const previewRequest=operation==='preview_anchor'?{region_id:selected().region.id,at_ms:frames.at(activeFrame())}:null;
         const previewKey=previewRequest?anchorPreviewKey():null;
         if(previewRequest){
@@ -1127,25 +1188,25 @@ async function process(operation,scopeKind=null) {
             const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
             if(capabilities.timeline_stabilize!==1)throw new Error('Restart ComfyUI to enable Track region, then refresh the main ComfyUI tab and reopen the timeline. Your edits are kept.');
         }
-        if(!['detect_cuts','preview_anchor'].includes(operation)&&plan.stabilization.some(r=>r.enabled!==false&&(r.reference.keyframes||r.reference.tracking_mode==='offline')))await requireReferenceBackend(location.href);
+        if(!['detect_cuts','preview_anchor','seed_mask'].includes(operation)&&plan.stabilization.some(r=>r.enabled!==false&&(r.reference.keyframes||r.reference.tracking_mode==='offline')))await requireReferenceBackend(location.href);
         await window.s3fTimelineApply();const target=bridge();if(!target)throw new Error("Open this timeline from its ComfyUI node to process it.");
         if(previewRequest&&previewKey!==anchorPreviewKey())throw new Error('Anchor settings changed while preparing the preview. Preview again.');
         busy=true;clearError();$("processingProgress").hidden=false;$("progress").removeAttribute("value");$("progressText").textContent=operation==='stabilize'?'Submitting reference tracking…':"Submitting timeline processing…";status("Queuing processing…");
-        const request=uuid();processPending={request,operation,stabilizationId,previewKey,previewRequest,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
+        const request=uuid();processPending={request,operation,stabilizationId,previewKey,previewRequest,seedRequest,seedKey:seedRequest?maskSeedKey(seedRequest.region_id):null,acknowledged:false,timer:setTimeout(()=>{if(processPending?.request===request&&!processPending.acknowledged)finishProcess(new Error("ComfyUI did not acknowledge Process. Apply your plan, reload ComfyUI, and reopen the timeline."));},15000)};
         // A distinct bridge operation makes older main tabs reject scopes instead
         // of silently running their legacy marked-range precedence.
-        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value,automatic_options:{people:$("automaticPeople").value,stabilization:$("automaticStabilization").value}},location.origin);
+        render();target.postMessage({type:"s3f-timeline-process",session,node,request,operation:scope?'scoped_selected':operation,...(scope?{processing_scope:scope}:{}),stabilization_id:stabilizationId,...(previewRequest?{anchor_preview:previewRequest}:{}),...(seedRequest?{mask_seed:seedRequest}:{}),plan:clone(plan),revision,editor_session:state.editor_session,cut_sensitivity:$("cutSensitivity").value,automatic_options:{people:$("automaticPeople").value,stabilization:$("automaticStabilization").value}},location.origin);
     }catch(error){fail(error);}finally{startingOperation=null;renderPreviewControls();}
 }
 function finishProcess(error) {
     trackingDetails.clear();
-    const cutScan=processPending?.operation==="detect_cuts",trackOnly=processPending?.operation==='stabilize',maskOnly=processPending?.operation==='propagate_mask',previewOnly=processPending?.operation==='preview_anchor';
+    const cutScan=processPending?.operation==="detect_cuts",trackOnly=processPending?.operation==='stabilize',maskOnly=processPending?.operation==='propagate_mask',previewOnly=processPending?.operation==='preview_anchor',seedOnly=processPending?.operation==='seed_mask';
     if(processPending)clearTimeout(processPending.timer);processPending=null;busy=false;
-    if(previewOnly){
+    if(previewOnly||seedOnly){
         if(error)fail(error);
         $('progress').max=1;$('progress').value=error?0:1;
-        $('progressText').textContent=error?error.message:'Anchor preview ready';
-        status(error?'Anchor preview stopped':'Anchor preview ready · original frame');render();return;
+        $('progressText').textContent=error?error.message:seedOnly?'Initial mask ready · review with Paint / Erase':'Anchor preview ready';
+        status(error?'Preview stopped':seedOnly?'Initial mask ready':'Anchor preview ready · original frame');render();return;
     }
     if(error){fail(error);$("progressText").textContent=error.message;status(cutScan?"Cut scan stopped · previous markers kept":"Processing stopped · completed chunks remain cached");}
     else{$("progress").max=1;$("progress").value=1;$("progressText").textContent=cutScan?`Cut scan complete · ${cuts().length} markers`:trackOnly?'Tracking complete · stabilized preview ready':maskOnly?'Mask propagation complete · ready to track':"Processing complete";status(cutScan?"Cut guides ready · jump to a cut or select a shot to plan its tracking":trackOnly?'Tracking complete · review the stabilized preview':maskOnly?'Mask ready · review it and continue to Stabilize':"Processing complete · open Motion Studio to review the curves");}
@@ -1172,14 +1233,24 @@ window.addEventListener("message",async event=>{
     if(data.max>0){$("progress").max=data.max;$("progress").value=data.value||0;}
     renderPreviewControls();
     if(data.state==="error"||data.error){
-        const error=data.error==="Unknown timeline operation"&&['detect_cuts','stabilize','propagate_mask','extract_anchors','preview_anchor','selected'].includes(processPending.operation)
+        const error=data.error==="Unknown timeline operation"&&['detect_cuts','stabilize','propagate_mask','extract_anchors','preview_anchor','seed_mask','selected'].includes(processPending.operation)
             ?"This action needs the updated workflow bridge. Refresh the main ComfyUI tab (Ctrl+Shift+R), then reopen this timeline."
             :data.error||data.text||"Processing failed";
-        const previewOnly=processPending.operation==='preview_anchor';
+        const previewOnly=['preview_anchor','seed_mask'].includes(processPending.operation);
         finishProcess(new Error(error));
         if(!previewOnly)await window.s3fTimelineLoad().catch(fail);
     }
     else if(data.state==="complete") {try{
+        if(processPending.operation==='seed_mask'){
+            const pending=processPending,result=data.mask_seed,request=pending.seedRequest;
+            if(!result||result.source_id!==state.info.source_id||result.region_id!==request.region_id||result.frame!==request.frame||!Number.isFinite(result.at_ms)||Math.abs(result.at_ms-request.at_ms)>.002||!result.strokes?.length||!equal(result.settings,request.settings)||maskSeedKey(request.region_id)!==pending.seedKey)throw new Error('The source or reference settings changed. Generate the initial mask again.');
+            const r=regionById(plan,request.region_id).region;
+            const point_mask={spacing:12,limit:500,model:'sam2.1_base_plus',margin:6,...r.reference.point_mask,frame:result.frame,strokes:result.strokes};
+            finishProcess();
+            edit(changeRegion(plan,r.id,{reference:{...r.reference,point_mask,mask_prompt:result.settings}},state.info,frames),'SAM3 mask added · refine with Paint / Erase, or Undo to restore the previous mask.');
+            if(selected()?.region.id===r.id)maskSteps.setStep('mask');
+            return;
+        }
         if(processPending.operation==='preview_anchor'){
             const result=data.anchor_preview,request=processPending.previewRequest;
             if(!result?.anchors?.length||result.source_id!==state.info.source_id||result.region_id!==request.region_id||!Number.isFinite(result.at_ms)||Math.abs(result.at_ms-request.at_ms)>.002)throw new Error('The anchor preview did not match the requested source frame. Preview again.');

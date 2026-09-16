@@ -1,6 +1,7 @@
 // UI contract/gesture test: neutral video, isolated HTTP server and disposable browser.
 // The GPU/backend integration is tested separately against ComfyUI.
 import assert from 'node:assert/strict';
+import {maskContains} from '../assets/reference-mask.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,19 +22,31 @@ const stableEncode=spawnSync('ffmpeg',['-v','error','-i',portraitClip,'-t','2.5'
 const session='1234567890abcdef1234567890abcdef';
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
 let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true,meshCapabilities=true,automaticCapabilities=true;
-let importRequest=null;
+let importRequest=null,seedCapabilities=true;
+let cutEditRequests=[];
+let seedModels=[{value:'checkpoints:sam3.pt',label:'SAM3 · sam3.pt (checkpoints)'},{value:'sam3:sam3.1_multiplex.pt',label:'SAM3.1 · sam3.1_multiplex.pt (sam3)'}];
 const referenceState={id:'neutral-reference',info:{source_id:'neutral-reference-source',width:160,height:120,source_origin:'0',rate:'2'},config:{crop_xywh:[0,0,160,120],points:[],sections:[]},frame_index:{times_ms:Array.from({length:120},(_,i)=>i*500)}};
 const parentHtml=`<!doctype html><button id="open" onclick="window.editor=window.open('/sam3d_funscript/assets/processing-timeline.html?session=${session}&node=1')">Open editor</button><script>
-window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-reference-apply'){await fetch('/test/reference-save',{method:'POST',body:JSON.stringify(d.config)});e.source.postMessage({type:'s3f-reference-applied',request:d.request},location.origin);return;}if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;await fetch('/test/process',{method:'POST',body:JSON.stringify(d)});e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete'},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
+window.events=[];window.addEventListener('message',async e=>{const d=e.data;window.events.push(d);if(d.type==='s3f-reference-apply'){await fetch('/test/reference-save',{method:'POST',body:JSON.stringify(d.config)});e.source.postMessage({type:'s3f-reference-applied',request:d.request},location.origin);return;}if(d.type==='s3f-timeline-apply'){setTimeout(()=>e.source.postMessage({type:'s3f-timeline-applied',request:d.request},location.origin),150)}if(d.type==='s3f-timeline-process'){if(window.rejectCuts&&d.operation==='detect_cuts'){e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Unknown timeline operation'},location.origin);return;}window.lastProcess=d;const result=await(await fetch('/test/process',{method:'POST',body:JSON.stringify(d)})).json();e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'queued',text:'Queued neutral test'},location.origin);setTimeout(()=>e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'complete',text:'Complete',...result},location.origin),500)}if(d.type==='s3f-timeline-cancel')e.source.postMessage({type:'s3f-timeline-progress',request:d.request,state:'error',error:'Cancelled'},location.origin)});
 </script>`;
 const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.mp4':'video/mp4'};
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({sam3_mask_seed:seedCapabilities?1:0,automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/mask-seed-models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(seedModels));return;}
  if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
  if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
- if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='propagate_mask'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id),mask=region.reference.point_mask;renderedState={...renderedState,source_id:state.info.source_id,masks:{[region.id]:{id:'b'.repeat(24),region:structuredClone(region),mask:{frame:mask.frame,strokes:mask.strokes,model:mask.model},frames:5}}};res.end('{}');return;}if(seenProcess.operation==='stabilize'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id);renderedState={...renderedState,source_id:state.info.source_id,stabilization:{[region.id]:{region:structuredClone(region),video_path:`/output/sam3d_funscript/processing/${session}/reference/${'a'.repeat(24)}/stabilized.mp4`}}};res.end('{}');return;}if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
+ if(url.pathname==='/test/process'){let body='';for await(const part of req)body+=part;seenProcess=JSON.parse(body);if(seenProcess.operation==='seed_mask'){res.end(JSON.stringify({mask_seed:{...seenProcess.mask_seed,source_id:state.info.source_id,score:.37,strokes:[{shape:'polygon',erase:false,radius:1,points:[[40,100],[120,100],[120,220],[40,220]],holes:[[[70,140],[90,140],[90,160],[70,160]]]}]}}));return;}if(seenProcess.operation==='propagate_mask'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id),mask=region.reference.point_mask;renderedState={...renderedState,source_id:state.info.source_id,masks:{[region.id]:{id:'b'.repeat(24),region:structuredClone(region),mask:{frame:mask.frame,strokes:mask.strokes,model:mask.model},frames:5}}};res.end('{}');return;}if(seenProcess.operation==='stabilize'){const region=state.plan.stabilization.find(r=>r.id===seenProcess.stabilization_id);renderedState={...renderedState,source_id:state.info.source_id,stabilization:{[region.id]:{region:structuredClone(region),video_path:`/output/sam3d_funscript/processing/${session}/reference/${'a'.repeat(24)}/stabilized.mp4`}}};res.end('{}');return;}if(seenProcess.operation==='detect_cuts'){state.scene_cuts={source_id:state.info.source_id,times_ms:[5000.125,17000,40000],settings:{sensitivity:seenProcess.cut_sensitivity}};res.end('{}');return;}state.report={regions:state.plan.tracking.map(r=>({...r,state:'complete'})),warnings:[],completed_jobs:1,total_jobs:1};state.project='neutral_test';res.end('{}');return;}
+ if(url.pathname===`/sam3d_funscript/timelines/${session}/cuts/edit`){
+  let body='';for await(const part of req)body+=part;const edit=JSON.parse(body);cutEditRequests.push(edit);
+  if(edit.source_id!==state.info.source_id||JSON.stringify(edit.expected_cuts)!==JSON.stringify(state.scene_cuts??null)){res.statusCode=409;res.end('Cut markers changed. Try again.');return;}
+  const at=edit.frame*500,cuts=structuredClone(state.scene_cuts||{source_id:state.info.source_id,times_ms:[]});
+  cuts.times_ms=cuts.times_ms.filter(t=>t!==at);cuts.manual_times_ms=(cuts.manual_times_ms||[]).filter(t=>t!==at);
+  if(edit.action==='add'){cuts.times_ms.push(at);cuts.manual_times_ms.push(at);}
+  cuts.times_ms.sort((a,b)=>a-b);state.scene_cuts=cuts;
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));return;
+ }
  if(url.pathname===`/sam3d_funscript/timelines/${session}/cuts/import`){
   let body='';for await(const part of req)body+=part;importRequest=JSON.parse(body);
   const token=JSON.stringify(state.scene_cuts||null);
@@ -82,6 +95,40 @@ try{
  await page.evaluate('document.querySelector("#regionLock").click()');assert.equal(await page.evaluate('document.querySelector("#regionOut").disabled'),true);
  await page.evaluate('document.querySelector("#regionLock").click();document.querySelector("#selectionIn").value=30;document.querySelector("#selectionOut").value=60;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#addTracking").click()');
  assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),2);
+ // Switching blocks after editing an anchor must refresh the inspector even
+ // though the lane prevents pointerdown's normal focus change.
+ await page.evaluate('document.querySelector("#selectionIn").value=0;document.querySelector("#selectionOut").value=60;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#fitSelection").click()');
+ const secondTrackingId=await page.evaluate('document.querySelectorAll("#trackingLane .region-bar")[1].dataset.id');
+ async function clickRegion(id){
+  const point=await page.evaluate(`(()=>{const b=document.querySelector('#trackingLane [data-id="${id}"]');b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+20}})()`);
+  await click(point.x,point.y);
+ }
+ await clickRegion('t0');
+ await page.evaluate('document.querySelector("#anchor").focus({preventScroll:true})');
+ assert.equal(await page.evaluate('document.querySelector("#anchor").value'),'mouth');
+ await clickRegion(secondTrackingId);
+ assert.equal(await page.evaluate('document.querySelector("#anchor").value'),'pelvis','new block must show its own anchor, not the previously focused value');
+ await page.evaluate('document.querySelector("#anchor").focus({preventScroll:true})');
+ await page.call('Input.dispatchKeyEvent',{type:'keyDown',key:'End',code:'End'});
+ await page.call('Input.dispatchKeyEvent',{type:'keyUp',key:'End',code:'End'});
+ assert.equal(await page.evaluate('document.querySelector("#anchor").value'),'mouth');
+ assert.match(await page.evaluate(`document.querySelector('#trackingLane [data-id="${secondTrackingId}"]').textContent`),/mouth/,'the new block accepts the same anchor as its neighbor');
+ // A pending text change belongs to the old block and must commit before the
+ // active region changes. Ordinary redraws must still preserve text in progress.
+ await clickRegion('t0');
+ await page.evaluate('const input=document.querySelector("#regionName");input.focus({preventScroll:true});input.select()');
+ await page.call('Input.insertText',{text:'Rename original only'});
+ await page.evaluate('document.querySelector("#goTime").value=5;document.querySelector("#seekTime").click()');
+ assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Rename original only');
+ await clickRegion(secondTrackingId);
+ assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Tracking 2');
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'switched anchors saved');
+ assert.deepEqual(state.plan.tracking.map(r=>[r.name,r.anchor]),[['Rename original only','mouth'],['Tracking 2','mouth']]);
+ await clickRegion('t0');
+ await page.evaluate('document.querySelector("#regionName").value="Full video";document.querySelector("#regionName").dispatchEvent(new Event("change"))');
+ await clickRegion(secondTrackingId);
+ await page.evaluate('document.querySelector("#anchor").value="pelvis";document.querySelector("#anchor").dispatchEvent(new Event("change"))');
  await page.evaluate('document.querySelector("#regionIn").value=20;document.querySelector("#regionIn").dispatchEvent(new Event("change"))');assert.match(await page.evaluate('document.querySelector("#error").textContent'),/overlap/);
  await page.evaluate('document.querySelector("#selectionIn").value=0;document.querySelector("#selectionOut").value=15;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#addStabilization").click();document.querySelector("#fitSelection").click();document.querySelector("#referenceMode").value="points";document.querySelector("#referenceMode").dispatchEvent(new Event("change"))');
  await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'point frame');
@@ -479,6 +526,65 @@ try{
  await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'mask saved');
  const painted=state.plan.stabilization.find(r=>r.id===stable.id);
  assert.equal(painted.reference.point_mask.strokes.length,1);assert.equal(painted.reference.point_mask.frame,1);assert.equal(painted.reference.points.length,24);assert.deepEqual(painted.reference.keyframes.map(k=>k.frame),[1]);
+ // SAM3 generates on the requested frame, keeps manual points, and supports editing/undo.
+ assert.equal(await page.evaluate('document.querySelector("#maskSeedText").value'),'man');
+ assert.equal(await page.evaluate('document.querySelector("#maskSeedConfidence").value'),'0.15');
+ await until(()=>page.evaluate('document.querySelector("#maskSeedModel").options.length===3'),'installed SAM3 and SAM3.1 model choices');
+ assert.deepEqual(await page.evaluate('Array.from(document.querySelector("#maskSeedModel").options,o=>o.textContent)'),['SAM3Matting',...seedModels.map(m=>m.label)]);
+ await page.evaluate('document.querySelector("#maskSeedModel").value="core:sam3:sam3.1_multiplex.pt";document.querySelector("#maskSeedModel").dispatchEvent(new Event("change"));document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'SAM3.1 choice saved');
+ assert.equal(state.plan.stabilization.find(r=>r.id===stable.id).reference.mask_prompt.checkpoint,'sam3:sam3.1_multiplex.pt');
+ seedModels=seedModels.slice(0,1);
+ await page.evaluate('document.querySelector("#refreshMaskSeedModels").click()');
+ await until(()=>page.evaluate('!document.querySelector("#refreshMaskSeedModels").disabled'),'models refreshed after removal');
+ assert.equal(await page.evaluate('document.querySelector("#maskSeedModel").value'),'core:sam3:sam3.1_multiplex.pt','missing model keeps its saved choice');
+ assert.equal(await page.evaluate('document.querySelector("#generateSeedMask").disabled'),true);
+ seedModels.push({value:'sam3:sam3.1_multiplex.pt',label:'SAM3.1 · sam3.1_multiplex.pt (sam3)'});
+ await page.evaluate('document.querySelector("#refreshMaskSeedModels").click()');
+ await until(()=>page.evaluate('!document.querySelector("#refreshMaskSeedModels").disabled'),'SAM3.1 rediscovered');
+ assert.equal(await page.evaluate('document.querySelector("#generateSeedMask").disabled'),false);
+ for(const model of ['core:checkpoints:sam3.pt','core:sam3:sam3.1_multiplex.pt']){
+  await page.evaluate(`document.querySelector('#maskSeedModel').value=${JSON.stringify(model)};document.querySelector('#maskSeedModel').dispatchEvent(new Event('change'));document.querySelector('#generateSeedMask').click()`);
+  await until(()=>seenProcess.operation==='seed_mask'&&seenProcess.mask_seed.settings.checkpoint===model.slice(5),'selected core checkpoint queued');
+  await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Initial mask ready")'),'core seed generated');
+  assert.equal(seenProcess.mask_seed.settings.backend,'core');
+  await page.evaluate('document.querySelector("#undo").click()');
+ }
+ await page.evaluate('document.querySelector("#maskSeedModel").value="sam3matting";document.querySelector("#maskSeedModel").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=6;document.querySelector("#seekTime").click()');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'SAM3 frame');
+ seedCapabilities=false;
+ await page.evaluate('document.querySelector("#generateSeedMask").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("enable SAM3 initial masks")'),'SAM3 capability guard');
+ seedCapabilities=true;
+ await page.evaluate('document.querySelector("#generateSeedMask").click()');
+ await until(()=>seenProcess.operation==='seed_mask'&&seenProcess.mask_seed.settings.backend==='sam3matting','SAM3Matting queued');
+ assert.deepEqual(seenProcess.mask_seed,{region_id:stable.id,frame:2,at_ms:3000,settings:{text:'man',confidence:.15,backend:'sam3matting',checkpoint:''}});
+ await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Initial mask ready")'),'SAM3 mask returned');
+ assert.equal(await page.evaluate('document.querySelector("#maskFrameLabel").textContent'),'F 6');
+ fs.mkdirSync('development/mask-seed-browser',{recursive:true});
+ await page.evaluate('document.querySelector(".inspector").scrollTop=0;window.scrollTo(0,0)');await wait(120);
+ fs.writeFileSync('development/mask-seed-browser/desktop.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'SAM3 mask saved');
+ const generated=state.plan.stabilization.find(r=>r.id===stable.id).reference;
+ assert.equal(generated.point_mask.frame,2);assert.equal(generated.point_mask.strokes[0].shape,'polygon');
+ assert.equal(generated.point_mask.strokes[0].holes.length,1);
+ assert.deepEqual(generated.points,painted.reference.points);assert.deepEqual(generated.keyframes,painted.reference.keyframes);
+ assert.deepEqual({project:state.project,report:state.report,editor_session:state.editor_session},motionBefore);
+ await page.evaluate('document.querySelector("#maskTool").value="erase";document.querySelector("#maskTool").dispatchEvent(new Event("change"));window.scrollTo(0,0)');
+ await until(()=>page.evaluate('!document.querySelector("#source").seeking'),'editable SAM3 seed');
+ const generatedMap=await page.evaluate('(()=>{const r=document.querySelector("#sourceCanvas").getBoundingClientRect(),s=Math.min(r.width/180,r.height/320);return{x:r.x+(r.width-180*s)/2,y:r.y+(r.height-320*s)/2,s}})()');
+ await click(generatedMap.x+60*generatedMap.s,generatedMap.y+120*generatedMap.s);
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'generated mask erased');
+ assert.equal(state.plan.stabilization.find(r=>r.id===stable.id).reference.point_mask.strokes.at(-1).erase,true);
+ assert.equal(state.plan.stabilization.find(r=>r.id===stable.id).reference.point_mask.strokes.length,2);
+ const erased=state.plan.stabilization.find(r=>r.id===stable.id).reference.point_mask;
+ assert.equal(maskContains(erased,60,120),false,'Erase removes only the painted part of the generated mask');
+ assert.equal(maskContains(erased,100,200),true,'the rest of the generated mask remains');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click();document.querySelector("#maskGoSeed").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'prior mask restored');
+ assert.deepEqual(state.plan.stabilization.find(r=>r.id===stable.id).reference.point_mask,painted.reference.point_mask);
  await page.evaluate('document.querySelector("#trackStepTab").click();document.querySelector("#trackStabilization").click()');
  assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),true);assert.match(await page.evaluate('document.querySelector("#trackRequirement").textContent'),/Propagate the updated/);
  await page.evaluate('document.querySelector("#maskStepTab").click();document.querySelector("#propagateMask").click()');
@@ -647,6 +753,55 @@ try{
  await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'fractional anchor configuration saved');
  assert.deepEqual(state.plan.tracking,[previousScene,currentScene],'neighbouring anchors and times remain unchanged');
  console.log('Fractional stabilization boundary: only Scene 28 is offered; configuration preserves both scenes and their anchors');
+
+ // Missing scene cuts can be placed before making either adjacent region.
+ state.plan={...state.plan,tracking:[{...structuredClone(previousScene),id:'manual-scene',name:'Unsplit shot',start_ms:0,end_ms:10000,locked:false}],stabilization:[],selected_ids:['manual-scene'],selection:[0,0]};
+ state.scene_cuts=null;state.revision++;renderedState=null;
+ await page.evaluate('localStorage.clear()');await page.call('Page.reload');
+ await until(()=>page.evaluate('document.querySelector("#regionName")?.value==="Unsplit shot"&&!document.querySelector("#apply").disabled'),'manual cut fixture');
+ await page.evaluate('document.querySelector("#regionName").value="Pending region name";document.querySelector("#regionName").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=5;document.querySelector("#goTime").focus()');
+ await key('Enter');await key('c','KeyC');
+ await until(()=>state.scene_cuts?.times_ms?.includes(2500),'manual cut saved');
+ await until(()=>page.evaluate('!document.querySelector("#addCut").disabled&&!document.querySelector("#cutActions").hidden'),'manual cut menu');
+ assert.equal(cutEditRequests.at(-1).frame,5,'cut goes BEFORE displayed frame, without adding a frame');
+ assert.equal(state.plan.tracking[0].name,'Unsplit shot','marker save does not apply the region draft');
+ assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Pending region name','local draft survives marker response');
+ assert.match(await page.evaluate('document.querySelector("#selectedCutLabel").textContent'),/Manual cut.*Frame 5/);
+ const duplicateRequestCount=cutEditRequests.length;
+ await key('c','KeyC');assert.equal(cutEditRequests.length,duplicateRequestCount,'adding an existing marker selects it');
+ await page.evaluate('document.querySelector("#cutBefore").click();document.querySelector("#cutRegionLane").value="tracking";document.querySelector("#cutRegion").click()');
+ await marker(2500);await page.evaluate('document.querySelector("#cutAfter").click();document.querySelector("#cutRegion").click();document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'adjacent sections saved');
+ assert.deepEqual(state.plan.tracking.map(r=>[r.start_ms,r.end_ms]),[[0,2500],[2500,10000]],'both sections meet exactly at manual cut');
+ const manualReload=await page.evaluate('performance.timeOrigin');await page.call('Page.reload');
+ await until(()=>page.evaluate(`performance.timeOrigin!==${manualReload}&&document.querySelectorAll("#cutMarkers button").length===1&&!document.querySelector("#apply").disabled`),'manual cut survives reload');
+ await marker(2500);await key('o','KeyO');
+ assert.equal(await page.evaluate('document.querySelector("#selectionOut").value'),'5','cut Out excludes incoming frame');
+ await key('ArrowRight');await key('o','KeyO');
+ assert.equal(await page.evaluate('document.querySelector("#selectionOut").value'),'7','ordinary O includes displayed frame');
+ await key('O','KeyO',8);
+ assert.equal(await page.evaluate('document.querySelector("#selectionOut").value'),'6','Shift+O excludes displayed frame without a marker');
+ // Another tab adding a cut refreshes markers without discarding our draft.
+ await page.evaluate('document.querySelector("#regionName").value="Still editing";document.querySelector("#regionName").dispatchEvent(new Event("change"));document.querySelector("#goTime").value=10;document.querySelector("#goTime").focus()');
+ await key('Enter');state.scene_cuts.times_ms.push(7500);await key('c','KeyC');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Cut markers changed")'),'concurrent cut conflict');
+ assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Still editing');
+ assert.equal(await page.evaluate('document.querySelectorAll("#cutMarkers button").length'),2);
+ await key('c','KeyC');await until(()=>state.scene_cuts.times_ms.includes(5000),'retry after refreshed markers');
+ await until(()=>page.evaluate('!document.querySelector("#addCut").disabled'),'retry completed');
+ const beforeRemoval=JSON.stringify(state.plan),beforeRemovalRevision=state.revision;
+ await marker(2500);await page.evaluate('document.querySelector("#removeCut").click()');
+ await until(()=>!state.scene_cuts.times_ms.includes(2500),'manual cut removed');
+ assert.equal(JSON.stringify(state.plan),beforeRemoval);assert.equal(state.revision,beforeRemovalRevision);
+ const editsBeforeTyping=cutEditRequests.length;
+ await page.evaluate('document.querySelector("#regionName").focus()');await key('c','KeyC');
+ assert.equal(cutEditRequests.length,editsBeforeTyping,'typing c does not add a marker');
+ await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
+ await marker(5000);
+ assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'manual cut controls fit narrow timeline');
+ fs.mkdirSync('development/manual-cuts-browser',{recursive:true});
+ fs.writeFileSync('development/manual-cuts-browser/cut-menu.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ console.log('Manual cuts: exact first frame, adjacent sections, independent draft save, persistence, duplicate handling, stale-marker retry, removal, typing, Shift+O and narrow layout passed');
 
  assert.equal(errors.length,0,JSON.stringify(errors));
  console.log(JSON.stringify({checks:['cut-menu split of both lanes, reference and mask preservation, independent right-side edits, atomic Undo, lock protection, S shortcut and reload','tracking-only action without pose regions','progress and cancel beside Track region','automatic stabilized preview','reference-only processing preserves motion and selection','tracking action lock protection and backend capability check','compact desktop and narrow stabilization controls','multiple reference keyframes in both editors','offline mode saved per region','reference navigation before first tracking','numbered point identities and keyframe removal/undo','neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport','clickable cut markers and keyboard boundary marks','Shift-click cut range in both directions','before/after and double-click shot selection','make tracking zone preserves anchors','locked region rejects cut split','make independent stabilization zone','Escape, hidden guides and refreshed scan clear cut selection','cut action panel fits narrow views','tools beside preview without pushing filmstrip','narrow tools below timeline','detailed anchor search and short main list','detailed extra tracks survive general toggles','detailed anchors save reload and lock','frame steps hold image until latest decoded frame','saved stabilized clip discovery without rerun','original/stabilized frame-aligned switching and stepping','point edits use original frame','stale render labeling','playback leaves stabilization at its end','held-frame counts and warnings','gap navigation and tracked-point overlay'],apiRequests,errors},null,2));

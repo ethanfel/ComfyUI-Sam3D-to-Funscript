@@ -7,7 +7,7 @@ import unittest
 from test_core import fixture
 from sam3d_funscript.core import build_project, default_config, export_project
 from sam3d_funscript.timeline import combine_projects
-from sam3d_funscript.editor import initialize, merge_projects, EditorStore, Conflict
+from sam3d_funscript.editor import initialize, merge_projects, EditorStore, Conflict, blank_project, validate
 
 
 class EditorTests(unittest.TestCase):
@@ -16,6 +16,38 @@ class EditorTests(unittest.TestCase):
         self.mouth = build_project(sequence, {'target_anchor': 'mouth'})
         self.hand = build_project(sequence, {'target_anchor': 'right_hand'})
         self.initial = initialize(copy.deepcopy(self.mouth))
+
+    def test_audio_only_canvas_can_export_save_and_gain_detected_sources(self):
+        canvas = blank_project(self.mouth['metadata'])
+        canvas['metadata']['processing_timeline'] = {'session': 'c'*32, 'coverage': []}
+        validate(canvas)
+        self.assertFalse(any(canvas['valid']))
+        self.assertEqual(canvas['timeline']['tracks'], [])
+        self.assertEqual(canvas['timeline']['latest'], {})
+        self.assertEqual(canvas['scripts']['L0']['actions'][0]['pos'], 50)
+        with tempfile.TemporaryDirectory() as directory:
+            store = EditorStore(directory); session = 'a'*32
+            path, revision = store.export(session, canvas, lambda data: export_project(data, directory))
+            self.assertEqual(json.loads(path.read_text()), canvas)
+            draft = copy.deepcopy(canvas)
+            draft['audio_patterns'] = {'sections': [{'id': 'beat_0', 'start_ms': 200, 'end_ms': 1000}]}
+            draft['scripts']['L0']['actions'] = [{'at': 0, 'pos': 50}, {'at': 250, 'pos': 90}, {'at': 750, 'pos': 10}, {'at': 2000, 'pos': 50}]
+            draft['timeline']['main']['L0']['edited'] = True
+            store.save(session, draft, revision)
+            store.export(session, canvas, lambda data: export_project(data, directory))
+            self.assertEqual(store.read(session)['project'], draft, 'Prepare preserves audio and manual edits')
+            incoming = copy.deepcopy(self.initial)
+            incoming['metadata']['processing_timeline'] = {'session': 'c'*32, 'coverage': [[0, 2000]]}
+            for main in incoming['timeline']['main'].values(): main['processing_generated'] = True
+            store.export(session, incoming, lambda data: export_project(data, directory))
+            merged = store.read(session)['project']
+            self.assertNotIn('manual_only', merged['metadata'])
+            self.assertEqual(len(merged['timeline']['tracks']), 1)
+            self.assertEqual(merged['audio_patterns'], draft['audio_patterns'])
+            self.assertEqual(merged['scripts']['L0'], draft['scripts']['L0'])
+            self.assertEqual(merged['scripts']['L1'], incoming['scripts']['L1'])
+            store.export(session, canvas, lambda data: export_project(data, directory))
+            self.assertEqual(store.read(session)['project'], merged, 'Prepare retains actual detection coverage too')
 
     def test_linked_view_reads_the_latest_export_without_creating_another_revision(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -137,6 +169,26 @@ class EditorTests(unittest.TestCase):
         normal['metadata'].pop('processing_timeline')
         shorter = copy.deepcopy(incoming); shorter['metadata'].pop('processing_timeline')
         self.assertEqual(merge_projects(normal, shorter)['metadata']['duration_ms'], previous['metadata']['duration_ms'])
+
+    def test_audio_blocks_survive_rerun_and_preserve_authored_extent(self):
+        previous = copy.deepcopy(self.initial)
+        previous['metadata']['processing_timeline'] = {'version': 1}
+        for main in previous['timeline']['main'].values():
+            main.update(assembled=True, processing_generated=True)
+        incoming = copy.deepcopy(previous)
+        incoming['metadata']['duration_ms'] = 1000
+        for script in incoming['scripts'].values():
+            script['actions'] = [{'at': 0, 'pos': 20}, {'at': 1000, 'pos': 80}]
+        previous['audio_patterns'] = {'version': 1, 'name': 'drums.flac', 'offset_ms': -100,
+            'analysis': {'duration_ms': 3000, 'bpm': 120, 'waveform': [0, 1],
+                         'beats': [{'at': 500, 'strength': 1}], 'onsets': []},
+            'sections': [{'id': 'beat_0', 'start': 1500, 'end': 2000,
+                          'actions': [{'at': 1500, 'pos': 10}, {'at': 2000, 'pos': 90}]}]}
+        before = copy.deepcopy(previous)
+        merged = merge_projects(previous, incoming)
+        self.assertEqual(merged['audio_patterns'], previous['audio_patterns'])
+        self.assertEqual(merged['metadata']['duration_ms'], previous['metadata']['duration_ms'])
+        self.assertEqual(previous, before)
 
     def processing_project(self, spans):
         from sam3d_funscript.processing_timeline import assemble_projects

@@ -40,10 +40,10 @@ function harness(t) {
         await beforeRead?.();return Response.json(structuredClone(state));
     };
     t.after(()=>{for(const [key,descriptor]of original)if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];});
-    function editor(){
+    function editor(options={}){
         let project=null;const messages=[],recoveries=[];
         const session=editorSession({install:data=>{project=data},snapshot:()=>project,status:message=>messages.push(message),recovery:value=>recoveries.push(value),
-            downloadDraft:json=>{downloads.push(JSON.parse(json))}});
+            downloadDraft:json=>{downloads.push(JSON.parse(json))},waiting:()=>{project=null},...options});
         return {session,channel:channels.at(-1),messages,recoveries,get project(){return project}};
     }
     return {state,editor,downloads,timers,async retry(){const [id,timer]=timers.entries().next().value;timers.delete(id);await timer.callback();},get posts(){return posts},set beforeRead(fn){beforeRead=fn},set beforePost(fn){beforePost=fn}};
@@ -188,4 +188,27 @@ test('Edits made after a lost save acknowledgement resume on top of that saved d
     await assert.rejects(a.session.flush(),/Failed to fetch/);
     changeCurve(a,36);await h.retry();
     assert.equal(h.state.project.scripts.L0.actions[0].pos,36);assert.equal(a.recoveries.at(-1),null);
+});
+
+test('A new Timeline video waits without restoring or overwriting the previous editor session',async t=>{
+    const h=harness(t);let reason='new.mp4 has no motion result yet';
+    const a=h.editor({validate:async()=>reason});await a.session.load(()=>{throw Error('Must not use a stale project fallback')});
+    assert.equal(a.project,null);assert.equal(h.posts,0);assert.match(a.messages.at(-1),/new.mp4/);
+    reason=null;await window.s3fUpdate();assert.equal(a.project.metadata.source.path,'neutral.mp4');
+    changeCurve(a,42);reason='another.mp4 has no motion result yet';
+    await window.s3fUpdate();assert.equal(a.project,null);assert.equal(h.state.project.scripts.L0.actions[0].pos,42,'Flush the previous draft before hiding it');
+    const posts=h.posts;a.session.changed();await a.session.flush();assert.equal(h.posts,posts,'Waiting must not write an empty project');
+    reason=null;await window.s3fUpdate();assert.equal(a.project.scripts.L0.actions[0].pos,42,'Reopening the prior video also works without a newer revision');
+    reason='new.mp4 has no motion result yet';await window.s3fUpdate();
+    h.state.project=fixture();h.state.project.metadata.source.path='new.mp4';h.state.revision++;reason=null;
+    await window.s3fUpdate();assert.equal(a.project.metadata.source.path,'new.mp4');assert.equal(a.project.scripts.L0.actions[0].pos,20);
+});
+
+test('An edit made while checking the Timeline is kept until the next refresh',async t=>{
+    const h=harness(t);let validate=async()=>null;
+    const a=h.editor({validate:p=>validate(p)});await a.session.load();
+    validate=async()=>{changeCurve(a,37);return 'new.mp4 has no motion result yet'};
+    await window.s3fUpdate();assert.equal(a.project.scripts.L0.actions[0].pos,37);
+    validate=async()=> 'new.mp4 has no motion result yet';await window.s3fUpdate();
+    assert.equal(a.project,null);assert.equal(h.state.project.scripts.L0.actions[0].pos,37);
 });

@@ -109,7 +109,7 @@ export function recreatedTrackChoices(project, previous) {
 
 export function sourceChoices(project) {
     const latest=new Set(Object.values(project.timeline.latest));
-    return project.timeline.sources.map(source=>{
+    return project.timeline.sources.filter(source=>!source.data.metadata?.manual_only).map(source=>{
         const input=source.input??source.id.split("@")[0],config=source.data.config;
         const label=`${source.data.metadata?.processing_region?.name || input} · ${config.target_anchor.replaceAll("_"," ")} · person ${config.target_person}`;
         return {id:source.id,current:latest.has(source.id),label:latest.has(source.id)?`${label} · latest`:`${label} · saved ${source.id.split("@")[1]?.slice(0,8)??"original"}`};

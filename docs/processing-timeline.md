@@ -21,8 +21,9 @@ loading or Motion Studio's curve editor.
 1. Choose a file in core **Load Video**. The distributed example deliberately has
    no source file selected.
 2. Keep the timeline node's **operation** on `prepare` and run the workflow once.
-   This prepares the timeline without extracting poses for the whole video. Until
-   a completed motion project exists, the dependent Motion Studio nodes wait.
+   This opens Motion Studio with the video, a neutral Main curve and audio/manual
+   pattern tools. No pose extraction is required: audio-only projects can be saved
+   and exported immediately. Detected source tracks appear when you process regions.
    **plan_json** can be blank or `{}`: a new session starts with a full-video
    region; an existing session restores its saved plan. Clearing that field does
    not erase saved regions or cached results.
@@ -52,6 +53,14 @@ previous video's edits separately. Its locked tracks do not block the new video
 or get copied onto it. Processing the previous video again restores its saved
 edits and locks. These histories stay separate for independently connected Motion
 Studio nodes and survive ComfyUI restarts.
+
+After preparing a new video, Motion Studio checks the current Timeline before
+restoring a saved session. It opens that video's saved edits or a blank authoring
+project, without displaying the previous video's tracks. Pending edits are saved
+before the old view clears. Adding tracking later keeps authored audio patterns
+and manual Main edits; the updated project appears without switching tabs.
+Older timelines that have never created a Motion Studio project need one `prepare`
+run. Tracking and Automatic remain optional.
 
 **Download plan** saves a JSON backup. **Restore plan** checks that the backup
 belongs to this source and previews its region counts before you restore it as a
@@ -88,20 +97,21 @@ detection, and names new regions after the EDL clips where available. It fills
 uncovered intervals as usual; import alone does not split or reprocess existing
 regions. To replace imported markers with a visual scan, use **Detect cuts**.
 
-## Automatic stabilization from a painted mask
+## Automatic stabilization from a prepared mask
 
 1. Add a gold stabilization section over the interval needing correction. Keep
    its crop large enough to contain the reference throughout the section.
-2. In **1 · Mask**, choose a clear frame and paint one reference surface. You can
-   leave it at this stage; separate propagation and tracking runs are optional.
+2. In **1 · Mask**, choose a clear frame and paint one reference surface, or use
+   **Generate initial mask** with SAM3 and refine its outline with Paint / Erase.
+   You can leave it at this stage; separate propagation and tracking runs are optional.
 3. Choose **Correction → Position, rotation & scale** for rotation or zoom. New
    stabilization sections default to this; existing sections keep their old mode.
-4. Open **Automatic mode**, leave **Use painted masks** selected, and run it.
+4. Open **Automatic mode**, leave **Use prepared masks** selected, and run it.
    It prepares scene/person candidates, saves points sampled inside the painted
    reference, propagates the mask in both directions, tracks and renders each
    section, then extracts the four anchor candidates for each detected person.
 
-Only enabled painted sections overlapping enabled, unlocked automatic tracking
+Only enabled masked sections overlapping enabled, unlocked automatic tracking
 regions are prepared. Manual point sets and additional reference keyframes stay
 available. Untouched automatically generated points refresh when the paint or
 point-spacing settings change. Editing those points makes them your manual set.
@@ -177,8 +187,16 @@ manual points →** to skip the optional mask stage. Existing point regions open
 on Stabilize.
 
 1. **Mask (optional).** Seek to a clear frame within the region, choose **Use this
-   frame**, and paint one reference surface. Erase removes paint; **Undo brush
-   stroke** removes the latest stroke. **Propagate mask** uses the installed
+   frame**, and paint one reference surface, or use **Generate initial mask**
+   under **Initial mask from text · SAM3**. The default prompt is `man` with
+   confidence `0.15`. This queues detection on the current original frame and
+   selects the highest-scoring subject. Review the outline before propagating;
+   a low threshold may include the wrong subject or background. Choose **Brush →
+   Erase**, set the radius, and paint over unwanted parts of the generated mask.
+   **Paint** adds to it; **Undo brush stroke** reverses the latest brush edit.
+   **Replace mask with SAM3** replaces the seed on the current frame while keeping
+   numbered points and reference keyframes. Global **Undo** restores the old mask.
+   **Propagate mask** uses the installed
    ComfyUI-SAM2Matting package to propagate before and after that frame, throughout
    this gold region. Scrub the original preview to inspect the green overlay.
    Propagation does not run CoTracker or SAM3D.
@@ -201,6 +219,29 @@ on Stabilize.
    completed stabilization and running SAM3D for the anchor tracks. It preserves
    any unrelated marked selection on the timeline.
 
+The initial-mask **Model** dropdown keeps **SAM3Matting** as the default and adds
+installed **SAM3** and **SAM3.1** checkpoints, labelled with their version, filename
+and model folder. **Refresh models** updates the list after installing weights.
+SAM3Matting uses the installed ComfyUI-SAM2Matting text-mask implementation and
+`SAM2Matting-SAM3.pt`. Regular SAM3 and SAM3.1 use ComfyUI's native detector and
+loader; they require a full checkpoint with its text encoder included. These
+choices come from ComfyUI's registered `checkpoints`, `diffusion_models`,
+`detection`, and `sam3` folders when available, including configured extra paths.
+For SAM3.1, use Comfy-Org's
+[sam3.1_multiplex_fp16.safetensors](https://huggingface.co/Comfy-Org/sam3.1/tree/main/checkpoints).
+MLX exports use different weight names and tensor layouts; renaming them does
+not make them compatible with the native loader.
+A saved choice that is no longer installed stays visible as unavailable until
+you restore it or select another model. For **SAM3Matting**, **Generate initial mask**
+reuses weights from ComfyUI's registered `sam2matting` paths. If missing, it
+downloads the official `SAM2Matting-SAM3.pt` using the installed SAM2Matting
+package into its first registered model directory, or
+`<ComfyUI model root>/sam2matting/` when none is registered. This respects
+`--models-directory` and configured extra model paths; no machine-specific
+folders are searched. Download progress appears beside the mask action, and
+partial downloads are never treated as installed checkpoints. The propagation
+model is a separate choice, so a SAM3 seed can still use SAM2.1 Base+ propagation.
+
 Each stage shows its readiness. Missing or unconfirmed points and masks needing
 propagation are explained beside **Track region** before it can run. **Extract
 anchors** becomes available when the current stabilization has been rendered and
@@ -222,8 +263,9 @@ changing mask tolerance repeats stabilization using cached point trajectories.
 
 Install ComfyUI-SAM2Matting and its video model separately. Base+ is the default
 (`sam2matting/SAM2Matting-SAM2.1Base+.pt`); Tiny and SAM3Matting need their matching
-checkpoints. This integration resolves the existing package and ComfyUI model
-paths without downloading weights. Frames are decoded into a temporary disk spool
+checkpoints. Propagation resolves the existing package and ComfyUI model paths;
+the initial-mask action can download its missing SAM3Matting checkpoint as described
+above. Frames are decoded into a temporary disk spool
 and read lazily, with bounded propagation state. Packed PNG masks remain on disk
 and are read one frame at a time; scratch disk usage grows with section length.
 The reference mask is not passed to SAM3D as a person mask.
@@ -528,6 +570,22 @@ boundary. **Select shot** selects the interval between the surrounding cuts; use
 scheduled section. **Snap to cuts** aligns nearby pointer selections and region
 edges with markers. **Show cuts** hides or displays the guides.
 
+If detection misses a cut, seek to the **first frame of the new shot** and click
+**Add cut at frame · C** above the timeline (or press **C**). The new diamond
+opens its cut actions immediately. Choose **Shot before → Make region**, then
+click the same diamond and choose **Shot after → Make region** to place adjacent
+sections. You can also use **Split here** if a region already spans the cut.
+
+Manual markers save immediately, independently of unapplied region edits, and
+survive reopening and **Detect cuts** reruns. **Remove cut** in the marker's menu
+removes only the marker; existing regions and results stay intact. Removed
+markers stay suppressed on future scans. An explicit EDL import replaces the
+marker set, including these manual corrections.
+
+For marking without a cut marker, **O** includes the displayed frame; **Shift+O**
+(**Out before frame**) ends immediately before it. At a selected cut, **O** uses
+the exact boundary before the incoming frame.
+
 Click a **diamond cut marker** on the ruler to select its boundary and open its
 actions. The selected edge is highlighted across both lanes. Marker selection
 works even when **Snap to cuts** is off.
@@ -647,7 +705,7 @@ The node's operations remain available for normal workflow runs:
 | Operation | Use |
 | --- | --- |
 | `detect_cuts` | Scan the source for hard-cut guides without pose extraction or motion output. |
-| `prepare` | Open or refresh the planning interface and pass an existing completed project downstream. |
+| `prepare` | Open the planning interface and Motion Studio, creating a blank audio/manual project if needed. Pass the current project downstream without inference. |
 | `all` | Process the eligible tracking regions in the plan. |
 | `selected` | In a normal node run, use the marked range if nonempty, otherwise selected regions. Editor buttons submit their explicit scope for that run only. |
 | `unfinished` | Resume eligible work without repeating valid completed chunks. |
