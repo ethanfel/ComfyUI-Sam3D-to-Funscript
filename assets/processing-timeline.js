@@ -713,6 +713,10 @@ function renderInspector() {
         filterDetailedAnchors();
         meshEditor.render();subject.render();
     }
+    // Hidden inputs still participate in native form validation. Settings from
+    // the previously selected lane must not prevent applying this region.
+    const inactive=$(lane==='tracking'?'stabilizationSettings':'trackingSettings');
+    for(const control of inactive.querySelectorAll('input,textarea,select,button'))control.disabled=true;
 }
 function filterDetailedAnchors(){
     const terms=$("anchorSearch").value.toLowerCase().replaceAll("_"," ").trim().split(/\s+/).filter(Boolean);let count=0;
@@ -1120,7 +1124,16 @@ async function applyWorkflow(){
     try {
         // Commit focused fields before the parent serializes the workflow.
         if(document.activeElement?.matches("input,textarea,select"))document.activeElement.blur();
-        if(!$("regionForm").reportValidity())throw new Error("Correct the highlighted region setting before applying the plan.");
+        const form=$("regionForm"),invalid=!form.hidden&&[...form.elements].find(control=>control.willValidate&&!control.validity.valid);
+        if(invalid){
+            showInspectorTab('region');
+            for(let parent=invalid.parentElement;parent&&parent!==form;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+            const label=invalid.labels?.[0]?.cloneNode(true);
+            label?.querySelectorAll('input,textarea,select,button').forEach(control=>control.remove());
+            const name=invalid.getAttribute('aria-label')||label?.textContent.trim().replace(/\s+/g,' ')||invalid.id;
+            invalid.scrollIntoView({block:'nearest'});invalid.reportValidity();
+            throw new Error(`${selected()?.region.name||'Region'} · ${name}: ${invalid.validationMessage}`);
+        }
         await save();const target=bridge();if(!target)throw new Error("Plan saved locally. Open this page from its ComfyUI node to apply it to the workflow.");
         const sent=clone(plan),request=uuid();let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
         applyPending={request,sent,promise,resolve,reject,timer:setTimeout(()=>finishApply(new Error("ComfyUI did not acknowledge Apply. Keep this tab open and retry from the linked node.")),7000)};

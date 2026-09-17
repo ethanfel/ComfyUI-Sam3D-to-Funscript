@@ -82,7 +82,7 @@
 <fieldset id="orientationSetup" hidden><legend>Keep the head upright</legend>
 <p>Pause on a clear original frame. Draw a tight head area, then draw an arrow from chin toward crown. Track region rotates the video before SAM3D extracts motion.</p>
 <div class="toolbar"><label>Tool <select id="orientationTool"><option value="review">Review</option><option value="box">Draw head area</option><option value="up">Draw head up · chin → crown</option></select></label><button id="orientationStart" type="button">Region start</button></div>
-<div class="toolbar"><label>Head tilt <input id="orientationAngle" type="number" min="-180" max="180" step="1" value="0"> °</label><label>Keep at <input id="orientationTarget" type="number" min="-180" max="180" step="1" value="0"> °</label><button id="orientationKeep" type="button">Keep this angle</button></div>
+<div class="toolbar"><label>Head tilt <input id="orientationAngle" type="number" min="-180" max="180" step="any" value="0"> °</label><label>Keep at <input id="orientationTarget" type="number" min="-180" max="180" step="any" value="0"> °</label><button id="orientationKeep" type="button">Keep this angle</button></div>
 <div class="toolbar"><label>Follow <select id="orientationMethod"><option value="features">Head area · image features</option><option value="manual">Manual angle keys</option></select></label></div>
 <div class="toolbar"><select id="orientationKeys" aria-label="Head orientation frames"></select><button id="orientationRemove" type="button">Remove angle frame</button></div>
 <p id="orientationStatus" role="status"></p>
@@ -158,6 +158,6 @@
             clearTimeout(slow);if(!failed)panel.hidden=true;
         }
     }).observe(status,{childList:true});
-    import("./processing-timeline.js?v=orientation-1").catch(window.s3fTimelineStartupFailed);
+    import("./processing-timeline.js?v=region-validation-1").catch(window.s3fTimelineStartupFailed);
 })();
 </script></body></html>

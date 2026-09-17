@@ -121,7 +121,9 @@ export function insertBeatSection(actions,section,blendMs=0){
     const {start,end}=section;
     if(!Number.isFinite(blendMs)||blendMs<0)throw new Error('Use a nonnegative blend duration.');
     const width=Math.min(blendMs,(end-start)/2),times=new Set([start,end]);
-    for(const p of [...actions,...section.actions])if(p.at>=start&&p.at<=end)times.add(p.at);
+    // A cut copies the saved curve exactly. Sampling it at the old curve's knots
+    // and rounding those extra points would change it on each audio/SAM3D swap.
+    for(const p of [...(width?actions:[]),...section.actions])if(p.at>=start&&p.at<=end)times.add(p.at);
     if(width){times.add(roundEven(start+width));times.add(roundEven(end-width));for(let t=start;t<end;t+=20)times.add(roundEven(t));}
     const inside=[...times].sort((a,b)=>a-b).map(at=>{
         const weight=width?clamp(Math.min(at-start,end-at)/width,0,1):1;
@@ -130,4 +132,62 @@ export function insertBeatSection(actions,section,blendMs=0){
     const before=actions.filter(p=>p.at<start),after=actions.filter(p=>p.at>end);
     if(!width){if(before.length&&before.at(-1).at<start-1)before.push({at:start-1,pos:roundEven(evaluate(actions,start-1))});if(after.length&&after[0].at>end+1)after.unshift({at:end+1,pos:roundEven(evaluate(actions,end+1))});}
     return reduceActions([...before,...inside,...after],{start,end,protectedTimes:[start,end,start+width,end-width]}).actions;
+}
+
+// Show existing audio on the same source-clock sections without regenerating it.
+export function beatSectionBlocks(sections, sources=[], cuts=[]) {
+    const edges=[...new Set([...sources.flatMap(s=>[s.start,s.end]),...cuts].filter(Number.isFinite).map(roundEven))].sort((a,b)=>a-b);
+    return sections.flatMap(s=>{
+        const bounds=[s.start,...edges.filter(t=>t>s.start&&t<s.end),s.end];
+        return bounds.slice(1).map((end,i)=>{
+            const start=bounds[i],source=sources.find(r=>r.start<=start&&r.end>=end);
+            return {id:s.id,start,end,label:source?.label||'',source:source?.id};
+        });
+    });
+}
+export function sliceBeatSection(section,start,end) {
+    if(![start,end].every(Number.isInteger)||start<section.start||end>section.end||end<=start)throw new Error('Select a range inside the saved audio block.');
+    return {...section,start,end,actions:[{at:start,pos:roundEven(evaluate(section.actions,start))},
+        ...section.actions.filter(p=>p.at>start&&p.at<end),{at:end,pos:roundEven(evaluate(section.actions,end))}],
+        decisions:(section.decisions||[]).filter(d=>d.start<end&&d.end>start).map(d=>({...d,start:Math.max(start,d.start),end:Math.min(end,d.end)}))};
+}
+// A shared selection may span several adjacent saved blocks, but never a gap.
+export function savedBeatSelection(sections,start,end) {
+    if(![start,end].every(Number.isInteger)||end<=start)return null;
+    let cursor=start;const parts=[];
+    for(const s of [...sections].sort((a,b)=>a.start-b.start)){
+        if(s.end<=cursor||s.start>=end)continue;
+        if(s.start>cursor)return null;
+        const part=sliceBeatSection(s,cursor,Math.min(end,s.end));parts.push(part);cursor=part.end;
+        if(cursor===end)break;
+    }
+    if(cursor!==end)return null;
+    const points=new Map();
+    for(let i=0;i<parts.length;i++){
+        const part=parts[i],previous=parts[i-1];
+        if(previous&&previous.actions.at(-1).pos!==part.actions[0].pos){
+            const at=part.start-1;points.set(at,{at,pos:roundEven(evaluate(previous.actions,at))});
+        }
+        for(const p of part.actions)points.set(p.at,p);
+    }
+    return {...parts[0],start,end,actions:[...points.values()].sort((a,b)=>a.at-b.at),decisions:parts.flatMap(s=>s.decisions),
+        summary:parts.length===1?parts[0].summary:`${parts.length} audio blocks`};
+}
+// A replacement owns its entire range, including existing blocks and gaps.
+// Keep untouched blocks and the surviving ends of any intersected blocks.
+export function editBeatSections(sections,selected,start,end,replacement=null) {
+    if(![start,end].every(Number.isInteger)||end<=start||start<0)throw new Error('Select a nonempty audio range.');
+    const original=sections.find(s=>s.id===selected);
+    if(selected&&!original)throw new Error('Select a saved audio block first.');
+    if(!replacement&&(!original||start<original.start||end>original.end))throw new Error('Select a range inside the saved audio block.');
+    const affected=sections.filter(s=>s.start<end&&s.end>start&&(replacement||s.id===selected));
+    const ids=new Set(sections.map(s=>s.id));
+    const fresh=()=>{let n=0;while(ids.has(`beat_${n}`))n++;const id=`beat_${n}`;ids.add(id);return id;};
+    const id=replacement?(affected.includes(original)?selected:fresh()):'';
+    const output=sections.filter(s=>!affected.includes(s));
+    for(const section of affected)for(const [a,b]of [[section.start,Math.min(start,section.end)],[Math.max(end,section.start),section.end]]){
+        if(b>a)output.push({...sliceBeatSection(section,a,b),id:fresh()});
+    }
+    if(replacement)output.push({...replacement,id,start,end});
+    return {sections:output.sort((a,b)=>a.start-b.start),selected:id};
 }

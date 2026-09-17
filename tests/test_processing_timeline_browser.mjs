@@ -811,7 +811,7 @@ try{
  await page.evaluate('document.querySelector("#apply").click()');
  await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'previous fixture saved');
  // Head orientation uses an independent area and angle workflow, without points or masks.
- state.plan={...state.plan,tracking:[],stabilization:[{...structuredClone(stable),id:'head',name:'Rotating head',start_ms:2000,end_ms:4500,locked:false,reference:{crop_xywh:[0,0,180,320],points:[],sections:[],transform_mode:'similarity'}}],selected_ids:['head'],selection:[2000,4500]};
+ state.plan={...state.plan,tracking:[{id:'tracking10',name:'Tracking 10',start_ms:4500,end_ms:6000,enabled:true,locked:false,anchor:'mouth',person:0,rois:[[0,0,1,1]],smoothing_ms:30,settings:{}}],stabilization:[{...structuredClone(stable),id:'head',name:'Rotating head',start_ms:2000,end_ms:4500,locked:false,reference:{crop_xywh:[0,0,180,320],points:[],sections:[],transform_mode:'similarity'}}],selected_ids:['head'],selection:[2000,4500]};
  state.revision++;renderedState=null;
  await page.call('Emulation.setDeviceMetricsOverride',{width:1450,height:1180,deviceScaleFactor:1,mobile:false});
  await page.evaluate('localStorage.clear()');await page.call('Page.reload');
@@ -831,24 +831,42 @@ try{
  await page.evaluate('document.querySelector("#orientationTool").value="box";document.querySelector("#orientationTool").dispatchEvent(new Event("change"))');await wait(180);
  await headDrag([40,90],[140,220]);
  assert.equal(await page.evaluate('document.querySelector("#orientationTool").value'),'up');
- await headDrag([70,190],[120,140]);
+ const expectedHeadAngle=Math.atan2(49,50)*180/Math.PI;
+ await headDrag([70,190],[119,140]);
  assert.equal(await page.evaluate('document.querySelector("#orientationTool").value'),'review');
- assert.ok(Math.abs(Number(await page.evaluate('document.querySelector("#orientationAngle").value'))-45)<.1);
+ assert.ok(Math.abs(Number(await page.evaluate('document.querySelector("#orientationAngle").value'))-expectedHeadAngle)<.1);
  assert.equal(await page.evaluate('document.querySelector("#trackStabilization").disabled'),false);
  await page.evaluate('document.querySelector("#orientationKeep").click();document.querySelector("#apply").click()');
  await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'head angle saved');
  const savedHead=structuredClone(state.plan.stabilization[0].reference.orientation);
- assert.equal(savedHead.keys.length,1);assert.equal(savedHead.keys[0].frame,0);assert.ok(Math.abs(savedHead.target_degrees-45)<.1);
+ assert.equal(savedHead.keys.length,1);assert.equal(savedHead.keys[0].frame,0);assert.ok(Math.abs(savedHead.target_degrees-expectedHeadAngle)<.1);
  assert.deepEqual(state.plan.stabilization[0].reference.points,[]);
  const headReload=await page.evaluate('performance.timeOrigin');await page.call('Page.reload');
  await until(()=>page.evaluate(`performance.timeOrigin!==${headReload}&&document.querySelector('#orientationSetup')&&!document.querySelector('#orientationSetup').hidden&&!document.querySelector('#apply').disabled`),'head setup reload');
  await page.evaluate('document.querySelector("#orientationStart").click()');await wait(150);
  assert.equal(await page.evaluate('document.querySelectorAll("#orientationKeys option").length'),2);
+ assert.equal(await page.evaluate('document.querySelector("#orientationAngle").validity.valid&&document.querySelector("#orientationTarget").validity.valid'),true,'Drawn fractional angles remain valid after reload');
+ await clickRegion('tracking10');
+ assert.equal(await page.evaluate('document.querySelector("#regionName").value'),'Tracking 10');
+ assert.equal(await page.evaluate('document.querySelector("#orientationAngle").disabled&&document.querySelector("#orientationTarget").disabled'),true,'Previous stabilization fields do not validate on a tracking region');
+ await page.evaluate('document.querySelector("#orientationAngle").setCustomValidity("Stale stabilization field");document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'tracking applies after orientation');
+ assert.deepEqual(state.plan.stabilization[0].reference.orientation,savedHead,'Switching regions preserves exact drawn angles');
+ const validRevision=state.revision;
+ await page.evaluate('document.querySelector("#smoothing").value=10001;document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Tracking 10 · Smoothing")'),'invalid tracking setting names its field');
+ assert.equal(state.revision,validRevision,'Invalid active input is not saved');
+ assert.equal(await page.evaluate('document.activeElement.id'),'smoothing');
+ await page.evaluate('document.querySelector("#smoothing").value=30;document.querySelector("#smoothing").dispatchEvent(new Event("change"));document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'corrected tracking input applies');
+ await page.evaluate('document.querySelector("#stabilizationLane [data-id=head]").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+ assert.equal(await page.evaluate('document.querySelector("#smoothing").disabled'),true,'Hidden tracking settings are disabled on stabilization');
+ assert.equal(await page.evaluate('document.querySelector("#orientationTarget").disabled'),false);
  // Capability failure keeps the editable plan in this tab until the backend restarts.
  orientationCapabilities=false;
  await page.evaluate('document.querySelector("#orientationTarget").value=0;document.querySelector("#orientationTarget").dispatchEvent(new Event("change"));document.querySelector("#trackStabilization").click()');
  await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI to enable head")'),'orientation backend guard');
- assert.ok(Math.abs(state.plan.stabilization[0].reference.orientation.target_degrees-45)<.1,'failed save preserves stored settings');
+ assert.ok(Math.abs(state.plan.stabilization[0].reference.orientation.target_degrees-expectedHeadAngle)<.1,'failed save preserves stored settings');
  orientationCapabilities=true;
  await page.evaluate('document.querySelector("#trackStabilization").click()');
  await until(()=>page.evaluate('document.querySelector("#progressText").textContent.includes("Tracking complete")'),'head tracking complete');
@@ -864,7 +882,7 @@ try{
  fs.writeFileSync('development/orientation-browser/editor.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
  await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
  assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'orientation controls fit narrow timeline');
- console.log('Head orientation: source drawing, angle direction, save/reload, backend guard, tracking without points/masks, preview, lock and narrow layout passed');
+ console.log('Head orientation: fractional angles, save/reload, switching to Tracking 10, inactive validation, actionable invalid-field errors, backend guard, tracking, preview, lock and narrow layout passed');
 
  assert.equal(errors.length,0,JSON.stringify(errors));
  console.log(JSON.stringify({checks:['cut-menu split of both lanes, reference and mask preservation, independent right-side edits, atomic Undo, lock protection, S shortcut and reload','tracking-only action without pose regions','progress and cancel beside Track region','automatic stabilized preview','reference-only processing preserves motion and selection','tracking action lock protection and backend capability check','compact desktop and narrow stabilization controls','multiple reference keyframes in both editors','offline mode saved per region','reference navigation before first tracking','numbered point identities and keyframe removal/undo','neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport','clickable cut markers and keyboard boundary marks','Shift-click cut range in both directions','before/after and double-click shot selection','make tracking zone preserves anchors','locked region rejects cut split','make independent stabilization zone','Escape, hidden guides and refreshed scan clear cut selection','cut action panel fits narrow views','tools beside preview without pushing filmstrip','narrow tools below timeline','detailed anchor search and short main list','detailed extra tracks survive general toggles','detailed anchors save reload and lock','frame steps hold image until latest decoded frame','saved stabilized clip discovery without rerun','original/stabilized frame-aligned switching and stepping','point edits use original frame','stale render labeling','playback leaves stabilization at its end','held-frame counts and warnings','gap navigation and tracked-point overlay'],apiRequests,errors},null,2));

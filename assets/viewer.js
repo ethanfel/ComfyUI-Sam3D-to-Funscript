@@ -9,7 +9,7 @@ import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wirefra
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
 import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
 import {decodeBeatAudio, analyzeBeatAudio} from "./audio-analysis.mjs";
-import {BEAT_SHAPES, beatGrid, generateBeatSection, insertBeatSection} from "./audio-patterns.mjs";
+import {BEAT_SHAPES, beatGrid, generateBeatSection, insertBeatSection, beatSectionBlocks, savedBeatSelection, editBeatSections} from "./audio-patterns.mjs";
 import {audioLane} from "./audio-lane.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -29,7 +29,7 @@ let reductionDraft=null;
 let sceneCuts=[],cutLoading=false,selectedCut=null;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
-let sectionPreferences=[],sectionBlocks=[],sectionRanges=[];
+let sectionPreferences=[],sectionBlocks=[],sectionRanges=[],audioSourceSections=[];
 const sectionSurfaces=new Map();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
 function previewState() {return {...project.preview,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
@@ -297,20 +297,28 @@ async function readVideoAudio(signal){
     return {file:new File([await response.blob()],`${name} · audio.wav`,{type:'audio/wav'}),offset_ms:source.offset+start};
 }
 const beats=audioLane({$,context:()=>({project,audio:project?.audio_patterns,revision:comparisonRevision,selection:project?.timeline.selection||[0,0],
+    active:project?.timeline.active,selectionLane:project?.timeline.selection_lane,
+    sources:audioSourceSections,cuts:sceneCuts,showCuts:$('showSceneCuts').checked,
     duration:roundEven(project?.metadata.duration_ms||1),bounds,now:currentMs,axis:$('axis').value,mainLocked:project?.timeline.main[$('axis').value]?.locked,videoAudioKey:videoAudioSource()?.key}),
-    readVideoAudio,
+    readVideoAudio,rulerTicks,formatTime,
     change:audio=>{record();project.audio_patterns=audio;dirty(false);render();},
     selectRange:(start,end)=>{
         discardPattern();discardReduction();closeSceneCut();project.timeline.active='main';project.timeline.selection_lane='audio';delete project.timeline.selection_track;
         project.timeline.selection=boundedSelection(project,start,end,'main');controls();render();
     },seek,render,wheel:timelineWheel,
-    copyToMain:section=>{
+    copyToMain:sections=>{
         const axis=$('axis').value,main=project.timeline.main[axis];
         if(main.locked)throw new Error(`Unlock Main ${axis} before copying an audio block.`);
-        if(section.end>roundEven(project.metadata.duration_ms))throw new Error('This block extends past the current video. Shorten its range first.');
-        const actions=project.scripts[axis].actions,blend=$('join').value==='blend'?$('blendMs').valueAsNumber:0;
-        const result=insertBeatSection(actions,section,blend);
-        record();main.patterns=rememberPattern(main.patterns||[],actions,section.start,section.end,'Audio · '+section.summary);
+        if(!sections.length)return;
+        if(sections.some(s=>s.end>roundEven(project.metadata.duration_ms)))throw new Error('A selected block extends past the current video. Shorten its range first.');
+        const blend=$('join').value==='blend'?$('blendMs').valueAsNumber:0;
+        let result=project.scripts[axis].actions,patterns=main.patterns||[];
+        // Build the whole transfer before recording one undo step or mutating Main.
+        for(const section of sections){
+            const actions=insertBeatSection(result,section,blend);
+            patterns=rememberPattern(patterns,result,section.start,section.end,'Audio · '+section.summary);result=actions;
+        }
+        record();main.patterns=patterns;
         project.scripts[axis]={...project.scripts[axis],actions:result};main.edited=true;main.assembled=true;delete project.metrics?.[axis];
         project.timeline.active='main';discardPattern();discardReduction();dirty(false);controls();render();
     }});
@@ -659,6 +667,7 @@ function sectionControls() {
     }
     sectionRanges=[...grouped.values()];
     const zoneLabel=t=>sources.get(t.source)?.data?.metadata?.processing_region?.name||trackName(t);
+    audioSourceSections=sectionBlocks.map(b=>({...b,label:zoneLabel(byId.get(b.id))}));
     $('sectionTrack').replaceChildren(...sectionRanges.map(r=>new Option(`${formatTime(r.start,2)}–${formatTime(r.end,2)} · ${zoneLabel(byId.get(r.id))}`,r.id)));
     $('sectionTrack').value=current?.id||'';
     $('sectionTrack').disabled=!tracks.length;

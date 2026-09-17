@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {analyzeBeatAudio} from '../assets/audio-analysis.mjs';
-import {BEAT_SHAPES,beatGrid,generateBeatSection,insertBeatSection} from '../assets/audio-patterns.mjs';
+import {BEAT_SHAPES,beatGrid,generateBeatSection,insertBeatSection,beatSectionBlocks,sliceBeatSection,savedBeatSelection,editBeatSections} from '../assets/audio-patterns.mjs';
 import {evaluate,validateReference} from '../assets/curve.mjs';
 
 const rate=11025,samples=new Float32Array(rate*16);
@@ -56,6 +56,55 @@ for(const blend of [0,150]){
     if(blend)assert.ok(Math.abs(evaluate(result,1000)-evaluate(base,1000))<=.5);
 }
 console.log('Audio analysis, beat alignment, rhythm shapes, energy, offsets, deterministic variation and bounded insertion passed.');
+
+const full={...generateBeatSection(audio,0,19000,options),id:'beat_0'},snapshot=structuredClone(full);
+const sources=[{id:'track_0',start:4000,end:8000,label:'Tracking 1'},{id:'track_1',start:8000,end:12000,label:'Tracking 2'}];
+const blocks=beatSectionBlocks([full],sources,[6000.25,8000,16000]);
+assert.deepEqual(blocks.map(s=>[s.start,s.end]),[[0,4000],[4000,6000],[6000,8000],[8000,12000],[12000,16000],[16000,19000]]);
+assert.equal(blocks[1].label,'Tracking 1');assert.equal(blocks[3].label,'Tracking 2');
+assert.deepEqual(full,snapshot,'Displaying section boundaries does not edit saved audio');
+assert.deepEqual(beatSectionBlocks([full],[]).map(s=>[s.start,s.end]),[[0,19000]],'Audio-only projects retain their saved block');
+const sliced=savedBeatSelection([full],4321,7999);
+assert.equal(sliced.start,4321);assert.equal(sliced.end,7999);
+for(let t=4321;t<7999;t+=29)assert.ok(Math.abs(evaluate(sliced.actions,t)-evaluate(full.actions,t))<=.5,'Cutting an existing block preserves the curve within rounding tolerance');
+const replacement={...generateBeatSection(audio,4000,8000,{...options,shape:'Double Tap'}),audio_name:'drums.wav'};
+const edited=editBeatSections([full],'beat_0',4000,8000,replacement);
+assert.deepEqual(edited.sections.map(s=>[s.start,s.end]),[[0,4000],[4000,8000],[8000,19000]]);
+assert.equal(new Set(edited.sections.map(s=>s.id)).size,3);assert.equal(edited.selected,'beat_0');
+assert.deepEqual(edited.sections[1].actions,replacement.actions);
+for(const s of [edited.sections[0],edited.sections[2]])for(let t=s.start;t<=s.end;t+=23)assert.ok(Math.abs(evaluate(s.actions,t)-evaluate(full.actions,t))<=.5,'Partial replacement retains both neighboring ranges');
+assert.deepEqual(full,snapshot);
+assert.ok(savedBeatSelection(edited.sections,2000,14000),'Adjacent audio pieces may be copied as one selection');
+const step=savedBeatSelection([{id:'a',start:0,end:4000,actions:[{at:0,pos:10},{at:4000,pos:10}]},
+    {id:'b',start:4000,end:8000,actions:[{at:4000,pos:90},{at:8000,pos:90}]}],1000,7000);
+assert.equal(evaluate(step.actions,3999),10);assert.equal(evaluate(step.actions,4000),90,'Joining audio blocks preserves a hard boundary');
+const unrelated=Array.from({length:251},(_,i)=>({at:i*80,pos:i%2?75:25}));
+const copied=insertBeatSection(unrelated,sliced);
+assert.deepEqual(copied.filter(p=>p.at>=sliced.start&&p.at<=sliced.end),insertBeatSection(base,sliced).filter(p=>p.at>=sliced.start&&p.at<=sliced.end),'Cut copying cannot depend on old Main knots');
+const removed=editBeatSections([full],'beat_0',4000,8000);
+assert.deepEqual(removed.sections.map(s=>[s.start,s.end]),[[0,4000],[8000,19000]]);
+assert.equal(savedBeatSelection(removed.sections,2000,14000),null,'Copying cannot bridge a missing audio range');
+assert.equal(savedBeatSelection([full],19000,19000),null);
+const editedSnapshot=structuredClone(edited.sections);
+const spanning=generateBeatSection(audio,7000,10000,options);
+const overwritten=editBeatSections(edited.sections,'beat_0',7000,10000,spanning);
+assert.deepEqual(overwritten.sections.map(s=>[s.start,s.end]),[[0,4000],[4000,7000],[7000,10000],[10000,19000]]);
+assert.deepEqual(overwritten.sections[0],edited.sections[0],'An untouched block keeps its ID and settings');
+assert.deepEqual(overwritten.sections[2].actions,spanning.actions);
+for(const s of [overwritten.sections[1],overwritten.sections[3]])for(let t=s.start;t<=s.end;t+=37)
+    assert.ok(Math.abs(evaluate(s.actions,t)-evaluate(savedBeatSelection(edited.sections,s.start,s.end).actions,t))<=.5,'Spanning replacement preserves the surviving ends');
+assert.equal(new Set(overwritten.sections.map(s=>s.id)).size,overwritten.sections.length);
+assert.deepEqual(edited.sections,editedSnapshot,'Replacement never mutates the input');
+const whole=editBeatSections(edited.sections,'',0,19000,full);
+assert.equal(whole.sections.length,1,'A whole-song preview replaces all existing blocks without selecting one first');
+assert.deepEqual(whole.sections[0].actions,full.actions);
+const elsewhere=editBeatSections(edited.sections,'beat_0',0,4000,sliceBeatSection(full,0,4000));
+assert.deepEqual(elsewhere.sections.slice(1),edited.sections.slice(1),'An unrelated selected block and a touching neighbor stay unchanged');
+assert.notEqual(elsewhere.selected,'beat_0');
+const filled=editBeatSections(removed.sections,'',0,19000,full);
+assert.equal(filled.sections.length,1,'Replacing a range may cover both saved audio and gaps');
+assert.throws(()=>sliceBeatSection(full,-1,8000),/inside/);
+console.log('Aligned audio sections, exact selections, partial replacement/removal, adjacent coverage and gap protection passed.');
 
 // Full-mix features distinguish sustained bass from brighter audio and track a build.
 const tone=freq=>Float32Array.from({length:rate*8},(_,i)=>Math.sin(i/rate*2*Math.PI*freq)*(.1+.8*i/(rate*8)));

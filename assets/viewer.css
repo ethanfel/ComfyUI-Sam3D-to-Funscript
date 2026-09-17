@@ -24,8 +24,7 @@
 .pattern-panel{margin:12px 0;padding:12px;border:1px solid #3c4e62;border-radius:7px;background:#1b2935}.pattern-panel summary{cursor:pointer;color:#efb1cd}.pattern-panel .controls{margin:12px 0;flex-wrap:wrap}.pattern-panel input[type=number]{width:85px}.pattern-panel [hidden]{display:none!important}.pattern-panel p{margin:10px 0;color:#a9bbc9}.pattern-panel #patternStatus{color:#f3b0ce}.pattern-panel #applyPattern{background:#245748}.pattern-panel button{max-width:100%;white-space:normal}
 .pattern-panel select{max-width:min(100%,300px)}.pattern-panel label{max-width:100%;flex-wrap:wrap}
 .audio-lane{margin:16px 0;border:1px solid #65563f;border-radius:7px;padding:12px;background:#1a2933;min-width:0}.audio-lane h2{color:#ffc875}.audio-lane .controls{margin-top:10px;gap:10px}.audio-lane label{flex-wrap:wrap;max-width:100%}.audio-lane select{max-width:min(100%,260px)}.audio-lane button{max-width:100%;white-space:normal}.audio-lane [hidden]{display:none!important}#beatAudioInfo{font-size:11px;color:#a7bac9;overflow-wrap:anywhere}#beatCurve{display:block;width:100%;height:210px;margin-top:10px;touch-action:none}#beatCurve:focus-visible{outline:2px solid #ffc875;outline-offset:-2px}#beatStatus{color:#ffda9f;font-size:12px}#beatSave,#beatCopy{background:#245748}#beatOffset{width:105px}
-#beatCurve{width:calc(100% + 24px);margin-left:-12px}
-#beatMixInfo{font-size:11px;color:#bd96dc;overflow-wrap:anywhere;min-width:0;flex:1}#beatMixOffset{width:105px}#beatExplanation{font-size:12px;color:#d5bbec}#beatDecisions{max-height:160px;overflow:auto;padding-left:20px}
+#beatMixInfo{font-size:11px;color:#bd96dc;overflow-wrap:anywhere;min-width:0;flex:1 1 220px}#beatMixOffset{width:105px}#beatExplanation{font-size:12px;color:#d5bbec}#beatDecisions{max-height:160px;overflow:auto;padding-left:20px}
 
 .track.collapsed>canvas,.track.collapsed>#curve{display:none}.track-head .collapse-track{font-size:16px;min-width:26px;padding:2px 6px;color:#9cccf1}#sceneCutCount{font-size:11px;color:#d9c57e}
 
@@ -58,3 +57,6 @@ body.source-sections #mainLane{scrollbar-gutter:auto}
 .track-result{font-weight:600;padding:4px 8px;border-radius:4px;background:#24483f;color:#9ce9cb}.track-result[data-current="false"]{background:#594323;color:#ffcf88}.track-source-settings{font-size:12px}.track-source-settings summary,#sectionHistory summary{cursor:pointer;color:#9db5c7}.track-source-settings[open] label{margin-top:6px}#sectionHistory{font-size:12px}#sectionHistory[open] label{display:flex;margin-top:6px}#latestDetection{border-color:#75e2ba;color:#9ce9cb}
 
 .audio-range input[type=number]{width:110px}#beatRangeHint{color:#ffda9f}#beatPreview{background:#245748}
+
+/* Match the source timeline plot width, including its 42 / 12 pixel ruler gutters. */
+.audio-timeline{margin:12px -12px 0;min-width:0}#beatLabels{height:32px;position:relative;overflow:hidden}.audio-section-block{position:absolute;top:3px;height:27px;overflow:hidden;white-space:nowrap!important;text-overflow:ellipsis;text-align:left;border-radius:4px 4px 0 0;padding:3px 7px;font-size:11px;background:#574d36;border-color:#9e825c;color:#fff0cd}.audio-section-block[aria-pressed=true]{background:#886b39;border-color:#ffc875}.audio-section-block:focus-visible{outline:2px solid #ffc875;outline-offset:-2px}.audio-timeline #beatCurve{margin-top:0}
