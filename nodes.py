@@ -317,9 +317,9 @@ class S3F_CompareReference:
         return output, json.dumps(report, indent=2)
 
 
-from .processing_nodes import S3F_ProcessingTimeline
+from .processing_nodes import S3F_ProcessingTimeline, S3F_FolderTimeline
 
-NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_ReferenceStabilize, S3F_ProcessingTimeline, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_StandaloneExport, S3F_CompareReference)}
+NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (S3F_VideoPose, S3F_ReferenceStabilize, S3F_ProcessingTimeline, S3F_FolderTimeline, S3F_LoadPoseCache, S3F_CorePoseAdapter, S3F_AnchorOverride, S3F_BuildMotion, S3F_LoadProject, S3F_PreviewExport, S3F_StandaloneExport, S3F_CompareReference)}
 NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_VideoPose": "SAM3D Video → Cached Poses", "S3F_LoadPoseCache": "Load SAM3D Pose Cache",
     "S3F_BuildMotion": "Poses → Multi-axis Motion", "S3F_LoadProject": "Load Funscript Project",
@@ -330,4 +330,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "S3F_AnchorOverride": "Detailed Anchor Override",
     "S3F_ReferenceStabilize": "Reference Stabilizer · CoTracker3",
     "S3F_ProcessingTimeline": "Video Processing Timeline",
+    "S3F_FolderTimeline": "Folder Processing Timeline",
 }

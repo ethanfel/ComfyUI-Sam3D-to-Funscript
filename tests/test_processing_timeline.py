@@ -170,6 +170,22 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(primary[0]['data']['config']['target_person'],8)
         self.assertEqual(primary[0]['data']['config']['target_anchor'],'right_hand')
 
+    def test_folder_anchor_preference_changes_suggestion_without_dropping_candidates(self):
+        from sam3d_funscript.folder_review import apply_preset
+        plan=normalize_plan({'tracking':[region(anchor='pelvis',additional_anchors=['mouth','left_hand','right_hand'],
+            rois=[[0,0,1,1],[0,0,1,1]],candidate_people=[0,1],
+            automatic={'version':1,'suggest':True,'people':[{'coverage':1},{'coverage':1}],'review':[]})]},self.info)
+        for anchor in ('right_hand','mouth'):
+            current=apply_preset(plan,{'preferred_anchor':anchor,'range_mode':'fixed','movement_range':.12})
+            project,report=self.run_plan(current)
+            self.assertEqual(len(project['timeline']['tracks']),8)
+            primary=[s['data'] for s in project['timeline']['sources'] if s['data']['metadata']['processing_anchor']['primary']]
+            self.assertEqual(len(primary),1)
+            self.assertEqual(primary[0]['config']['target_anchor'],anchor)
+            self.assertEqual(primary[0]['config']['axis_settings']['L0']['range'],.12)
+            self.assertEqual(len(report['regions'][0]['candidates']),8)
+        self.assertEqual(self.extract.call_count,1,'Changing the preferred anchor reuses the extracted poses')
+
     def test_automatic_short_or_failed_candidates_do_not_block_later_scenes(self):
         automatic = {'version':1,'suggest':True,'people':[],'review':[]}
         plan = {'tracking':[region('short',0,1000,automatic=automatic), region('good',1000,4000,automatic=automatic)]}

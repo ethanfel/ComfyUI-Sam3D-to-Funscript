@@ -30,7 +30,7 @@ The reported **rhythm fit** describes how well the periodic model explains that 
 
 The original 14 names and mathematical shapes follow the supplied `Pattern_Generation/main.lua`, credited there to **Nerfarious837**: Heartbeat, Jigsaw, Jigsaw Squiggle, Pulse, Ramp Down, Ramp Up, Random, River Bed Center/High/Low, Sine Squiggle, Sine Wave, Square and Triangle. This implementation runs in Motion Studio; it does not execute Lua or require OpenFunscripter.
 
-Twelve additional rhythm shapes bring the library to 26: Smooth Bounce, Quick Rise, Quick Fall, Double Tap, Triple Tap, Hold High, Hold Low, Swing, Staircase Up, Staircase Down, Accent & Echo and Half Stroke. These are also available in the separate [audio beat row](audio-patterns.md), where their cycle timing follows analyzed audio.
+The first twelve additional rhythm shapes are: Smooth Bounce, Quick Rise, Quick Fall, Double Tap, Triple Tap, Hold High, Hold Low, Swing, Staircase Up, Staircase Down, Accent & Echo and Half Stroke. Fourteen more templates bring the library to 40: Soft Pulse, Rounded Swing, Early Lift, Late Lift, Sharp Rebound, Delayed Return, Double Bounce, Triplet Bounce, Gallop, Reverse Echo, Decaying Ripples, Step & Hold, Four Step Rise and Four Step Fall. These templates, Triangle and Sine Wave are also available in the separate [audio beat row](audio-patterns.md), with a visual catalogue, sound-envelope matching and audio-driven timing.
 
 - Set **Cycle length**, **Amplitude** (distance from center), **Center** and **Reverse waveform**.
 - **Fade in/out** taper the waveform amplitude toward its center. Overlapping fades use the smaller envelope.

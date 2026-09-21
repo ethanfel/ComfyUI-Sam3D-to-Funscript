@@ -34,6 +34,60 @@ def register_routes():
     def processing_store():
         return ProcessingStore(Path(folder_paths.get_output_directory()) / "sam3d_funscript" / "processing")
 
+    def folder_store():
+        from .sam3d_funscript.folder_store import FolderStore
+        return FolderStore(Path(folder_paths.get_output_directory()) / "sam3d_funscript")
+
+    @routes.get("/sam3d_funscript/folders/{folder}")
+    async def folder_get(request):
+        try:
+            return web.json_response(await asyncio.to_thread(folder_store().scan, request.match_info['folder']), headers={'Cache-Control': 'no-store'})
+        except (ValueError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
+
+    @routes.post("/sam3d_funscript/folders/{folder}/{action}")
+    async def folder_action(request):
+        try:
+            body = await request.json()
+            store, folder, action = folder_store(), request.match_info['folder'], request.match_info['action']
+            if action == 'open':
+                result = await asyncio.to_thread(store.open, folder, body['clip'], body.get('client'))
+            elif action == 'ignore':
+                result = await asyncio.to_thread(store.ignore, folder, body['clip'], body.get('ignored', True), body.get('note', ''))
+            elif action == 'approve':
+                result = await asyncio.to_thread(store.approve, folder, body['clip'], body['revision'], body.get('replace', False), body.get('expected'))
+            elif action == 'review':
+                result = await asyncio.to_thread(store.review, folder, body['clip'], body.get('quality', 0), body.get('note', ''))
+            elif action == 'lease':
+                result = await asyncio.to_thread(store.hold_review, folder, body.get('clip'), body['client'])
+            elif action == 'preset':
+                result = await asyncio.to_thread(store.preset, folder, body.get('subfolder',''), body.get('settings'))
+            elif action == 'versions':
+                result = await asyncio.to_thread(store.versions, folder, body['clip'])
+            elif action == 'version':
+                result = await asyncio.to_thread(store.version, folder, body['clip'], body['version'])
+            elif action == 'save_version':
+                result = await asyncio.to_thread(store.save_version, folder, body['clip'], body['name'], body['revision'], body.get('quality',0), body.get('note',''))
+            elif action == 'restore_version':
+                result = await asyncio.to_thread(store.restore_version, folder, body['clip'], body['version'], body['revision'])
+            elif action == 'rate_version':
+                result = await asyncio.to_thread(store.rate_version, folder, body['clip'], body['version'],body['name'],body['quality'],body.get('note',''))
+            elif action == 'issues':
+                result = await asyncio.to_thread(store.issues, folder, body['clip'])
+            elif action == 'pause':
+                result = await asyncio.to_thread(store.pause_batch, folder)
+            elif action == 'preflight':
+                from .sam3d_funscript.folder_review import preflight
+                needs_tracker=await asyncio.to_thread(store.needs_tracker,folder,body.get('subfolder',''),body.get('retry_failed') is True)
+                result = await asyncio.to_thread(preflight, body.get('settings',{}), needs_tracker=needs_tracker)
+            else:
+                raise ValueError('Unknown folder action')
+            return web.json_response(result)
+        except PlanConflict as error:
+            raise web.HTTPConflict(text=str(error))
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise web.HTTPBadRequest(text=str(error))
+
     def processing_state(request):
         try:
             state = processing_store().read(request.match_info["session"])
@@ -52,7 +106,9 @@ def register_routes():
         request = request.clone(client_max_size=16 * 1024 * 1024)
         try:
             body = await request.json()
-            state = processing_store().save(request.match_info["session"], body["revision"], body["plan"])
+            from .sam3d_funscript.folder_store import editing_session
+            with editing_session(request.match_info['session']):
+                state = processing_store().save(request.match_info["session"], body["revision"], body["plan"])
             return web.json_response(state)
         except PlanConflict as error:
             raise web.HTTPConflict(text=str(error))
@@ -91,8 +147,10 @@ def register_routes():
                 raise ValueError('A cut must be inside the video, on the first frame of the new shot.')
             at = index['times_ms'][frame - index['first_frame']]
             result = edit_cut(state.get('scene_cuts'), body['source_id'], at, body['action'])
-            updated = processing_store().update_cuts(state['session'], body['source_id'], result,
-                {'stage': 'complete'}, expected=expected)
+            from .sam3d_funscript.folder_store import editing_session
+            with editing_session(state['session']):
+                updated = processing_store().update_cuts(state['session'], body['source_id'], result,
+                    {'stage': 'complete'}, expected=expected)
             return web.json_response(updated)
         except PlanConflict as error:
             raise web.HTTPConflict(text=str(error))
@@ -125,8 +183,10 @@ def register_routes():
                 raise PlanConflict('The source video changed while reading the EDL. Reload the timeline.')
             if preview:
                 return web.json_response({'cuts': result, 'expected_cuts': digest(state.get('scene_cuts'))})
-            updated = processing_store().update_cuts(state['session'], result['source_id'], result,
-                {'stage': 'complete'}, expected=body['expected_cuts'])
+            from .sam3d_funscript.folder_store import editing_session
+            with editing_session(state['session']):
+                updated = processing_store().update_cuts(state['session'], result['source_id'], result,
+                    {'stage': 'complete'}, expected=body['expected_cuts'])
             return web.json_response(updated)
         except PlanConflict as error:
             raise web.HTTPConflict(text=str(error))
@@ -223,9 +283,11 @@ def register_routes():
         request = request.clone(client_max_size=512 * 1024 * 1024)
         try:
             body = await request.json()
-            state = editor_store().save(request.match_info["session"], body["project"], body["revision"])
+            from .sam3d_funscript.folder_store import editing_session
+            with editing_session(request.match_info['session']):
+                state = editor_store().save(request.match_info["session"], body["project"], body["revision"])
             return web.json_response({"revision": state["revision"]})
-        except Conflict as error:
+        except (Conflict, PlanConflict) as error:
             raise web.HTTPConflict(text=str(error))
         except (ValueError, KeyError, TypeError) as error:
             raise web.HTTPBadRequest(text=str(error))
@@ -245,7 +307,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
-        if name not in ("viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
+        if name not in ("folder.html", "folder.js", "folder.css", "viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
             raise web.HTTPNotFound()
         # Module entry points and imported helpers must revalidate together after
         # an update. Heuristic caching can otherwise mix incompatible exports.

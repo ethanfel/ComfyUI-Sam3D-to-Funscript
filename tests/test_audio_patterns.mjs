@@ -16,7 +16,7 @@ for(const peak of peakTimes)for(let i=Math.floor((peak-45)*rate/1000);i<Math.cei
     const t=i/rate-peak/1000;pulses[i]=Math.cos(t*2*Math.PI*1200)*Math.exp(-.5*(t/.009)**2);
 }
 const measured=await analyzeBeatAudio(pulses,rate);
-assert.equal(measured.version,2);assert.equal(measured.onsets.length,peakTimes.length);
+assert.equal(measured.version,4);assert.equal(measured.onsets.length,peakTimes.length);
 for(let i=0;i<peakTimes.length;i++)assert.ok(Math.abs(measured.onsets[i].peak_at-peakTimes[i])<=3,`Measured loudness peak at ${peakTimes[i]}`);
 const silent=await analyzeBeatAudio(new Float32Array(rate),rate);
 assert.equal(silent.bpm,0);assert.deepEqual(silent.beats,[]);assert.deepEqual(silent.onsets,[]);

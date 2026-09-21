@@ -1,3 +1,4 @@
+import {isFolder,folderDescriptor,folderPages,attachFolder,adoptFolder,detachFolder,updateFolderNode,setupFolder} from "./folder.mjs";
 import {openWorkspace,registerWorkspaceTool,refreshWorkspaces} from "./workspace.mjs";
 import {app} from "../../scripts/app.js";
 import {api} from "../../scripts/api.js";
@@ -13,8 +14,9 @@ function current(node){return app.graph.getNodeById(node.id)===node}
 function prepareSessions(){
     const seen=new Set();
     for(const node of app.graph?._nodes||[]){
-        if(node.type!=="S3F_ProcessingTimeline")continue;
+        if(node.type!=="S3F_ProcessingTimeline"&&!isFolder(node))continue;
         node.properties||={};
+        if(isFolder(node)&&node.properties.s3f_folder_entry){node.properties.s3f_timeline_session=node.properties.s3f_folder_entry.timeline;continue;}
         if(!node.properties.s3f_timeline_session||seen.has(node.properties.s3f_timeline_session)){
             node.properties.s3f_timeline_session=newSession();
             node.properties.s3f_timeline_ready=false;
@@ -24,14 +26,17 @@ function prepareSessions(){
 }
 function open(node){prepareSessions();openWorkspace(node);}
 registerWorkspaceTool("timeline",{
-    describe:node=>({key:`timeline:${node.properties.s3f_timeline_session}`,label:"Timeline",url:node.properties.s3f_timeline_ready?api.apiURL(`/sam3d_funscript/assets/processing-timeline.html?${new URLSearchParams({session:node.properties.s3f_timeline_session,node:String(node.id)})}`):null}),
-    attach:(node,win)=>editors.set(node,win),
-    detach:(node,win)=>{if(editors.get(node)===win)editors.delete(node)},
+    describe:node=>isFolder(node)?folderDescriptor(node):({key:`timeline:${node.properties.s3f_timeline_session}`,label:"Timeline",url:node.properties.s3f_timeline_ready?api.apiURL(`/sam3d_funscript/assets/processing-timeline.html?${new URLSearchParams({session:node.properties.s3f_timeline_session,node:String(node.id)})}`):null}),
+    additional:node=>isFolder(node)?folderPages(node):[],
+    adopt:(node,win)=>{if(isFolder(node))adoptFolder(node,win);},
+    attach:(node,win)=>{if(isFolder(node)&&win.location.pathname.endsWith('/folder.html'))attachFolder(node,win);else if(win.location.pathname.endsWith('/processing-timeline.html'))editors.set(node,win);},
+    detach:(node,win)=>{detachFolder(node,win);if(editors.get(node)===win)editors.delete(node)},
 });
 app.registerExtension({
     name:"sam3d.funscript.processing-timeline",
     beforeConfigureGraph(graph){migrateCutSensitivity(graph);},
     setup(){
+        setupFolder(jobs);
         window.addEventListener("message",async event=>{
             const message={...event.data};
             if(event.origin!==location.origin||!["s3f-timeline-apply","s3f-timeline-process","s3f-timeline-cancel"].includes(message?.type))return;
@@ -99,7 +104,7 @@ app.registerExtension({
                     const output=await queueReferenceTracking(api,prompt,node.id,data=>{
                         if(data.prompt_id)job.prompt_id=data.prompt_id;
                         if(data.value===undefined)reply(anchorPreview?{...data,text:data.state==='queued'?'Anchor preview queued in ComfyUI…':'Inspecting anchor on the selected frame…'}:data);
-                    },{nodeType:"S3F_ProcessingTimeline",resultKey:"s3f_timeline"});
+                    },{nodeType:node.type,resultKey:"s3f_timeline"});
                     assertCurrent();
                     node.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline processing complete";
                     const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
@@ -137,18 +142,26 @@ app.registerExtension({
         };
     },
     beforeRegisterNodeDef(type,data){
-        if(data.name!=="S3F_ProcessingTimeline")return;
+        if(!["S3F_ProcessingTimeline","S3F_FolderTimeline"].includes(data.name))return;
         const created=type.prototype.onNodeCreated;
         type.prototype.onNodeCreated=function(){
             created?.apply(this,arguments);this.properties||={};this.properties.s3f_timeline_session||=newSession();
             const status=document.createElement("div");status.style.cssText="font:12px system-ui;color:#a9d9c5;padding:8px;white-space:normal";
             status.textContent="Run Prepare once, then open the processing timeline.";this.s3fTimelineStatus=status;
             this.addDOMWidget("timeline_status","text",status,{serialize:false,getMinHeight:()=>44});
-            this.addWidget("button","Open processing timeline",null,()=>open(this));this.setSize([410,410]);
+            this.addWidget("button",isFolder(this)?"Open folder workspace":"Open processing timeline",null,()=>open(this));this.setSize([410,410]);
         };
         const executed=type.prototype.onExecuted;
         type.prototype.onExecuted=function(output){
-            executed?.apply(this,arguments);const session=output?.s3f_timeline?.[0];if(!session)return;
+            executed?.apply(this,arguments);
+            if(isFolder(this)&&output?.s3f_folder_batch){
+                this.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||'Folder batch finished';return;
+            }
+            if(isFolder(this)&&output?.s3f_folder?.[0]){
+                updateFolderNode(this,output.s3f_folder[0],output.s3f_folder_entry?.[0]||null);
+                this.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||'Folder ready';refreshWorkspaces();
+            }
+            const session=output?.s3f_timeline?.[0];if(!session)return;
             this.properties.s3f_timeline_session=session;this.properties.s3f_timeline_ready=true;
             this.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline ready";
             const win=editors.get(this);if(alive(win)&&!jobs.has(this))win.s3fTimelineLoad?.().catch(console.error);refreshWorkspaces();

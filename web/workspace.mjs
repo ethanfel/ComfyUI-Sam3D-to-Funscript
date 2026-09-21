@@ -12,9 +12,11 @@ function describe(anchor){
     const members=connectedTools(app.graph,anchor),unique=new Map();
     for(const node of members){
         const kind=toolKind(node),provider=providers.get(kind);if(!provider)continue;
-        const descriptor=provider.describe(node);if(descriptor&&!unique.has(descriptor.key))unique.set(descriptor.key,{...descriptor,kind,node,provider});
+        for(const descriptor of [provider.describe(node),...(provider.additional?.(node)||[])]){
+            if(descriptor&&!unique.has(descriptor.key))unique.set(descriptor.key,{kind,...descriptor,node,provider});
+        }
     }
-    const order={timeline:0,reference:1,motion:2};
+    const order={folder:-1,timeline:0,reference:1,motion:2};
     const pages=[...unique.values()].sort((a,b)=>order[a.kind]-order[b.kind]);
     for(const page of pages)if(pages.filter(other=>other.kind===page.kind).length>1)page.label+=` · ${page.node.id}`;
     return {members,pages};
@@ -39,6 +41,8 @@ function adopt(win,id){
         const key=win.s3fWorkspaceIdentity?.();if(!key)return null;
         const anchor=(app.graph?._nodes||[]).find(node=>providers.get(toolKind(node))?.describe(node)?.key===key);
         if(!anchor){win.s3fWorkspaceDisconnected?.('Open the matching workflow in ComfyUI to reconnect. Your edits are kept.');return null;}
+        for(const page of win.s3fWorkspaceFrames?.()||[])if(page.key===key)
+            providers.get(toolKind(anchor))?.adopt?.(anchor,page.window);
         const record={id,win,anchor,pages:[],bindings:new Map()};workspaces.add(record);return record;
     }catch{return null;}
 }
@@ -61,7 +65,23 @@ function update(record,active){
     });
     return record.pending;
 }
-export function refreshWorkspaces(){for(const record of workspaces)update(record);}
+export function refreshWorkspaces(){return Promise.all([...workspaces].map(record=>update(record)));}
+export async function flushWorkspaceNode(node){
+    for(const record of workspaces)if(alive(record.win)&&current(record.anchor)&&record.members?.includes(node)){
+        await record.pending;
+        for(const item of record.win.s3fWorkspaceFrames?.()||[])await flushWindow(item.window);
+    }
+}
+export function releaseWorkspaceNode(node){
+    for(const record of workspaces)for(const [key,binding]of record.bindings)if(binding.node===node){
+        binding.provider.detach?.(node,binding.window);record.bindings.delete(key);
+    }
+}
+export function workspaceEditor(node,session){
+    for(const record of workspaces)if(alive(record.win)&&current(record.anchor)&&record.members?.includes(node)){
+        const page=record.win.s3fWorkspaceFrames?.().find(p=>p.key===`motion:${session}`);if(page)return page.window;
+    }
+}
 export function openWorkspace(node){
     const {members,pages}=describe(node),requested=providers.get(toolKind(node))?.describe(node)?.key;
     let record=[...workspaces].find(item=>alive(item.win)&&current(item.anchor)&&connectedTools(app.graph,item.anchor).some(member=>members.includes(member)));

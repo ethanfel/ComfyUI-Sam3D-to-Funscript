@@ -804,7 +804,8 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                 row.update(state='error', error='No usable anchor candidates; review the person crops')
                 continue
             if region.get('automatic', {}).get('suggest'):
-                candidates.sort(key=lambda p: (-p['metadata']['automatic_candidate']['score'],
+                preferred=region['automatic'].get('preferred_anchor','auto')
+                candidates.sort(key=lambda p: (preferred!='auto' and p['config']['target_anchor']!=preferred, -p['metadata']['automatic_candidate']['score'],
                     bool(p['metadata']['automatic_candidate']['review']), p['config']['target_person'], p['config']['target_anchor']))
                 for i, project in enumerate(candidates):
                     project['metadata']['processing_anchor']['primary'] = i == 0

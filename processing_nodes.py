@@ -16,6 +16,9 @@ from .sam3d_funscript.video import video_input_range
 def motion_editor_session(workflow, node_id, timeline_session):
     """Share a sole direct standalone consumer; ambiguous branches stay separate."""
     nodes = {str(node["id"]): node for node in workflow.get("nodes", [])}
+    if nodes.get(str(node_id), {}).get('type') == 'S3F_FolderTimeline':
+        from .sam3d_funscript.folder_store import motion_session
+        return motion_session(timeline_session)
     candidates = []
     for link in workflow.get("links", []):
         if not isinstance(link, list) or len(link) < 6 or str(link[1]) != str(node_id) or link[2] != 0:
@@ -148,6 +151,9 @@ class S3F_ProcessingTimeline:
                     replace_default=not state.get('report') and (state.get('editor_only') or not state.get('project_path')),
                     people_mode=options.get('people', 'all'), use_cache=use_cache, progress=auto_progress,
                     interrupt=throw_exception_if_processing_interrupted)
+                if options.get('folder_preset'):
+                    from .sam3d_funscript.folder_review import apply_preset
+                    plan = apply_preset(plan, options['folder_preset'])
                 if stabilization_mode == 'prepared_masks':
                     plan, prepared = prepare_mask_references(info, plan)
                 state = store.save(session, revision, plan)
@@ -312,3 +318,97 @@ class S3F_ProcessingTimeline:
         return {"ui": {"s3f_timeline": [session], "s3f_timeline_status": [summary],
                        "s3f_timeline_project": [state.get("project")], "text": [timeline_path]},
                 "result": (project, timeline_path)}
+
+
+class S3F_FolderTimeline(S3F_ProcessingTimeline):
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs['required'].pop('video')
+        inputs['required'] = {
+            'folder_path': ('STRING', {'default': '', 'tooltip': 'Browse and refine videos individually, or create drafts in bulk. Bulk skips matching funscripts and ignored videos.'}),
+            'include_subfolders': ('BOOLEAN', {'default': True}),
+            'video_name': ('STRING', {'default': '', 'tooltip': 'Selected by the folder browser. Blank opens the next pending video.'}),
+            **inputs['required']}
+        return inputs
+
+    def run(self, folder_path, model_file, include_subfolders=True, video_name='', operation='prepare', **kwargs):
+        import copy
+        from comfy_execution.graph import ExecutionBlocker
+        from comfy_api.latest._input_impl.video_types import VideoFromFile
+        from .sam3d_funscript.folder_store import FolderStore
+        folders = FolderStore(Path(folder_paths.get_output_directory()) / 'sam3d_funscript')
+        listing = folders.prepare(folder_path, include_subfolders)
+        from .sam3d_funscript.processing_timeline import parse_plan
+        submitted = parse_plan(kwargs.get('plan_json', '{}'))
+        if operation == 'automatic' and 'folder_batch' in submitted:
+            from comfy.model_management import throw_exception_if_processing_interrupted, InterruptProcessingException
+            from server import PromptServer
+            batch = submitted['folder_batch']
+            if not isinstance(batch, dict): raise ValueError('Invalid folder batch')
+            if kwargs.get('mask_video') is not None: raise ValueError('Prepare masks separately for each clip; disconnect the shared mask before bulk processing.')
+            from .sam3d_funscript.folder_review import preflight
+            needs_tracker = folders.needs_tracker(listing['folder'],batch.get('subfolder',''),batch.get('retry_failed') is True)
+            checks = preflight({'model_file':model_file,'tracker_model':kwargs.get('tracker_model','cotracker3_scaled_online.pth')},needs_tracker=needs_tracker)
+            if not checks['ok']:raise ValueError('Batch preflight failed: '+'; '.join(checks['errors']))
+            def process(entry):
+                current = folders.open(listing['folder'], entry['id'])
+                options = copy.deepcopy(kwargs)
+                extra = options['extra_pnginfo'] = options.get('extra_pnginfo') or {}
+                nodes = extra.setdefault('workflow', {}).setdefault('nodes', [])
+                node = next((n for n in nodes if str(n['id']) == str(options.get('unique_id'))), None)
+                if node is None:
+                    node = {'id': options.get('unique_id'), 'type': 'S3F_FolderTimeline'}; nodes.append(node)
+                node.setdefault('properties', {})['s3f_timeline_session'] = current['timeline']
+                options['plan_json'] = '{}'
+                result = self.run(folder_path, model_file, include_subfolders, current['name'], 'automatic', **options)
+                state = folders.plans.read(current['timeline'])
+                errors = [job.get('error', 'Processing failed') for job in (state.get('report') or {}).get('jobs', []) if job.get('state') == 'error']
+                if errors or state.get('editor_only') or not state.get('project_path'):
+                    raise ValueError('; '.join(errors[:3]) or 'No motion was generated. Review this clip manually.')
+                editor=folders.editors.read(current['editor_session'])
+                if editor:folders.save_version(listing['folder'],current['id'],'Automatic draft',project=editor['project'])
+                return result
+            report = folders.process_batch(listing['folder'], batch.get('subfolder', ''), process,
+                throw_exception_if_processing_interrupted, (InterruptProcessingException,),
+                lambda event: PromptServer.instance.send_sync('s3f_folder_progress', {'folder': listing['folder'], **event}),retry_failed=batch.get('retry_failed') is True)
+            # Never navigate the review workspace when a background batch ends.
+            return {'ui':{'s3f_folder':[listing['folder']], 's3f_folder_batch':[report],
+                's3f_timeline_status':[f"Bulk {report['stage']} · {len(report['completed'])} drafts ready, {len(report['failed'])} failed"]},
+                'result':(ExecutionBlocker(None),str(folders.path(listing['folder'])))}
+        entry = folders.choose(listing['folder'], video_name)
+        if entry is None and listing['entries']: entry = listing['entries'][0]
+        if entry is None:
+            return {'ui': {'s3f_folder': [listing['folder']], 's3f_folder_entry': [None],
+                's3f_timeline_status': ['No pending videos · open the folder to review completed or ignored clips.']},
+                'result': (ExecutionBlocker(None), str(folders.path(listing['folder'])))}
+        if operation != 'prepare' and entry['name'] != video_name:
+            raise PlanConflict('Select a video in the folder browser before processing.')
+        if operation != 'prepare' and entry['status'] == 'ignored':
+            raise PlanConflict('Restore this ignored video before processing.')
+        extra = copy.deepcopy(kwargs.pop('extra_pnginfo', None) or {})
+        workflow = extra.setdefault('workflow', {}); nodes = workflow.setdefault('nodes', [])
+        node = next((n for n in nodes if str(n['id']) == str(kwargs.get('unique_id'))), None)
+        if node is None:
+            node = {'id': kwargs.get('unique_id'), 'type': 'S3F_FolderTimeline'}; nodes.append(node)
+        properties = node.setdefault('properties', {})
+        if properties.get('s3f_timeline_session') != entry['timeline']:
+            if operation != 'prepare':
+                raise PlanConflict('The selected folder video changed after this job was queued. Reopen it before processing.')
+            kwargs['plan_json'] = '{}'
+        properties['s3f_timeline_session'] = entry['timeline']
+        entry = folders.open(listing['folder'], entry['id'])
+        if operation=='automatic':
+            preset=folders.clip_preset(listing['folder'],entry)
+            if preset:
+                for key in ('sample_fps','batch_size','cut_sensitivity'):kwargs[key]=preset[key]
+                submitted.setdefault('automatic_options',{})['folder_preset']=preset
+                kwargs['plan_json']=json.dumps(submitted)
+        result = super().run(VideoFromFile(str(Path(listing['root']) / entry['name'])), model_file,
+            operation=operation, extra_pnginfo=extra, **kwargs)
+        # Editor saves can be newer than the last published project file.
+        if operation == 'prepare':
+            editor = folders.editors.read(entry['editor_session'])
+            if editor: result['result'] = (editor['project'], result['result'][1])
+        result['ui'].update(s3f_folder=[listing['folder']], s3f_folder_entry=[entry])
+        return result

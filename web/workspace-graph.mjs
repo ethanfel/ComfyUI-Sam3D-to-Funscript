@@ -1,6 +1,6 @@
 // Follow actual tool chains. Sharing only a loader does not merge editors.
 export function toolKind(node) {
-    if (node?.type === "S3F_ProcessingTimeline") return "timeline";
+    if (["S3F_ProcessingTimeline", "S3F_FolderTimeline"].includes(node?.type)) return "timeline";
     if (node?.type === "S3F_ReferenceStabilize") return "reference";
     if (["S3F_StandaloneExport", "S3F_PreviewExport"].includes(node?.type)) return "motion";
     return null;

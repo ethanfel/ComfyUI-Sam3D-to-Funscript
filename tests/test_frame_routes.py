@@ -57,6 +57,66 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         await self.client.start_server()
         self.addAsyncCleanup(self.client.close)
 
+    async def test_folder_routes_open_ignore_restore_and_approve_saved_main(self):
+        from sam3d_funscript.folder_store import FolderStore
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False)
+        entry = listing['entries'][0]
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        response = await self.client.get(url)
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['counts']['pending'], 1)
+        response = await self.client.post(url + '/ignore', json={'clip': entry['id'], 'note': 'Unusable tracking'})
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['counts']['ignored'], 1)
+        response = await self.client.post(url + '/ignore', json={'clip': entry['id'], 'ignored': False})
+        self.assertEqual(response.status, 200)
+        response = await self.client.post(url + '/open', json={'clip': entry['id']})
+        self.assertEqual(response.status, 200, await response.text())
+        editor = store.editors.read(entry['editor_session'])
+        response = await self.client.post(url + '/approve', json={'clip': entry['id'], 'revision': editor['revision'] - 1})
+        self.assertEqual(response.status, 409)
+        response = await self.client.post(url + '/approve', json={'clip': entry['id'], 'revision': editor['revision']})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())['listing']['counts']['approved'], 1)
+        self.assertTrue(self.video.with_suffix('.funscript').exists())
+        for name in ('folder.html', 'folder.js', 'folder.css'):
+            response = await self.client.get('/sam3d_funscript/assets/' + name)
+            self.assertEqual(response.status, 200)
+
+    async def test_folder_versions_presets_and_active_clip_save_guard(self):
+        module=importlib.import_module('frame_route_fixture.sam3d_funscript.folder_store')
+        store=module.FolderStore(self.root/'sam3d_funscript')
+        listing=store.prepare(str(self.root),False);entry=listing['entries'][0];folder=listing['folder']
+        url='/sam3d_funscript/folders/'+folder
+        response=await self.client.post(url+'/open',json={'clip':entry['id'],'client':'b'*32})
+        self.assertEqual(response.status,200,await response.text())
+        editor=store.editors.read(entry['editor_session'])
+        version=await self.client.post(url+'/save_version',json={'clip':entry['id'],'name':'Original','revision':editor['revision'],'quality':4})
+        self.assertEqual(version.status,200,await version.text());version=await version.json()
+        response=await self.client.post(url+'/versions',json={'clip':entry['id']})
+        self.assertEqual((await response.json())[0]['name'],'Original')
+        response=await self.client.post(url+'/preset',json={'subfolder':'nested','settings':{'preferred_anchor':'mouth'}})
+        self.assertEqual(response.status,200,await response.text())
+        response=await self.client.post(url+'/preset',json={'subfolder':'nested/deeper'})
+        self.assertEqual((await response.json())['settings']['preferred_anchor'],'mouth')
+        response=await self.client.post(url+'/issues',json={'clip':entry['id']})
+        self.assertEqual(response.status,200)
+        module.ACTIVE[entry['timeline']]=module.ACTIVE[entry['editor_session']]=-1
+        try:
+            response=await self.client.post('/sam3d_funscript/editors/'+entry['editor_session'],json={'revision':editor['revision'],'project':editor['project']})
+            self.assertEqual(response.status,409,await response.text())
+            state=store.plans.read(entry['timeline'])
+            response=await self.client.post('/sam3d_funscript/timelines/'+entry['timeline'],json={'revision':state['revision'],'plan':state['plan']})
+            self.assertEqual(response.status,409,await response.text())
+            response=await self.client.post(url+'/restore_version',json={'clip':entry['id'],'version':version['id'],'revision':editor['revision']})
+            self.assertEqual(response.status,409,await response.text())
+        finally:
+            module.ACTIVE.pop(entry['timeline']);module.ACTIVE.pop(entry['editor_session'])
+        response=await self.client.post(url+'/restore_version',json={'clip':entry['id'],'version':version['id'],'revision':editor['revision']})
+        self.assertEqual(response.status,200,await response.text())
+        self.assertFalse(self.video.with_suffix('.funscript').exists())
+
     async def test_index_and_fractional_thumbnail_match_exact_frame_without_plan_edits(self):
         before = self.store.read(self.session)
         response = await self.client.get(self.base + '/frames', params={'source_id': self.info['source_id']})

@@ -9,7 +9,7 @@ import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wirefra
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
 import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
 import {decodeBeatAudio, analyzeBeatAudio} from "./audio-analysis.mjs";
-import {BEAT_SHAPES, beatGrid, generateBeatSection, insertBeatSection, beatSectionBlocks, savedBeatSelection, editBeatSections} from "./audio-patterns.mjs";
+import {BEAT_SHAPES, BEAT_CATALOG, BEAT_SOUNDS, assignBeatSounds, beatShapeValue, beatGrid, beatClicksWav, generateBeatSection, insertBeatSection, beatSectionBlocks, savedBeatSelection, editBeatSections} from "./audio-patterns.mjs";
 import {audioLane} from "./audio-lane.mjs";
 
 const $ = id => document.getElementById(id), video = $("video");
@@ -30,9 +30,10 @@ let sceneCuts=[],cutLoading=false,selectedCut=null;
 let view = timelineView(1), scrollPosition = 0;
 const curveLayers = new WeakMap();
 let sectionPreferences=[],sectionBlocks=[],sectionRanges=[],audioSourceSections=[];
+let folderComparison=null,folderIssues=[];
 const sectionSurfaces=new Map();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
-function previewState() {return {...project.preview,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
+function previewState() {return {...project.preview,beat_sound:$("beatSound").value,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
 $("outputProfile").replaceChildren(new Option("Off · authored only","none"),...DEVICE_PROFILES.map(p=>new Option(p.label,p.id)));
 function deviceOutputControls() {
     const settings=project.device_output??deviceSettings();
@@ -300,7 +301,7 @@ const beats=audioLane({$,context:()=>({project,audio:project?.audio_patterns,rev
     active:project?.timeline.active,selectionLane:project?.timeline.selection_lane,
     sources:audioSourceSections,cuts:sceneCuts,showCuts:$('showSceneCuts').checked,
     duration:roundEven(project?.metadata.duration_ms||1),bounds,now:currentMs,axis:$('axis').value,mainLocked:project?.timeline.main[$('axis').value]?.locked,videoAudioKey:videoAudioSource()?.key}),
-    readVideoAudio,rulerTicks,formatTime,
+    readVideoAudio,rulerTicks,formatTime,preferencesChanged:()=>{if(project)session?.changed();},
     change:audio=>{record();project.audio_patterns=audio;dirty(false);render();},
     selectRange:(start,end)=>{
         discardPattern();discardReduction();closeSceneCut();project.timeline.active='main';project.timeline.selection_lane='audio';delete project.timeline.selection_track;
@@ -385,6 +386,7 @@ function install(data, keepPlayback=false, output=null) {
     if(output&&(!keepPlayback||!hadVideo))loadPreviewVideo();
     loadVideoComparison(data,output);
     refreshSceneCuts();
+    try{window.parent.s3fFolderViewerReady?.(window);}catch{/* Standalone viewer. */}
 }
 function cutTimelineSessions() {
     const candidates=[new URLSearchParams(location.search).get("timeline"),project?.metadata.processing_timeline?.session];
@@ -896,6 +898,8 @@ function drawCurve(canvas, data, axis, isMain, active, window, size) {
             stroke(source[field].length,timeAt,i=>data.valid[i]?axisValue(source,s,i,field):null,strokeColor,1,breakAt);
         }
         stroke(actions.length,i=>actions[i].at,i=>actions[i].pos,color,2);
+        const compared=isMain?folderComparison?.scripts?.[axis]?.actions:null;
+        if(compared)stroke(compared.length,i=>compared[i].at,i=>compared[i].pos,'#f2a6d5',2);
         if(output)stroke(output.actions.length,i=>output.actions[i].at,i=>output.actions[i].pos,"#ffc07d",2);
         const [a,b]=visibleRange(actions.length,i=>actions[i].at,...bounds);
         // Individual handles are meaningful only when points can be distinguished.
@@ -924,6 +928,12 @@ function drawCurve(canvas, data, axis, isMain, active, window, size) {
         layer={key,data,actions,surface,source,clipped:count?clipped/count*100:0,referenceLabel};curveLayers.set(canvas,layer);
     }
     ctx.drawImage(layer.surface,0,0,layer.surface.width,layer.surface.height,0,0,w,h);
+    if(isMain){
+        ctx.save();ctx.beginPath();ctx.rect(42,0,w-54,h-25);ctx.clip();
+        for(const issue of folderIssues){if(issue.end_ms<bounds[0]||issue.start_ms>bounds[1])continue;
+            ctx.fillStyle='#efbc6280';ctx.fillRect(x(issue.start_ms),h-30,Math.max(2,x(issue.end_ms)-x(issue.start_ms)),5);}
+        ctx.restore();
+    }
     if($("showSceneCuts").checked){
         ctx.save();ctx.beginPath();ctx.rect(42,0,w-54,h-25);ctx.clip();
         for(const t of visibleSceneCuts(...bounds,(w-54)/8)){
@@ -1086,6 +1096,25 @@ function nearest(event,canvas,actions){
     for(let i=first;i<stop;i++){const p=actions[i];if(Math.hypot((p.at-a.at)/(bounds[1]-bounds[0])*(rect.width-54),(p.pos-a.pos)/100*(rect.height-40))<9)return i;}return -1;
 }
 function seek(time){currentMs=time;if(video.readyState&&!mediaLoading)video.currentTime=previewMediaTime(time,videoVariant,videoMapping,project.metadata.source_origin_ms||0);render();}
+window.s3fFolderSelectRange=(start,end,{play=false,track=null}={})=>{
+    if(!project)return false;
+    selectLane(track&&project.timeline.tracks.some(t=>t.id===track)?track:'main');
+    setSelection(start,end);changeView({start_ms:Math.max(0,start-1000),span_ms:Math.max(5000,end-start+2000),follow:false});seek(start);
+    if(play)window.s3fFolderPlaySelection();return true;
+};
+window.s3fFolderPlaySelection=()=>{
+    if(!project)return false;
+    const play=()=>{if(!playbackRange())setSelection(0,Math.min(10000,project.metadata.duration_ms));$('playSelection').click();};
+    if(video.readyState&&!mediaLoading)play();else video.addEventListener('loadedmetadata',play,{once:true});return true;
+};
+window.s3fFolderIssues=issues=>{folderIssues=Array.isArray(issues)?issues:[];render();};
+window.s3fFolderCompare=version=>{
+    if(version){for(const script of Object.values(version.scripts||{}))validateReference(script);}
+    folderComparison=version;comparisonRevision++;
+    let notice=$('folderComparison');
+    if(!notice){notice=document.createElement('p');notice.id='folderComparison';notice.style.color='#f2a6d5';$('mainLane').before(notice);}
+    notice.hidden=!version;notice.textContent=version?`Comparing ${version.name} · pink saved curve / green current Main · exports use Main`:'';render();
+};
 function sceneCutAtPointer(event,canvas){
     const rect=canvas.getBoundingClientRect(),y=event.clientY-rect.top;
     if(!$('showSceneCuts').checked||y<0||y>12)return null;

@@ -1,7 +1,8 @@
 import {evaluate, roundEven, validateReference, reduceActions} from "./curve.mjs";
 
-// Shape names/formulas from the user-supplied Pattern_Generation/main.lua
-// (Pattern Generator by Nerfarious837). Editor integration is independent of OFS.
+// The original fourteen PATTERNS entries follow the user-supplied
+// Pattern_Generation/main.lua (Nerfarious837). Motion Studio adds the rhythm
+// templates below; editor integration is independent of OFS.
 export const RHYTHM_PATTERNS = {
     'Smooth Bounce':[[0,-1],[.5,1],[1,-1]],
     'Quick Rise':[[0,-1],[.2,1],[1,-1]],
@@ -15,6 +16,21 @@ export const RHYTHM_PATTERNS = {
     'Staircase Down':[[0,-1],[.15,1],[.3,1],[.45,.2],[.6,.2],[.75,-.4],[1,-1]],
     'Accent & Echo':[[0,-1],[.125,1],[.25,-1],[.5,.2],[.75,-1],[1,-1]],
     'Half Stroke':[[0,-1],[.25,0],[.5,-1],[.75,1],[1,-1]],
+    // Additional Motion Studio templates; endpoints retain the primary landing.
+    'Soft Pulse':[[0,-1],[.35,1],[.65,1],[1,-1]],
+    'Rounded Swing':[[0,-1],[.7,1],[1,-1]],
+    'Early Lift':[[0,-1],[.15,1],[.65,1],[1,-1]],
+    'Late Lift':[[0,-1],[.35,-1],[.85,1],[1,-1]],
+    'Sharp Rebound':[[0,-1],[.12,1],[.82,1],[1,-1]],
+    'Delayed Return':[[0,-1],[.35,1],[.88,1],[1,-1]],
+    'Double Bounce':[[0,-1],[.25,1],[.5,-1],[.75,1],[1,-1]],
+    'Triplet Bounce':[[0,-1],[1/6,1],[1/3,-1],[.5,1],[2/3,-1],[5/6,1],[1,-1]],
+    'Gallop':[[0,-1],[.18,1],[.42,-.55],[.65,.7],[1,-1]],
+    'Reverse Echo':[[0,-1],[.12,.25],[.28,-.5],[.7,1],[1,-1]],
+    'Decaying Ripples':[[0,-1],[.12,1],[.3,-.6],[.46,.5],[.62,-.2],[.76,.2],[1,-1]],
+    'Step & Hold':[[0,-1],[.15,-.2],[.4,-.2],[.55,1],[.83,1],[1,-1]],
+    'Four Step Rise':[[0,-1],[.1,-.5],[.25,-.5],[.35,0],[.5,0],[.6,.5],[.75,.5],[.85,1],[1,-1]],
+    'Four Step Fall':[[0,-1],[.1,1],[.25,1],[.35,.5],[.5,.5],[.6,0],[.75,0],[.85,-.5],[1,-1]],
 };
 export const PATTERNS = ["Heartbeat", "Jigsaw", "Jigsaw Squiggle", "Pulse", "Ramp Down", "Ramp Up", "Random", "River Bed Center", "River Bed High", "River Bed Low", "Sine Squiggle", "Sine Wave", "Square", "Triangle",...Object.keys(RHYTHM_PATTERNS)];
 const TAU = 2 * Math.PI, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -89,7 +105,7 @@ export function rhythmValue(shape,phase){
     if(!knots)throw new Error('Choose a rhythm pattern.');
     phase=clamp(phase,0,1);
     const i=Math.max(1,knots.findIndex(p=>p[0]>=phase)),a=knots[i-1],b=knots[i];
-    let u=(phase-a[0])/(b[0]-a[0]);if(shape==='Smooth Bounce')u=ease(u);
+    let u=(phase-a[0])/(b[0]-a[0]);if(['Smooth Bounce','Soft Pulse','Rounded Swing','Early Lift','Late Lift','Delayed Return','Double Bounce','Triplet Bounce'].includes(shape))u=ease(u);
     return a[1]+(b[1]-a[1])*u;
 }
 export function generatePattern(actions, start, end, options = {}) {

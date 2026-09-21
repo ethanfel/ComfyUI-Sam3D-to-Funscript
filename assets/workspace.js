@@ -1,7 +1,7 @@
 const $=id=>document.getElementById(id), pages=new Map();
 let active=null,nextId=0,anchor=null,hostId=null,lastHost=0,hostConnected=false,serverConnected=null,checking=false;
 const workspace=new URLSearchParams(location.search).get('workspace');
-const safeURL=value=>{const url=new URL(value,location.href);if(url.origin!==location.origin||!/^\/((api\/)?sam3d_funscript\/assets\/)(processing-timeline|reference|viewer)\.html$/.test(url.pathname))throw new Error("Invalid workspace page");return url.href;};
+const safeURL=value=>{const url=new URL(value,location.href);if(url.origin!==location.origin||!/^\/((api\/)?sam3d_funscript\/assets\/)(processing-timeline|reference|viewer|folder)\.html$/.test(url.pathname))throw new Error("Invalid workspace page");return url.href;};
 window.s3fWorkflowHost=()=>{try{return window.opener&&!window.opener.closed&&window.opener.location.origin===location.origin?window.opener:null}catch{return null}};
 function select(key, refresh=false){
     if(!pages.has(key))key=pages.keys().next().value;
@@ -45,8 +45,8 @@ window.s3fConfigureWorkspace=configuration=>{
     hostId=configuration.host;
     anchor=configuration.anchor||anchor;lastHost=Date.now();hostConnected=configuration.connected!==false;
     const wanted=new Set(configuration.pages.map(page=>page.key));
-    for(const [key,page]of pages)if(!wanted.has(key)&&!page.descriptor.virtual){page.panel.remove();page.tab.remove();pages.delete(key)}
-    for(const descriptor of configuration.pages)add(descriptor);
+    for(const [key,page]of pages)if(!wanted.has(key)&&(!page.descriptor.virtual||configuration.pages.some(p=>p.kind==='folder'))){page.panel.remove();page.tab.remove();pages.delete(key)}
+    for(const descriptor of configuration.pages)if(!descriptor.embedded)add(descriptor);
     connectionStatus();
     // A ready/heartbeat response can repeat the opener's original tab. Use it
     // only for the first selection; background configuration never navigates.
@@ -65,7 +65,9 @@ async function reconnectPages(reason={hostChanged:false}){
     // an iframe or queues a processing job.
     await Promise.allSettled(window.s3fWorkspaceFrames().map(({window:win})=>win.s3fReconnect?.(reason)));
 }
-window.s3fWorkspaceFrames=()=>[...pages].filter(([,page])=>page.frame).map(([key,page])=>({key,window:page.frame.contentWindow}));
+window.s3fWorkspaceFrames=()=>[...pages].filter(([,page])=>page.frame).flatMap(([key,page])=>[
+    {key,window:page.frame.contentWindow},...(page.frame.contentWindow.s3fFolderFrames?.()||[])]);
+window.s3fWorkspaceFramesChanged=()=>window.s3fWorkflowHost()?.postMessage({type:'s3f-workspace-frames',workspace},location.origin);
 window.s3fWorkspaceNotice=text=>{$("notice").textContent=text;$("notice").hidden=!text;};
 window.s3fOpenWorkspacePage=(value,kind)=>{
     const url=new URL(safeURL(value)),session=url.searchParams.get("session");
@@ -81,7 +83,7 @@ $("tabs").onkeydown=event=>{
     event.preventDefault();select(keys[index],true);pages.get(keys[index])?.tab.focus();
 };
 window.addEventListener("beforeunload",event=>{
-    for(const {frame}of pages.values())if(frame){try{if(frame.contentWindow.s3fHasUnsavedEdits?.()){event.preventDefault();event.returnValue="";break}}catch{}}
+    for(const {window:win}of window.s3fWorkspaceFrames()){try{if(win.s3fHasUnsavedEdits?.()){event.preventDefault();event.returnValue="";break}}catch{}}
 });
 async function heartbeat(){
     const host=window.s3fWorkflowHost();
