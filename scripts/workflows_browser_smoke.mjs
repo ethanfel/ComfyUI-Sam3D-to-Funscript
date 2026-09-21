@@ -1,5 +1,5 @@
 // Validate bundled workflows in an isolated ComfyUI. Optional cache path runs the cached example.
-// Arguments after OUTPUT select UI files relative to workflows/, including diagnostic examples.
+// Arguments after OUTPUT select repository-relative UI files, including advanced recipes/fixtures.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,20 +28,31 @@ try{
     await until(()=>evaluate('!!window.s3fApp?.graph'),'Comfy graph');
     await until(()=>evaluate('!!window.LiteGraph?.registered_node_types?.S3F_StandaloneExport'),'custom node registration');
     await until(()=>evaluate('!!window.s3fApp.positionConversion'),'extension setup');
-    await until(()=>evaluate('window.s3fApp.graph._nodes.length>0'),'initial restoration');
-    const read=name=>JSON.parse(fs.readFileSync('workflows/'+name,'utf8'));
+    const read=name=>JSON.parse(fs.readFileSync(name,'utf8'));
+    const companion=file=>file.startsWith('workflows/')
+        ?file.replace('workflows/','extras/api/').replace('.json','.api.json')
+        :file.startsWith('extras/advanced/')
+            ?file.replace('extras/advanced/','extras/advanced/api/').replace('.json','.api.json')
+            :file.replace('.json','.api.json');
     const files=process.argv.slice(5);
-    for(const file of (files.length?files:fs.readdirSync('workflows').filter(n=>n.endsWith('.json')&&!n.endsWith('.api.json'))).sort()){
-        const workflow=read(file),api=read(file.replace('.json','.api.json'));
+    const projects=spec=>Object.entries(spec.inputs).filter(([name])=>/^project_\d+$/.test(name)).sort((a,b)=>Number(a[0].slice(8))-Number(b[0].slice(8))).map(([,value])=>value);
+    function comparePrompt(actual,expected,label){
+        for(const [id,spec] of Object.entries(expected)){
+            assert.equal(actual[id]?.class_type,spec.class_type,label+' node '+id);
+            // Frontend migrations can leave unused project sockets between connected inputs.
+            assert.deepEqual(projects(actual[id]),projects(spec),`${label} node ${id} ordered projects`);
+            for(const [key,value] of Object.entries(spec.inputs))if(!/^project_\d+$/.test(key))assert.deepEqual(actual[id].inputs[key],value,`${label} node ${id} input ${key}`);
+        }
+    }
+    for(const file of (files.length?files:fs.readdirSync('workflows').filter(n=>n.endsWith('.json')).sort().map(n=>'workflows/'+n))){
+        const workflow=read(file),api=read(companion(file));
         await evaluate(`window.s3fApp.loadGraphData(${JSON.stringify(workflow)})`);
         const prompt=(await evaluate('window.s3fApp.graphToPrompt()')).output;
-        for(const [id,spec] of Object.entries(api)){
-            assert.equal(prompt[id]?.class_type,spec.class_type,file+' node '+id);
-            for(const [key,value] of Object.entries(spec.inputs))assert.deepEqual(prompt[id].inputs[key],value,`${file} node ${id} input ${key}`);
-        }
+        comparePrompt(prompt,api,file);
         const nodes=await evaluate(`window.s3fApp.graph._nodes.map(n=>({id:n.id,type:n.type,pos:Array.from(n.pos),size:Array.from(n.size),inputs:(n.inputs||[]).map(i=>({name:i.name,link:i.link})),session:n.properties.s3f_session,frame:n.s3fFrame?.src||null}))`);
         const owners=nodes.filter(n=>n.type==='S3F_StandaloneExport'),views=nodes.filter(n=>n.type==='S3F_PreviewExport');
-        assert.equal(owners.length,views.length);assert.ok(owners.length>0);
+        assert.equal(owners.length,views.length);
+        assert.ok(owners.length>0||nodes.some(n=>['S3F_ProcessingTimeline','S3F_FolderTimeline'].includes(n.type)), 'Workflow has an editor entry point');
         assert.equal(new Set(owners.map(n=>n.session)).size,owners.length,'Person branches keep independent sessions');
         for(const n of [...owners,...views])assert.equal(n.inputs[0].name,'editor_session');
         for(const view of views){
@@ -58,27 +69,34 @@ try{
         const saved=await evaluate('window.s3fApp.graph.serialize()');
         await evaluate(`window.s3fApp.loadGraphData(${JSON.stringify(saved)})`);
         const reloaded=(await evaluate('window.s3fApp.graphToPrompt()')).output;
-        for(const [id,spec] of Object.entries(api))for(const key of Object.keys(spec.inputs))assert.deepEqual(reloaded[id].inputs[key],prompt[id].inputs[key],`${file} reload ${id}.${key}`);
+        comparePrompt(reloaded,prompt,file+' reload');
         report.workflows.push({file,nodes: nodes.length,owners:owners.map(n=>({id:n.id,size:n.size,inputs:n.inputs.map(i=>i.name)}))});
+        if(file.startsWith('workflows/')){
+            await pause(300);
+            fs.writeFileSync(path.join(output,path.basename(file,'.json')+'.png'),Buffer.from((await call('Page.captureScreenshot')).data,'base64'));
+        }
         console.log('PASS',file);
     }
     report.checks.push('All UI workflows match API companions, preserve connections after save/reload, and have no node overlap');
     // Exercise an old socket order and then add/remove a live numbered project connection.
-    const old=read('multitrack_anchors.json'),owner=old.nodes.find(n=>n.type==='S3F_StandaloneExport');
+    const old=read('extras/advanced/multitrack_anchors.json'),owner=old.nodes.find(n=>n.type==='S3F_StandaloneExport');
     owner.inputs.push(owner.inputs.shift());
     for(const link of old.links)if(link[3]===owner.id)link[4]=owner.inputs.findIndex(i=>i.link===link[0]);
     await evaluate(`window.s3fApp.loadGraphData(${JSON.stringify(old)})`);
-    assert.deepEqual(await evaluate(`window.s3fApp.graph.getNodeById(${owner.id}).inputs.map(i=>i.name)`),['editor_session','project_0','project_1','project_2','project_3','filename']);
-    await evaluate(`(()=>{const owner=window.s3fApp.graph.getNodeById(${owner.id});window.s3fApp.graph.getNodeById(2).connect(0,owner,owner.inputs.findIndex(i=>i.name==='project_3'));})()`);
+    assert.equal(await evaluate(`window.s3fApp.graph.getNodeById(${owner.id}).inputs[0].name`),'editor_session');
+    const before=(await evaluate('window.s3fApp.graphToPrompt()')).output;
+    assert.deepEqual(projects(before[owner.id]),[['2',0],['3',0],['4',0]]);
+    const middle=Object.keys(before[owner.id].inputs).find(key=>key.startsWith('project_')&&before[owner.id].inputs[key][0]==='3');
+    const added=await evaluate(`(()=>{const owner=window.s3fApp.graph.getNodeById(${owner.id}),slot=owner.inputs.findIndex(i=>/^project_\\d+$/.test(i.name)&&i.link==null);if(slot<0)throw new Error('Missing free project socket');const name=owner.inputs[slot].name;window.s3fApp.graph.getNodeById(2).connect(0,owner,slot);return name;})()`);
     let live=(await evaluate('window.s3fApp.graphToPrompt()')).output;
-    assert.deepEqual(live[owner.id].inputs.project_3,['2',0]);
-    await evaluate(`(()=>{const owner=window.s3fApp.graph.getNodeById(${owner.id});owner.disconnectInput(owner.inputs.findIndex(i=>i.name==='project_1'));})()`);
+    assert.deepEqual(live[owner.id].inputs[added],['2',0]);
+    await evaluate(`(()=>{const owner=window.s3fApp.graph.getNodeById(${owner.id});owner.disconnectInput(owner.inputs.findIndex(i=>i.name===${JSON.stringify(middle)}));})()`);
     live=(await evaluate('window.s3fApp.graphToPrompt()')).output;
-    assert.deepEqual(live[owner.id].inputs.project_2,['4',0]);assert.deepEqual(live[owner.id].inputs.project_3,['2',0]);
-    assert.equal(live[owner.id].inputs.project_1,undefined);
+    for(const [key,value] of Object.entries(before[owner.id].inputs))if(key.startsWith('project_')&&key!==middle)assert.deepEqual(live[owner.id].inputs[key],value);
+    assert.deepEqual(live[owner.id].inputs[added],['2',0]);assert.equal(live[owner.id].inputs[middle],undefined);
     report.checks.push('Legacy socket ordering migrates and dynamic project connections keep their destinations');
     if(cache){
-        const cached=read('cached_pose_to_funscript.json');cached.nodes.find(n=>n.type==='S3F_LoadPoseCache').widgets_values[0]=cache;
+        const cached=read('extras/advanced/cached_pose_to_funscript.json');cached.nodes.find(n=>n.type==='S3F_LoadPoseCache').widgets_values[0]=cache;
         await evaluate(`window.s3fApp.loadGraphData(${JSON.stringify(cached)})`);
         await evaluate('window.s3fApp.queuePrompt(0,1)');
         await until(()=>evaluate("!!window.s3fApp.graph.getNodeById(3).properties.s3f_project&&!!window.s3fApp.graph.getNodeById(4).properties.s3f_project"),'cached workflow execution');

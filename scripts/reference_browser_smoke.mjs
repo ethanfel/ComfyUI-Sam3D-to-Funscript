@@ -28,7 +28,7 @@ try{
  await until(()=>parent.evaluate("!!document.querySelector('canvas')"),"Comfy canvas");
  await parent.evaluate("(async()=>{window.testApp=(await import('/scripts/app.js')).app})()");
  await until(()=>parent.evaluate("!!window.LiteGraph?.registered_node_types?.S3F_ReferenceStabilize&&!!window.testApp?.graph&&!!window.testApp.positionConversion"),"reference node registration");
- const workflow=JSON.parse(fs.readFileSync("workflows/reference_stabilization.json","utf8"));
+ const workflow=JSON.parse(fs.readFileSync("extras/advanced/reference_stabilization.json","utf8"));
  const setup=structuredClone(workflow);setup.nodes[1].properties.s3f_reference=prepared;
  await parent.evaluate(`window.testApp.loadGraphData(${JSON.stringify(setup)})`);
  await until(()=>parent.evaluate("!!window.testApp.graph.getNodeById(2)?.s3fReferenceStatus"),"reference node widget");

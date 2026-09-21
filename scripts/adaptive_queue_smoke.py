@@ -13,7 +13,7 @@ from sam3d_funscript.core import PoseSequence, build_project
 out = ROOT / 'development/adaptive-auto'
 out.mkdir(parents=True, exist_ok=True)
 cache = str(Path(sys.argv[1]).resolve())
-api = json.loads((ROOT / 'workflows/multitrack_anchors.api.json').read_text())
+api = json.loads((ROOT / 'extras/advanced/api/multitrack_anchors.api.json').read_text())
 api['1']['inputs']['cache_path'] = cache
 api['5']['inputs']['filename'] = 'adaptive_auto'
 for node in ('2', '3', '4'):

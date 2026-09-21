@@ -1,9 +1,29 @@
 {
   "1": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": ""
+    }
+  },
+  "2": {
+    "class_type": "S3F_ReferenceStabilize",
+    "inputs": {
+      "video": [
+        "1",
+        0
+      ],
+      "model_file": "cotracker3_scaled_online.pth",
+      "reference_json": "{}",
+      "agreement_pixels": 12.0,
+      "max_step_pixels": 48.0,
+      "use_cache": true
+    }
+  },
+  "3": {
     "class_type": "S3F_VideoPose",
     "inputs": {
       "video": [
-        "4",
+        "2",
         0
       ],
       "model_file": "sam_3d_body_dinov3_bf16.safetensors",
@@ -17,11 +37,11 @@
       "use_cache": true
     }
   },
-  "2": {
+  "4": {
     "class_type": "S3F_BuildMotion",
     "inputs": {
       "poses": [
-        "1",
+        "3",
         0
       ],
       "target_person": 0,
@@ -34,30 +54,24 @@
       "settings_json": "{}"
     }
   },
-  "3": {
+  "5": {
     "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "filename": "rcowgirl_6",
+      "filename": "reference_stabilized",
       "project_0": [
-        "2",
+        "4",
         0
       ]
     }
   },
-  "4": {
-    "class_type": "LoadVideo",
-    "inputs": {
-      "file": "videos/nsfw/rcowgirl_6.mp4"
-    }
-  },
-  "5": {
+  "7": {
     "class_type": "S3F_PreviewExport",
     "inputs": {
       "editor_session": [
-        "3",
+        "5",
         2
       ],
-      "filename": "rcowgirl_6"
+      "filename": "reference_stabilized"
     }
   }
 }

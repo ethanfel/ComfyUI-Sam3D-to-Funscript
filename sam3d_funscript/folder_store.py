@@ -22,6 +22,9 @@ LOCK = threading.RLock()
 ACTIVE = {}
 BATCH_RUNNING = set()
 REVIEW_LEASES = {}
+# Only filenames are cached. Identity, scripts, decisions and processing state
+# are checked afresh whenever a clip is used, including before approval.
+ENTRY_NAMES = {}
 
 
 @contextmanager
@@ -77,6 +80,34 @@ class FolderStore:
             self.write(state)
             return self.scan(folder)
 
+    def _entry_key(self, state):
+        return (str(self.path(state['folder']).absolute()), state['root'], state['recursive'])
+
+    def _entry(self, state, path, managed=None):
+        root = Path(state['root']); folder = state['folder']
+        if path.suffix.lower() not in VIDEO_EXTENSIONS or path.is_symlink() or not path.is_file():
+            return None
+        source = fingerprint(path)
+        if not Path(source['path']).is_relative_to(root):
+            return None
+        name = path.relative_to(root).as_posix(); clip = identity(source); record = None
+        if managed is None:
+            managed = {r['name']:(key,r) for key,r in state.get('civitai',{}).items() if r.get('state')!='rejected'}
+        if name in managed:
+            stable, known = managed[name]
+            if known.get('source') == source: clip, record = stable, known
+        timeline = identity([folder, clip]); decision = state['decisions'].get(clip, {})
+        existing = [path.with_name(path.stem + suffix + '.funscript').name for suffix in SUFFIXES.values()
+                    if path.with_name(path.stem + suffix + '.funscript').exists()]
+        approved = decision.get('status') == 'approved' and all((path.parent / f).is_file() for f in decision.get('files', []))
+        status = 'ignored' if decision.get('status') == 'ignored' else 'approved' if approved else 'existing' if existing else 'pending'
+        return dict(id=clip, name=name, status=status, note=decision.get('note', ''), quality=decision.get('quality', 0),
+            queue_state=next((item['state'] for item in state.get('processing_queue',{}).get('items',[]) if item.get('clip')==clip),None),
+            batch_result=decision.get('batch_result'), error=decision.get('error'), existing=existing, processing=timeline in ACTIVE,
+            timeline=timeline, editor_session=motion_session(timeline), draft=(self.plans.directory(timeline) / 'timeline.json').is_file(),
+            civitai_id=record.get('id') if record else None,civitai_temporary=bool(record and record.get('temporary')),
+            category_hint=record.get('category','') if record else '')
+
     def scan(self, folder):
         with LOCK:
             state = self.read(folder); root = Path(state['root'])
@@ -84,34 +115,37 @@ class FolderStore:
                 raise ValueError('The video folder is unavailable. Reconnect its drive and refresh.')
             files = root.rglob('*') if state['recursive'] else root.iterdir()
             entries = []
+            managed={record['name']:(clip,record) for clip,record in state.get('civitai',{}).items() if record.get('state')!='rejected'}
             for path in files:
-                if path.suffix.lower() not in VIDEO_EXTENSIONS or path.is_symlink() or not path.is_file():
-                    continue
-                resolved = path.resolve()
-                if not resolved.is_relative_to(root):
-                    continue
-                name = path.relative_to(root).as_posix(); source = fingerprint(resolved)
-                clip = identity(source); timeline = identity([folder, clip])
-                decision = state['decisions'].get(clip, {})
-                existing = [path.with_name(path.stem + suffix + '.funscript').name for suffix in SUFFIXES.values()
-                            if path.with_name(path.stem + suffix + '.funscript').exists()]
-                approved = decision.get('status') == 'approved' and all((path.parent / f).is_file() for f in decision.get('files', []))
-                status = 'ignored' if decision.get('status') == 'ignored' else 'approved' if approved else 'existing' if existing else 'pending'
-                entries.append(dict(id=clip, name=name, status=status, note=decision.get('note', ''), quality=decision.get('quality', 0),
-                    batch_result=decision.get('batch_result'), error=decision.get('error'), existing=existing, processing=timeline in ACTIVE,
-                    timeline=timeline, editor_session=motion_session(timeline), draft=(self.plans.directory(timeline) / 'timeline.json').is_file()))
+                entry = self._entry(state, path, managed)
+                if entry is not None: entries.append(entry)
             entries.sort(key=lambda row: row['name'].casefold())
+            ENTRY_NAMES[self._entry_key(state)] = {entry['id']:entry['name'] for entry in entries}
             batch = copy.deepcopy(state.get('batch'))
+            if state.get('processing_queue',{}).get('stage') in ('queued','running','paused','interrupted','complete'):
+                from .folder_queue import FolderQueue
+                queued=FolderQueue(self.root).read(folder)
+                if queued['stage'] in ('queued','running') or batch is None or batch.get('queue'):
+                    batch=FolderQueue.report(queued)
             if batch and batch['stage'] == 'running' and folder not in BATCH_RUNNING: batch['stage'] = 'interrupted'
             return dict(folder=folder, root=state['root'], recursive=state['recursive'], entries=entries, batch=batch, presets=state.get('presets', {}),
                 counts={status: sum(e['status'] == status for e in entries) for status in ('pending', 'approved', 'existing', 'ignored')})
 
     def entry(self, folder, clip):
-        listing = self.scan(folder)
-        entry = next((e for e in listing['entries'] if e['id'] == clip), None)
-        if entry is None:
+        if not isinstance(clip, str) or not re.fullmatch(r'[a-f0-9]{32}', clip):
             raise PlanConflict('This video moved or changed. Refresh the folder before continuing.')
-        return entry, Path(listing['root']) / entry['name']
+        with LOCK:
+            state = self.read(folder)
+            name = ENTRY_NAMES.get(self._entry_key(state), {}).get(clip)
+            if name is not None:
+                path = Path(state['root']) / name
+                entry = self._entry(state, path)
+                if entry and entry['id'] == clip: return entry, path
+            listing = self.scan(folder)
+            entry = next((e for e in listing['entries'] if e['id'] == clip), None)
+            if entry is None:
+                raise PlanConflict('This video moved or changed. Refresh the folder before continuing.')
+            return entry, Path(listing['root']) / entry['name']
 
     def choose(self, folder, name='', *, skip_done=False):
         listing = self.scan(folder)
@@ -126,13 +160,16 @@ class FolderStore:
             if client: self.hold_review(folder, clip, client)
             if entry['processing'] and ACTIVE.get(entry['timeline']) != threading.get_ident():
                 return {**entry, 'script_versions': self.script_versions(path)}
-            info = source_info(path)
-            previous = self.editors.read(entry['editor_session'])
-            state = self.plans.prepare(entry['timeline'], info)
-            self.plans.bind_editor(entry['timeline'], entry['editor_session'])
+            state = self.plans.read(entry['timeline'])
+            if state is None or state['info']['source'] != fingerprint(path):
+                state = self.plans.prepare(entry['timeline'], source_info(path))
+            info = state['info']
+            previous_exists = self.editors.path(entry['editor_session']).is_file()
+            if state.get('editor_session') != entry['editor_session']:
+                self.plans.bind_editor(entry['timeline'], entry['editor_session'])
             self.plans.prepare_editor(entry['timeline'], info['source_id'], entry['editor_session'])
             entry['script_versions'] = self.script_versions(path)
-            if previous is None and entry['existing']:
+            if not previous_exists and entry['existing']:
                 editor = self.editors.read(entry['editor_session'])
                 project = copy.deepcopy(editor['project'])
                 try:
@@ -174,7 +211,7 @@ class FolderStore:
             return {'subfolder':key,'settings':copy.deepcopy(available[key]) if key is not None else None}
 
     def clip_preset(self, folder, entry):
-        parent=Path(entry['name']).parent.as_posix()
+        parent=entry.get('category_hint') or Path(entry['name']).parent.as_posix()
         return self.preset(folder,'' if parent=='.' else parent)['settings']
 
     def version_directory(self, folder, clip):
@@ -242,6 +279,8 @@ class FolderStore:
         with LOCK:
             if folder not in BATCH_RUNNING:raise PlanConflict('No batch is currently processing. Refresh the folder.')
             state=self.read(folder);state['batch_control']={'pause':True};self.write(state)
+            if state.get('processing_queue',{}).get('stage')=='running':
+                state['processing_queue']['pause']=True;self.write(state)
             return {'pause_requested':True}
 
     @staticmethod
@@ -353,20 +392,25 @@ class FolderStore:
             return dict(files=[str(p) for p in contents], backups=[str(p) for p in backups.values()],
                         script_versions=self.script_versions(video), listing=self.scan(folder))
 
-    def batch_entries(self, folder, subfolder='', retry_failed=False):
+    def batch_entries(self, folder, subfolder='', retry_failed=False, clip_ids=None):
         prefix = subfolder_name(subfolder)
-        return [e for e in self.scan(folder)['entries'] if e['status'] == 'pending'
+        entries=self.scan(folder)['entries']
+        if clip_ids is not None:
+            if not isinstance(clip_ids,list) or not clip_ids or len(clip_ids)>1000 or any(not isinstance(i,str) for i in clip_ids):
+                raise ValueError('Select at least one video to process.')
+            if set(clip_ids)-{e['id'] for e in entries}:raise PlanConflict('A selected video moved or changed. Refresh the library.')
+        return [e for e in entries if e['status'] == 'pending' and (clip_ids is None or e['id'] in clip_ids)
                    and (not prefix or e['name'].startswith(prefix + '/')) and e.get('batch_result') != 'ready'
                    and (not retry_failed or e.get('batch_result')=='error')]
 
-    def needs_tracker(self, folder, subfolder='', retry_failed=False):
+    def needs_tracker(self, folder, subfolder='', retry_failed=False, clip_ids=None):
         return any((self.plans.read(e['timeline']) or {}).get('plan',{}).get('stabilization')
-                   for e in self.batch_entries(folder,subfolder,retry_failed))
+                   for e in self.batch_entries(folder,subfolder,retry_failed,clip_ids))
 
-    def process_batch(self, folder, subfolder, process, interrupt=lambda: None, interrupt_errors=(), progress=lambda event: None, *, retry_failed=False):
+    def process_batch(self, folder, subfolder, process, interrupt=lambda: None, interrupt_errors=(), progress=lambda event: None, *, retry_failed=False, clip_ids=None):
         """Serial inference through the caller's ComfyUI job; no approval/export."""
         prefix = subfolder_name(subfolder)
-        entries = self.batch_entries(folder,prefix,retry_failed)
+        entries = self.batch_entries(folder,prefix,retry_failed,clip_ids)
         with LOCK:
             if folder in BATCH_RUNNING:raise PlanConflict('This folder already has a running batch.')
             BATCH_RUNNING.add(folder)

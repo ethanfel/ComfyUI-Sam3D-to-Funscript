@@ -39,7 +39,7 @@ def main():
             sequence.points[:, person, joint, 0] += (person + 1) * (joint + 1) * sequence.times_ms / 100000
     cache = ROOT / "development/anchor-fixture.npz"
     sequence.save(cache)
-    api = json.loads((ROOT / "workflows/detailed_anchor_override.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/detailed_anchor_override.api.json").read_text())
     api["1"]["inputs"]["cache_path"] = str(cache)
     api["2"]["inputs"].update(reference_person=1, reference_anchor="right_hand", reference_anchor_override=["5", 0])
     api["5"] = {"class_type": "S3F_AnchorOverride", "inputs": {"anchor": "right_pinky_tip"}}
@@ -79,13 +79,13 @@ def main():
               "both_overrides_take_precedence": True, "legacy_api_preserved": True,
               "all_general_anchors_match_direct_math": True, "unknown_anchor_rejected": True}
     if args.cache:
-        real = json.loads((ROOT / "workflows/detailed_anchor_override.api.json").read_text())
+        real = json.loads((ROOT / "extras/advanced/api/detailed_anchor_override.api.json").read_text())
         real["1"]["inputs"]["cache_path"] = str(args.cache.resolve())
         del real["2"]["inputs"]["target_anchor_override"]
         project, project_path = run_project(real)
         expected = build_project(PoseSequence.load(args.cache), {"target_anchor": "left_hand"})
         assert project["scripts"] == expected["scripts"]
-        workflow = json.loads((ROOT / "workflows/detailed_anchor_override.json").read_text())
+        workflow = json.loads((ROOT / "extras/advanced/detailed_anchor_override.json").read_text())
         workflow["nodes"][0]["widgets_values"] = [str(args.cache.resolve())]
         workflow_path = ROOT / "development/anchor-workflow.json"
         workflow_path.write_text(json.dumps(workflow, indent=2))

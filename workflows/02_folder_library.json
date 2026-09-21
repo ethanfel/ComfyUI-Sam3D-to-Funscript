@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "S3F_FolderTimeline",
-      "title": "Folder Processing Timeline",
+      "title": "Folder library \u00b7 local clips + Civitai",
       "pos": [
         80,
         100
@@ -60,14 +60,14 @@
     {
       "id": 2,
       "type": "Note",
-      "title": "Folder review \u00b7 one video at a time",
+      "title": "Start here \u00b7 folder library",
       "pos": [
-        680,
+        696,
         100
       ],
       "size": [
-        480,
-        460
+        460,
+        480
       ],
       "flags": {},
       "order": 1,
@@ -78,8 +78,10 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "1. Set folder_path, leave operation on prepare, then Run.\n\n2. Open folder workspace. Previous/next arrows browse one clip at a time, with Timeline and Motion Studio together on the same page.\n\n3. Select a subfolder, expand Bulk automatic processing and process unscripted clips. Existing scripts, ignored videos and completed bulk drafts are skipped. Results wait for review.\n\n4. Refine any clip with the usual tracking, masks, stabilization, joins and audio tools. Existing scripts load in Main and can be improved manually.\n\n5. Approve & save next to video writes Main scripts beside the source. Approve & replace scripts backs up previous files. Nothing is approved automatically.\n\n6. Rate scripts from 1\u20135 stars, add notes, and filter by quality or script status. Ignore video keeps its draft and can be undone.\n\n7. Review completed clips during bulk processing. Pause after a clip, resume, or retry only failures. Subfolder presets set anchor preference, smoothing and range.\n\n8. Click review flags to inspect a range. Save named versions, compare with Main, or restore with a recovery copy. Approve & next speeds review.\n\nNo output connections are required. Bulk uses the node\u2019s model settings through ComfyUI\u2019s queue. Completed drafts survive interruption."
-      ]
+        "1. Set folder_path, leave operation on prepare, then Run.\n\n2. Open folder workspace. Browse Local clips or switch to Civitai. Both use the same Timeline and Motion Studio for review.\n\n3. Process a clip, or select a subfolder for bulk automatic processing. Bulk skips existing scripts and ignored clips.\n\n4. Review and refine, then approve to save scripts beside the video. Use ratings, notes and filters to organize your library.\n\nCivitai downloads stay temporary until approved into a category. Keep undecided drafts for later. Reject deletes only browser-created temporary downloads; existing local videos are kept.\n\nGuides: docs/folder-timeline.md and docs/civitai-browser.md"
+      ],
+      "color": "#24343d",
+      "bgcolor": "#30444f"
     }
   ],
   "links": [],

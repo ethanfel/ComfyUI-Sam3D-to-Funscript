@@ -1,28 +1,22 @@
 {
-  "last_node_id": 5,
-  "last_link_id": 4,
+  "last_node_id": 4,
+  "last_link_id": 3,
   "nodes": [
     {
       "id": 1,
-      "type": "S3F_VideoPose",
+      "type": "S3F_LoadPoseCache",
       "pos": [
         80,
         140
       ],
       "size": [
         380,
-        480
+        120
       ],
       "flags": {},
-      "order": 1,
+      "order": 0,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "link": 3
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
           "name": "poses",
@@ -31,29 +25,15 @@
             1
           ],
           "slot_index": 0
-        },
-        {
-          "name": "cache_path",
-          "type": "STRING",
-          "links": null,
-          "slot_index": 1
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_VideoPose"
+        "Node name for S&R": "S3F_LoadPoseCache"
       },
       "widgets_values": [
-        "sam_3d_body_dinov3_bf16.safetensors",
-        16.0,
-        0.0,
-        0.0,
-        2000,
-        "[[0,0,1,1]]",
-        8,
-        0.0,
-        true
+        "/absolute/path/to/poses.npz"
       ],
-      "title": "1 \u00b7 Stream video & estimate poses"
+      "title": "1 \u00b7 Reopen cached poses"
     },
     {
       "id": 2,
@@ -67,7 +47,7 @@
         440
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [
         {
@@ -123,7 +103,7 @@
         234
       ],
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [
         {
@@ -159,7 +139,7 @@
           "name": "editor_session",
           "type": "S3F_EDITOR_SESSION",
           "links": [
-            4
+            3
           ],
           "slot_index": 2
         }
@@ -168,45 +148,12 @@
         "Node name for S&R": "S3F_StandaloneExport"
       },
       "widgets_values": [
-        "rcowgirl_6"
+        "motion"
       ],
       "title": "Motion Studio \u00b7 open in new tab"
     },
     {
       "id": 4,
-      "type": "LoadVideo",
-      "pos": [
-        -350,
-        140
-      ],
-      "size": [
-        340,
-        550
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "VIDEO",
-          "type": "VIDEO",
-          "links": [
-            3
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoadVideo"
-      },
-      "widgets_values": [
-        "videos/nsfw/rcowgirl_6.mp4"
-      ],
-      "title": "Load video \u00b7 core"
-    },
-    {
-      "id": 5,
       "type": "S3F_PreviewExport",
       "pos": [
         1490,
@@ -217,13 +164,13 @@
         720
       ],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
           "name": "editor_session",
           "type": "S3F_EDITOR_SESSION",
-          "link": 4
+          "link": 3
         },
         {
           "name": "project_0",
@@ -249,7 +196,7 @@
         "Node name for S&R": "S3F_PreviewExport"
       },
       "widgets_values": [
-        "rcowgirl_6"
+        "motion"
       ],
       "title": "Linked preview \u00b7 same editing session"
     }
@@ -273,34 +220,14 @@
     ],
     [
       3,
-      4,
-      0,
-      1,
-      0,
-      "VIDEO"
-    ],
-    [
-      4,
       3,
       2,
-      5,
+      4,
       0,
       "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
-    {
-      "title": "Core video input",
-      "bounding": [
-        -380,
-        60,
-        400,
-        680
-      ],
-      "color": "#365770",
-      "font_size": 22,
-      "flags": {}
-    },
     {
       "title": "SAM3D extraction \u00b7 cached",
       "bounding": [
@@ -341,9 +268,9 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6,
+      "scale": 0.65,
       "offset": [
-        400,
+        30,
         20
       ]
     }

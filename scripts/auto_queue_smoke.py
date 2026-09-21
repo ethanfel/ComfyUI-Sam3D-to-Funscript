@@ -50,7 +50,7 @@ def main():
                         "other_scripts_unchanged": all(actual["scripts"][axis] == original["scripts"][axis] for axis in actual["scripts"] if axis != "L0")})
         assert reports[-1]["other_scripts_unchanged"]
         if len(reports) == 1:
-            workflow = json.loads((ROOT / "workflows/cached_pose_to_funscript.json").read_text())
+            workflow = json.loads((ROOT / "extras/advanced/cached_pose_to_funscript.json").read_text())
             workflow["nodes"][0]["widgets_values"] = [cache_path]
             workflow["nodes"][1]["widgets_values"] = [*[config[key] for key in visible], ",".join(config["enabled_axes"]), api["2"]["inputs"]["settings_json"]]
             # Keep this fixture focused on Auto; inactive legacy reference points

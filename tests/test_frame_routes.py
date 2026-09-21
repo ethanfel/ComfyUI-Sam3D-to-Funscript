@@ -84,6 +84,101 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.get('/sam3d_funscript/assets/' + name)
             self.assertEqual(response.status, 200)
 
+    async def test_civitai_catalogue_browse_local_ranges_and_validation(self):
+        import shutil
+        module=importlib.import_module('frame_route_fixture.sam3d_funscript.civitai_library')
+        library=module.CivitaiLibrary(self.root/'sam3d_funscript')
+        shutil.copy2(self.video,self.root/'Neutral_civitai_123_original.mp4')
+        folder=library.folders.prepare(str(self.root))['folder'];base='/sam3d_funscript/civitai/'+folder
+        response=await self.client.get(base);self.assertEqual(response.status,200)
+        data=await response.json();entry=data['items']['123'][0]
+        response=await self.client.get(base+'/local/'+entry['id'],headers={'Range':'bytes=0-31'})
+        self.assertEqual(response.status,206);self.assertEqual(len(await response.read()),32)
+        self.assertFalse((library.folders.plans.directory(entry['timeline'])/'timeline.json').exists())
+        with patch.object(module,'fetch_json',return_value={'items':[],'metadata':{'nextCursor':'test'}}):
+            response=await self.client.post(base+'/browse',json={'sort':'Newest','site':'civitai.com'})
+            self.assertEqual((await response.json())['next_cursor'],'test')
+        for action,body in [('browse',[]),('category',{'name':'../outside'}),('download',{'id':'../123','category':'Dance'})]:
+            response=await self.client.post(base+'/'+action,json=body);self.assertEqual(response.status,400)
+        for name in ('civitai-browser.mjs','civitai-queue.mjs','civitai-browser.css'):
+            self.assertEqual((await self.client.get('/sam3d_funscript/assets/'+name)).status,200)
+
+    async def test_civitai_queue_actions_persist_without_starting_downloads(self):
+        from sam3d_funscript.folder_store import FolderStore
+        store=FolderStore(self.root/'sam3d_funscript');folder=store.prepare(str(self.root))['folder']
+        url='/sam3d_funscript/civitai/'+folder+'/queue'
+        module=importlib.import_module('frame_route_fixture.sam3d_funscript.civitai_library')
+        with patch.object(module,'fetch_json') as fetch:
+            response=await self.client.post(url,json={'action':'add','items':[{'id':'123','name':'Neutral clip'}]})
+            self.assertEqual(response.status,200);queue=await response.json()
+            self.assertEqual(queue['items'][0]['state'],'waiting')
+            response=await self.client.get('/sam3d_funscript/civitai/'+folder)
+            self.assertEqual((await response.json())['queue']['items'],queue['items'])
+            start='/sam3d_funscript/folders/'+folder+'/queue_start'
+            response=await self.client.post(start,json={});self.assertEqual(response.status,200)
+            self.assertEqual((await response.json())['stage'],'queued')
+            self.assertEqual((await self.client.post(start,json={})).status,409)
+            response=await self.client.post(url,json={'action':'pause'})
+            self.assertEqual((await response.json())['stage'],'paused')
+            response=await self.client.post(url,json={'action':'remove','key':queue['items'][0]['key']})
+            self.assertEqual((await response.json())['items'],[])
+            fetch.assert_not_called()
+        self.assertEqual((await self.client.post(url,json={'action':'add','items':[{'id':'../bad'}]})).status,400)
+
+    async def test_civitai_local_and_temporary_thumbnails_are_lazy_cached_images(self):
+        import shutil
+        module=importlib.import_module('frame_route_fixture.sam3d_funscript.civitai_library')
+        library=module.CivitaiLibrary(self.root/'sam3d_funscript')
+        videos=self.root/'library';videos.mkdir()
+        shutil.copy2(self.video,videos/'Neutral_civitai_123_original.mp4')
+        folder=library.folders.prepare(str(videos))['folder']
+        remote={'id':456,'type':'video','url':'https://image.civitai.com/key/uuid/width=450/456.mp4'}
+        with patch.object(module,'fetch_json',return_value={'items':[remote]}),patch.object(module,'transfer_video',side_effect=lambda url,path,progress:shutil.copy2(self.video,path)):
+            staged=library.download(folder,'456','Neutral')['entry']
+        self.assertTrue(staged['civitai_temporary'])
+        base='/sam3d_funscript/civitai/'+folder
+        with patch.object(av,'open',side_effect=AssertionError('Listing must not decode videos')):
+            response=await self.client.get(base)
+            entries=[group[0] for group in (await response.json())['items'].values()]
+        self.assertFalse((library.root/'civitai'/'thumbnails').exists())
+        for entry in entries:
+            url=base+'/thumbnail/'+entry['id']
+            response=await self.client.get(url)
+            self.assertEqual(response.status,200,await response.text() if response.status!=200 else '')
+            self.assertEqual(response.content_type,'image/jpeg')
+            pixels=cv2.imdecode(np.frombuffer(await response.read(),np.uint8),cv2.IMREAD_COLOR)
+            self.assertEqual(pixels.shape,(48,64,3))
+            self.assertGreater(pixels[:,:,2].mean(),220)  # The first frame is red.
+            self.assertLess(pixels[:,:,:2].mean(),15)
+            with patch.object(av,'open',side_effect=AssertionError('Cached preview must not decode again')):
+                cached=await self.client.get(url,headers={'If-None-Match':response.headers['ETag']})
+                self.assertEqual(cached.status,304)
+            self.assertFalse((library.folders.plans.directory(entry['timeline'])/'timeline.json').exists())
+        self.assertEqual((await self.client.get(base+'/thumbnail/not-a-clip')).status,404)
+        self.assertEqual((await self.client.get(base+'/thumbnail/'+'0'*32)).status,404)
+
+    async def test_civitai_thumbnail_resizes_and_refreshes_when_local_video_changes(self):
+        module=importlib.import_module('frame_route_fixture.sam3d_funscript.civitai_library')
+        library=module.CivitaiLibrary(self.root/'sam3d_funscript')
+        videos=self.root/'library';videos.mkdir()
+        video=videos/'Neutral_civitai_123_original.mp4'
+        folder=library.folders.prepare(str(videos))['folder']
+        ids=[]
+        for channel in (0,2):
+            with av.open(str(video),'w') as out:
+                stream=out.add_stream('libx264',rate=30)
+                stream.width,stream.height,stream.pix_fmt=640,480,'yuv420p'
+                image=np.zeros((480,640,3),np.uint8);image[:,:,channel]=240
+                for packet in stream.encode(av.VideoFrame.from_ndarray(image,format='bgr24')):out.mux(packet)
+                for packet in stream.encode():out.mux(packet)
+            entry=library.catalogue(folder)['items']['123'][0];ids.append(entry['id'])
+            response=await self.client.get('/sam3d_funscript/civitai/'+folder+'/thumbnail/'+entry['id'])
+            self.assertEqual(response.status,200)
+            pixels=cv2.imdecode(np.frombuffer(await response.read(),np.uint8),cv2.IMREAD_COLOR)
+            self.assertEqual(pixels.shape,(270,360,3))
+            self.assertGreater(pixels[:,:,channel].mean(),220)
+        self.assertNotEqual(*ids)
+
     async def test_folder_versions_presets_and_active_clip_save_guard(self):
         module=importlib.import_module('frame_route_fixture.sam3d_funscript.folder_store')
         store=module.FolderStore(self.root/'sam3d_funscript')

@@ -9,6 +9,8 @@
 - **Build your timeline** with multiple tracks, zoom, section blending and locks that protect edits across reruns.
 - **Fill motion gaps or add patterns:** preview a continuation of the surrounding rhythm or choose from 40 generated shapes, then join it into the selected curve. See [gap filling and patterns](docs/patterns.md).
 - **Review a folder of videos:** Folder Processing Timeline shows one clip at a time with processing and Motion Studio together. Review finished clips during bulk processing, use subfolder presets, inspect flagged ranges, compare saved script versions, and approve with one click to advance. Batches skip existing scripts, support pause/resume and retrying failures, and write beside videos only on approval. Rate quality and keep notes for later filtering. See [folder review](docs/folder-timeline.md).
+- **Browse Civitai from the folder workspace:** recognize existing downloader filenames, browse in Civitai's API sort order, and select clips for individual or bulk processing. New downloads stay temporary for review. Approve a clip into its category with the edited funscripts, reject temporary clips, or keep undecided drafts for later. See [Civitai browser and review](docs/civitai-browser.md).
+- **Publish a funscript dataset:** export completed Main scripts with Civitai ID hashes, category names and relative folder hierarchy, multi-axis variants, review status and quality ratings, then publish a GPL-3.0 Hugging Face dataset for other apps to query. The exporter runs alongside active processing without a ComfyUI restart. See [public dataset export](docs/public-dataset.md).
 - **Build motion from music:** use a drum stem for timing and the loaded video's soundtrack (or another full-mix file) to guide shape and energy. Follow accents, simplify busy percussion or reconstruct a steady pulse, then preview suggested, chosen or random patterns. Browse 28 motion shapes or automatically match the sound envelope to a pattern. Audition/export the selected rhythm with 14 percussion sounds or automatically approximate the drum stem’s timbre, save section blocks, and copy them into Main. See [audio beat patterns](docs/audio-patterns.md).
 - **Edit in a dedicated tab:** connected Processing Timeline, Reference Editor and Motion Studio tools share one tabbed workspace. **Motion Studio · Standalone** keeps the workflow node compact.
 - **Preview devices** with Handy 2 for stroke or SR6 for all six axes.
@@ -29,26 +31,25 @@ Download [`sam_3d_body_dinov3_bf16.safetensors`](https://huggingface.co/Comfy-Or
 
 ## Quick start
 
-1. Open the [video-to-funscript workflow](workflows/video_to_funscript.json).
-2. Choose a video in **Load Video** and select your SAM3D model.
-3. Choose a target anchor in **Poses → Multi-axis Motion**, then run the workflow.
-4. Click **Open Motion Studio in new tab** on the standalone node, or use the connected embedded preview.
-5. Edit the curves, preview a device and choose **Download project + scripts**.
+1. Open [Single video](workflows/01_single_video.json).
+2. Choose a video in **Load Video**. Leave `operation` on **prepare**, then click **Run**.
+3. Click **Open processing timeline**. Use **Automatic mode**, or define tracking and stabilization sections yourself.
+4. Open **Motion Studio** from the timeline to combine sections, edit curves and preview the result.
+5. Choose **Download project + scripts** and save your ComfyUI workflow to return to its session.
 
-The default workflow streams video in batches and caches the poses. Changing anchors or calibration reuses that cache.
+For audio patterns or manual authoring, open Motion Studio immediately after preparing the video; tracking is optional. See the [processing timeline guide](docs/processing-timeline.md).
 
-All bundled workflows include **Motion Studio · Standalone** connected to **Preview & Export Funscripts** through `editor_session`. Connect motion projects to the standalone node's numbered inputs; both views share edits and receive workflow reruns. The session input sits above the project inputs. For a smaller graph, remove the embedded preview. Unconnected editor nodes keep separate sessions. The standalone node also outputs `project_path` and `viewer_path` for the exported project and offline HTML. See [dedicated-tab editing](docs/guide.md#dedicated-tab-editing).
+For a collection of clips or Civitai browsing, start with [Folder library](workflows/02_folder_library.json), set `folder_path`, run **prepare**, then click **Open folder workspace**.
 
 | Setting | What to know |
 |---|---|
 | `sample_fps` | Set to **0** to analyse every source frame. |
-| `max_frames` | Limits the analysed clip length. Increase it for longer videos. |
 | `batch_size` | Start with **8**; larger batches need more memory. [Benchmarks →](docs/performance.md) |
 | **Auto fit** | Adapts direction and range over time, independently for each anchor. |
 
 ## Edit the motion
 
-- **Combine anchors:** connect more motion projects to the preview node. Each becomes a source track.
+- **Combine anchors:** choose additional anchors in a timeline section, or let Automatic mode prepare candidates for each detected person. Switch between them in the source section's anchor selector.
 - **Use a section:** select a source row, Shift-drag a time range, then click **Use selection in main**. All available axes copy to their matching main axes, preserving locks. Choose **Blend** for smooth joins.
 - **Fit motion automatically:** L0 defaults to **Adaptive · per anchor**, so large movements elsewhere in the clip do not set one range for the entire track. Use **Whole clip** for manual range control, or **Fit selection as track** for a separate section.
 - **Seek and refine:** dragging moves the playhead by default. Enable **Edit points** for manual changes, or select a range and apply smoothing in milliseconds.
@@ -60,19 +61,10 @@ Your download includes `project.json` and `viewer.html`. Open the viewer and cho
 
 | Start from… | Open this workflow |
 |---|---|
-| A video | [Streaming extraction](workflows/video_to_funscript.json) |
-| Cached poses | [Resume from cache](workflows/cached_pose_to_funscript.json) |
-| Several anchors | [Multiple motion tracks](workflows/multitrack_anchors.json) |
-| A mask for each person | [Separate people](workflows/mask_videos_to_funscripts.json) |
-| Native ComfyUI prediction nodes | [Core-node workflow](workflows/core_video_to_funscript.json) |
-| A reference region instead of a partial-body pose | [Reference stabilization](workflows/reference_stabilization.json) |
-| A long video with different anchors or stabilization by region | [Processing timeline](workflows/processing_timeline.json) |
+| One video, including audio patterns | [01 · Single video](workflows/01_single_video.json) |
+| Local folders, bulk review or Civitai | [02 · Folder library](workflows/02_folder_library.json) |
 
-For the experimental two-person comparison, see the [partial-person reference test](workflows/tests/README.md).
-The [reference stabilizer](docs/reference-stabilization.md) adds visual point
-selection, gap markers and manual correction sections before SAM3D extraction.
-The optional [comparison probe](docs/stabilization-probe.md) records the CoTracker3
-and TAPNext++ experiments.
+These are the two canvas starters. Specialized node recipes are in [advanced examples](extras/advanced/README.md); automation prompts are in [API examples](extras/api/README.md). Regenerate the starters with `python scripts/create_workflows.py`.
 
 ## Before you export
 

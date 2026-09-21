@@ -2,7 +2,7 @@
   "1": {
     "class_type": "LoadVideo",
     "inputs": {
-      "file": "videos/nsfw/rcowgirl_6.mp4"
+      "file": ""
     }
   },
   "2": {
@@ -85,7 +85,7 @@
   "8": {
     "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "filename": "rcowgirl_6_core",
+      "filename": "motion_core",
       "project_0": [
         "7",
         0
@@ -99,7 +99,7 @@
         "8",
         2
       ],
-      "filename": "rcowgirl_6_core"
+      "filename": "motion_core"
     }
   }
 }

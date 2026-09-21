@@ -1,5 +1,5 @@
 {
-  "last_node_id": 9,
+  "last_node_id": 11,
   "last_link_id": 10,
   "nodes": [
     {
@@ -7,7 +7,7 @@
       "type": "LoadVideo",
       "pos": [
         80,
-        150
+        140
       ],
       "size": [
         340,
@@ -22,71 +22,93 @@
           "name": "VIDEO",
           "type": "VIDEO",
           "links": [
-            1
-          ],
-          "slot_index": 0
+            1,
+            2
+          ]
         }
       ],
       "properties": {
         "Node name for S&R": "LoadVideo"
       },
       "widgets_values": [
-        "videos/nsfw/rcowgirl_6.mp4"
+        ""
       ],
-      "title": "1 \u00b7 Load video \u00b7 core"
+      "title": "Source video \u00b7 shared"
     },
     {
       "id": 2,
-      "type": "Video Slice",
+      "type": "LoadVideo",
       "pos": [
-        500,
-        150
+        80,
+        800
       ],
       "size": [
-        290,
-        190
+        340,
+        550
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
-      "inputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "link": 1
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
           "name": "VIDEO",
           "type": "VIDEO",
           "links": [
-            2,
-            6
-          ],
-          "slot_index": 0
+            3
+          ]
         }
       ],
       "properties": {
-        "Node name for S&R": "Video Slice"
+        "Node name for S&R": "LoadVideo"
       },
       "widgets_values": [
-        0.0,
-        0.0,
-        false
+        ""
       ],
-      "title": "2 \u00b7 Trim video \u00b7 core"
+      "title": "Person A mask \u00b7 white on black"
     },
     {
       "id": 3,
-      "type": "GetVideoComponents",
+      "type": "LoadVideo",
       "pos": [
-        870,
-        150
+        80,
+        1460
       ],
       "size": [
-        260,
-        160
+        340,
+        550
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVideo"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "title": "Person B mask \u00b7 white on black"
+    },
+    {
+      "id": 4,
+      "type": "S3F_VideoPose",
+      "pos": [
+        520,
+        480
+      ],
+      "size": [
+        380,
+        480
       ],
       "flags": {},
       "order": 3,
@@ -95,168 +117,12 @@
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 2
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            3
-          ],
-          "slot_index": 0
+          "link": 1
         },
         {
-          "name": "audio",
-          "type": "AUDIO",
-          "links": null,
-          "slot_index": 1
-        },
-        {
-          "name": "fps",
-          "type": "FLOAT",
-          "links": null,
-          "slot_index": 2
-        },
-        {
-          "name": "bit_depth",
-          "type": "COMBO",
-          "links": null,
-          "slot_index": 3
-        },
-        {
-          "name": "color_space",
-          "type": "COMBO",
-          "links": null,
-          "slot_index": 4
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "GetVideoComponents"
-      },
-      "widgets_values": [],
-      "title": "3 \u00b7 Get video components \u00b7 core"
-    },
-    {
-      "id": 4,
-      "type": "SAM3DBody_Loader",
-      "pos": [
-        500,
-        490
-      ],
-      "size": [
-        360,
-        100
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "sam3d_body_model",
-          "type": "SAM3D_BODY_MODEL",
-          "links": [
-            4,
-            9
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SAM3DBody_Loader"
-      },
-      "widgets_values": [
-        "sam_3d_body_dinov3_bf16.safetensors"
-      ],
-      "title": "Load SAM3D Body model \u00b7 core"
-    },
-    {
-      "id": 5,
-      "type": "SAM3DBody_Predict",
-      "pos": [
-        1210,
-        150
-      ],
-      "size": [
-        330,
-        250
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "sam3d_body_model",
-          "type": "SAM3D_BODY_MODEL",
-          "link": 4
-        },
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 3
-        },
-        {
-          "name": "track_data",
-          "type": "SAM3_TRACK_DATA",
-          "link": null
-        },
-        {
-          "name": "bboxes",
-          "type": "BOUNDING_BOX",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "mhr_pose_data",
-          "type": "MHR_POSE_DATA",
-          "links": [
-            5
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "SAM3DBody_Predict"
-      },
-      "widgets_values": [
-        false,
-        0.0,
-        8
-      ],
-      "title": "4 \u00b7 SAM3D Body prediction \u00b7 core"
-    },
-    {
-      "id": 6,
-      "type": "S3F_CorePoseAdapter",
-      "pos": [
-        1620,
-        150
-      ],
-      "size": [
-        300,
-        150
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "mhr_pose_data",
-          "type": "MHR_POSE_DATA",
-          "link": 5
-        },
-        {
-          "name": "video",
+          "name": "mask_video",
           "type": "VIDEO",
-          "link": 6
-        },
-        {
-          "name": "sam3d_body_model",
-          "type": "SAM3D_BODY_MODEL",
-          "link": 9
+          "link": 3
         }
       ],
       "outputs": [
@@ -264,29 +130,209 @@
           "name": "poses",
           "type": "S3F_POSE_SEQUENCE",
           "links": [
-            7
-          ],
-          "slot_index": 0
+            5
+          ]
         },
         {
           "name": "cache_path",
           "type": "STRING",
-          "links": null,
-          "slot_index": 1
+          "links": null
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_CorePoseAdapter"
+        "Node name for S&R": "S3F_VideoPose"
       },
-      "widgets_values": [],
-      "title": "5 \u00b7 Adapt native poses & timing"
+      "widgets_values": [
+        "sam_3d_body_dinov3_bf16.safetensors",
+        16.0,
+        0.0,
+        0.0,
+        2000,
+        "[[0,0,1,1]]",
+        8,
+        0.0,
+        true
+      ],
+      "title": "person_A \u00b7 stream masked poses"
+    },
+    {
+      "id": 6,
+      "type": "S3F_BuildMotion",
+      "pos": [
+        980,
+        480
+      ],
+      "size": [
+        380,
+        440
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "link": 5
+        },
+        {
+          "name": "target_anchor_override",
+          "type": "S3F_ANCHOR",
+          "link": null
+        },
+        {
+          "name": "reference_anchor_override",
+          "type": "S3F_ANCHOR",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "S3F_MOTION_PROJECT",
+          "type": "S3F_MOTION_PROJECT",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_BuildMotion"
+      },
+      "widgets_values": [
+        0,
+        "pelvis",
+        -1,
+        "pelvis",
+        "camera",
+        30.0,
+        "L0,L1,L2,R0,R1,R2",
+        "{}"
+      ],
+      "title": "person_A \u00b7 anchors & axes"
+    },
+    {
+      "id": 8,
+      "type": "S3F_StandaloneExport",
+      "pos": [
+        1450,
+        480
+      ],
+      "size": [
+        380,
+        234
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": null
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": 7
+        },
+        {
+          "name": "project_1",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "viewer_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": [
+            9
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_StandaloneExport"
+      },
+      "widgets_values": [
+        "person_A"
+      ],
+      "title": "Motion Studio \u00b7 open in new tab"
+    },
+    {
+      "id": 5,
+      "type": "S3F_VideoPose",
+      "pos": [
+        520,
+        1300
+      ],
+      "size": [
+        380,
+        480
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 2
+        },
+        {
+          "name": "mask_video",
+          "type": "VIDEO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "cache_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_VideoPose"
+      },
+      "widgets_values": [
+        "sam_3d_body_dinov3_bf16.safetensors",
+        16.0,
+        0.0,
+        0.0,
+        2000,
+        "[[0,0,1,1]]",
+        8,
+        0.0,
+        true
+      ],
+      "title": "person_B \u00b7 stream masked poses"
     },
     {
       "id": 7,
       "type": "S3F_BuildMotion",
       "pos": [
-        2000,
-        150
+        980,
+        1300
       ],
       "size": [
         380,
@@ -299,7 +345,7 @@
         {
           "name": "poses",
           "type": "S3F_POSE_SEQUENCE",
-          "link": 7
+          "link": 6
         },
         {
           "name": "target_anchor_override",
@@ -318,8 +364,7 @@
           "type": "S3F_MOTION_PROJECT",
           "links": [
             8
-          ],
-          "slot_index": 0
+          ]
         }
       ],
       "properties": {
@@ -335,21 +380,21 @@
         "L0,L1,L2,R0,R1,R2",
         "{}"
       ],
-      "title": "6 \u00b7 Anchors & axis calibration"
+      "title": "person_B \u00b7 anchors & axes"
     },
     {
-      "id": 8,
+      "id": 9,
       "type": "S3F_StandaloneExport",
       "pos": [
-        2470,
-        150
+        1450,
+        1300
       ],
       "size": [
         380,
         234
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -394,23 +439,71 @@
         "Node name for S&R": "S3F_StandaloneExport"
       },
       "widgets_values": [
-        "rcowgirl_6_core"
+        "person_B"
       ],
       "title": "Motion Studio \u00b7 open in new tab"
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "S3F_PreviewExport",
       "pos": [
-        2930,
-        150
+        1910,
+        480
       ],
       "size": [
-        1100,
-        980
+        820,
+        720
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "link": 9
+        },
+        {
+          "name": "project_0",
+          "type": "S3F_MOTION_PROJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "project_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "editor_session",
+          "type": "S3F_EDITOR_SESSION",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_PreviewExport"
+      },
+      "widgets_values": [
+        "person_A"
+      ],
+      "title": "Linked preview \u00b7 same editing session"
+    },
+    {
+      "id": 11,
+      "type": "S3F_PreviewExport",
+      "pos": [
+        1910,
+        1300
+      ],
+      "size": [
+        820,
+        720
+      ],
+      "flags": {},
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -442,7 +535,7 @@
         "Node name for S&R": "S3F_PreviewExport"
       },
       "widgets_values": [
-        "rcowgirl_6_core"
+        "person_B"
       ],
       "title": "Linked preview \u00b7 same editing session"
     }
@@ -452,53 +545,53 @@
       1,
       1,
       0,
-      2,
-      0,
-      "VIDEO"
-    ],
-    [
-      2,
-      2,
-      0,
-      3,
-      0,
-      "VIDEO"
-    ],
-    [
-      3,
-      3,
-      0,
-      5,
-      1,
-      "IMAGE"
-    ],
-    [
-      4,
       4,
       0,
-      5,
-      0,
-      "SAM3D_BODY_MODEL"
+      "VIDEO"
     ],
     [
-      5,
-      5,
-      0,
-      6,
-      0,
-      "MHR_POSE_DATA"
-    ],
-    [
-      6,
+      3,
       2,
       0,
-      6,
+      4,
       1,
       "VIDEO"
+    ],
+    [
+      5,
+      4,
+      0,
+      6,
+      0,
+      "S3F_POSE_SEQUENCE"
     ],
     [
       7,
       6,
+      0,
+      8,
+      1,
+      "S3F_MOTION_PROJECT"
+    ],
+    [
+      2,
+      1,
+      0,
+      5,
+      0,
+      "VIDEO"
+    ],
+    [
+      4,
+      3,
+      0,
+      5,
+      1,
+      "VIDEO"
+    ],
+    [
+      6,
+      5,
       0,
       7,
       0,
@@ -508,71 +601,59 @@
       8,
       7,
       0,
-      8,
+      9,
       1,
       "S3F_MOTION_PROJECT"
     ],
     [
       9,
-      4,
-      0,
-      6,
+      8,
       2,
-      "SAM3D_BODY_MODEL"
+      10,
+      0,
+      "S3F_EDITOR_SESSION"
     ],
     [
       10,
-      8,
-      2,
       9,
+      2,
+      11,
       0,
       "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
     {
-      "title": "Core video & SAM3D",
+      "title": "Core video inputs \u00b7 matching timelines",
       "bounding": [
         50,
-        70,
-        1520,
-        710
+        60,
+        400,
+        2010
       ],
       "color": "#365770",
       "font_size": 22,
       "flags": {}
     },
     {
-      "title": "Native pose adapter",
+      "title": "Person A \u00b7 mask supplies identity \u00b7 target_person = 0",
       "bounding": [
-        1590,
-        70,
-        360,
-        280
+        490,
+        400,
+        2270,
+        810
       ],
       "color": "#446958",
       "font_size": 22,
       "flags": {}
     },
     {
-      "title": "Motion authoring",
+      "title": "Person B \u00b7 separate mask and script \u00b7 target_person = 0",
       "bounding": [
-        1970,
-        70,
-        440,
-        610
-      ],
-      "color": "#446958",
-      "font_size": 22,
-      "flags": {}
-    },
-    {
-      "title": "Motion Studio \u00b7 standalone + linked preview",
-      "bounding": [
-        2440,
-        70,
-        1620,
-        1100
+        490,
+        1220,
+        2270,
+        840
       ],
       "color": "#655079",
       "font_size": 22,
@@ -582,7 +663,7 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.45,
+      "scale": 0.4,
       "offset": [
         30,
         20

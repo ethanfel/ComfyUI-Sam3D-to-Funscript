@@ -66,7 +66,7 @@ def main():
     fixture(Path("/media/p5/Comfyui/input/videos/nsfw/rcowgirl_6.mp4"), folder)
     info = get("/object_info/S3F_VideoPose")["S3F_VideoPose"]
     assert info["input"]["optional"]["mask_video"][0] == "VIDEO"
-    api = json.loads((ROOT / "workflows/mask_videos_to_funscripts.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/mask_videos_to_funscripts.api.json").read_text())
     for node_id, file in [("1", "source.mp4"), ("2", "person_A.mp4"), ("3", "person_B.mp4")]:
         api[node_id]["inputs"]["file"] = upload(folder / file)
     for node_id in ("4", "5"):
@@ -103,7 +103,7 @@ def main():
         if all(cache_hits):
             break
     assert all(cache_hits)
-    workflow = json.loads((ROOT / "workflows/mask_videos_to_funscripts.json").read_text())
+    workflow = json.loads((ROOT / "extras/advanced/mask_videos_to_funscripts.json").read_text())
     for node in workflow["nodes"]:
         if node["type"] == "LoadVideo":
             node["widgets_values"] = [api[str(node["id"])]["inputs"]["file"]]

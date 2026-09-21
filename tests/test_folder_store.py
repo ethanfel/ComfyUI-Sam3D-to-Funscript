@@ -62,6 +62,52 @@ class FolderStoreTests(unittest.TestCase):
         self.assertNotEqual(a['editor_session'],b['editor_session'])
         self.assertEqual(self.store.scan(self.folder)['counts']['pending'],2)
 
+    def test_review_known_clip_does_not_rescan_library_or_decode_video(self):
+        a = self.listing['entries'][0]
+        self.edited(a)
+        reopened = FolderStore(self.store.root)
+        with patch.object(reopened, 'scan', side_effect=AssertionError('Unnecessary library scan')), \
+             patch('sam3d_funscript.folder_store.source_info', side_effect=AssertionError('Unnecessary video decode')):
+            reopened.open(self.folder, a['id'], 'a'*32)
+            reopened.hold_review(self.folder, a['id'], 'a'*32)
+            reopened.issues(self.folder, a['id'])
+            reopened.versions(self.folder, a['id'])
+
+    def test_known_clip_lookup_keeps_scripts_decisions_and_processing_state_current(self):
+        from sam3d_funscript.folder_store import ACTIVE
+        a = self.listing['entries'][0]
+        state = self.store.read(self.folder)
+        state['decisions'][a['id']] = {'status':'ignored', 'quality':4, 'note':'Review later'}
+        self.store.write(state)
+        script = self.videos/'a.funscript'; script.write_text('{}')
+        with patch.object(FolderStore, 'scan', side_effect=AssertionError('Unnecessary library scan')), \
+             patch.dict(ACTIVE, {a['timeline']:123}):
+            entry, _ = FolderStore(self.store.root).entry(self.folder, a['id'])
+            self.assertEqual((entry['status'],entry['quality'],entry['note']), ('ignored',4,'Review later'))
+            self.assertTrue(entry['processing'])
+            self.assertEqual(entry['existing'], ['a.funscript'])
+            script.unlink()
+            self.assertEqual(self.store.entry(self.folder, a['id'])[0]['existing'], [])
+
+    def test_cached_lookup_rejects_replaced_files_and_symlinked_parent(self):
+        a,b = self.listing['entries']
+        (self.videos/'a.mp4').write_bytes(b'changed')
+        with self.assertRaises(PlanConflict): self.store.entry(self.folder, a['id'])
+        outside = self.base/'moved'; (self.videos/'sub').rename(outside)
+        (self.videos/'sub').symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(PlanConflict): self.store.entry(self.folder, b['id'])
+
+    def test_cold_lookup_and_new_videos_still_scan(self):
+        from sam3d_funscript.folder_store import ENTRY_NAMES, identity
+        from sam3d_funscript.video import fingerprint
+        a = self.listing['entries'][0]
+        with patch.dict(ENTRY_NAMES, {}, clear=True), patch.object(self.store, 'scan', wraps=self.store.scan) as scan:
+            self.assertEqual(self.store.entry(self.folder, a['id'])[0]['name'], 'a.mp4')
+            scan.assert_called_once()
+            new = self.video('new.mp4')
+            self.assertEqual(self.store.entry(self.folder, identity(fingerprint(new)))[0]['name'], 'new.mp4')
+            self.assertEqual(scan.call_count, 2)
+
     def test_approval_writes_exact_main_curves_next_to_video_and_is_not_automatic(self):
         a=self.listing['entries'][0]; state=self.edited(a)
         self.assertFalse(list(self.videos.glob('*.funscript')))

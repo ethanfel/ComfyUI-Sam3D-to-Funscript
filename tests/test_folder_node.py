@@ -53,6 +53,26 @@ class FolderNodeTests(unittest.TestCase):
         self.assertEqual(self.calls[0][2]['operation'],'prepare')
         self.assertTrue(result['ui']['s3f_folder_entry'][0]['script_versions'])
 
+    def test_selected_browser_batch_passes_only_requested_clip_to_inference(self):
+        chosen=self.listing['entries'][1]
+        with patch.object(self.node.S3F_ProcessingTimeline,'run',side_effect=self.parent):
+            result=self.run_node(operation='automatic',plan_json=json.dumps({'folder_batch':{'clip_ids':[chosen['id']]}}))
+        self.assertEqual([Path(call[0]).name for call in self.calls],['b.mp4'])
+        self.assertEqual(result['ui']['s3f_folder_batch'][0]['completed'],['sub/b.mp4'])
+
+    def test_persistent_queue_generates_a_draft_for_only_the_selected_clip(self):
+        queue_module=importlib.import_module(self.node.__package__+'.sam3d_funscript.folder_queue')
+        (self.videos/'a.mp4').rename(self.videos/'Neutral_civitai_123_original.mp4')
+        queue=queue_module.FolderQueue(self.store.root)
+        queue.change(self.folder,'add',{'items':[{'id':'123'}]})
+        ticket=queue.start(self.folder)['ticket']
+        with patch.object(self.node.S3F_ProcessingTimeline,'run',side_effect=self.parent):
+            result=self.run_node(operation='automatic',plan_json=json.dumps({'folder_queue':{'ticket':ticket}}))
+        self.assertEqual(len(self.calls),1)
+        self.assertEqual(queue.read(self.folder)['items'][0]['state'],'ready')
+        self.assertNotIn('s3f_folder_entry',result['ui'])
+        self.assertEqual(list(self.videos.rglob('*.funscript')),[])
+
     def test_explicit_reprocessing_allowed_for_scripted_clip_but_stale_selection_rejected(self):
         entry=self.listing['entries'][0]
         (self.videos/'a.funscript').write_text('{"actions":[{"at":0,"pos":17}]}')

@@ -1,17 +1,17 @@
 {
-  "last_node_id": 8,
-  "last_link_id": 8,
+  "last_node_id": 9,
+  "last_link_id": 10,
   "nodes": [
     {
       "id": 1,
       "type": "LoadVideo",
       "pos": [
         80,
-        140
+        150
       ],
       "size": [
-        360,
-        750
+        340,
+        550
       ],
       "flags": {},
       "order": 0,
@@ -23,27 +23,28 @@
           "type": "VIDEO",
           "links": [
             1
-          ]
+          ],
+          "slot_index": 0
         }
       ],
       "properties": {
         "Node name for S&R": "LoadVideo"
       },
       "widgets_values": [
-        "videos/general/2601102105_OC_00001.mp4"
+        ""
       ],
-      "title": "Source \u00b7 partial-person test clip"
+      "title": "1 \u00b7 Load video \u00b7 core"
     },
     {
       "id": 2,
-      "type": "S3F_VideoPose",
+      "type": "Video Slice",
       "pos": [
-        530,
-        140
+        500,
+        150
       ],
       "size": [
-        420,
-        560
+        290,
+        190
       ],
       "flags": {},
       "order": 2,
@@ -57,110 +58,248 @@
       ],
       "outputs": [
         {
-          "name": "poses",
-          "type": "S3F_POSE_SEQUENCE",
+          "name": "VIDEO",
+          "type": "VIDEO",
           "links": [
             2,
-            3,
-            4
-          ]
-        },
-        {
-          "name": "cache_path",
-          "type": "STRING",
-          "links": null
+            6
+          ],
+          "slot_index": 0
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_VideoPose"
+        "Node name for S&R": "Video Slice"
       },
       "widgets_values": [
-        "sam_3d_body_dinov3_bf16.safetensors",
         0.0,
         0.0,
-        0.0,
-        1000,
-        "[[0,0,1,0.91], [0,0.83,0.55,0.17]]",
-        16,
-        0.0,
-        true
+        false
       ],
-      "title": "Two person slots \u00b7 0 woman / 1 partial man"
+      "title": "2 \u00b7 Trim video \u00b7 core"
     },
     {
       "id": 3,
-      "type": "S3F_BuildMotion",
+      "type": "GetVideoComponents",
       "pos": [
-        1070,
-        140
+        870,
+        150
       ],
       "size": [
-        410,
-        440
+        260,
+        160
       ],
       "flags": {},
       "order": 3,
       "mode": 0,
       "inputs": [
         {
-          "name": "poses",
-          "type": "S3F_POSE_SEQUENCE",
+          "name": "video",
+          "type": "VIDEO",
           "link": 2
-        },
-        {
-          "name": "target_anchor_override",
-          "type": "S3F_ANCHOR",
-          "link": null
-        },
-        {
-          "name": "reference_anchor_override",
-          "type": "S3F_ANCHOR",
-          "link": null
         }
       ],
       "outputs": [
         {
-          "name": "project",
-          "type": "S3F_MOTION_PROJECT",
+          "name": "images",
+          "type": "IMAGE",
           "links": [
-            5
-          ]
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "bit_depth",
+          "type": "COMBO",
+          "links": null,
+          "slot_index": 3
+        },
+        {
+          "name": "color_space",
+          "type": "COMBO",
+          "links": null,
+          "slot_index": 4
         }
       ],
       "properties": {
-        "Node name for S&R": "S3F_BuildMotion"
+        "Node name for S&R": "GetVideoComponents"
       },
-      "widgets_values": [
-        0,
-        "pelvis",
-        1,
-        "pelvis",
-        "camera",
-        30.0,
-        "L0,L1,L2,R0,R1,R2",
-        "{}"
-      ],
-      "title": "project_0 \u00b7 Woman relative to man"
+      "widgets_values": [],
+      "title": "3 \u00b7 Get video components \u00b7 core"
     },
     {
       "id": 4,
-      "type": "S3F_BuildMotion",
+      "type": "SAM3DBody_Loader",
       "pos": [
-        1070,
-        670
+        500,
+        490
       ],
       "size": [
-        410,
-        440
+        360,
+        100
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "sam3d_body_model",
+          "type": "SAM3D_BODY_MODEL",
+          "links": [
+            4,
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody_Loader"
+      },
+      "widgets_values": [
+        "sam_3d_body_dinov3_bf16.safetensors"
+      ],
+      "title": "Load SAM3D Body model \u00b7 core"
+    },
+    {
+      "id": 5,
+      "type": "SAM3DBody_Predict",
+      "pos": [
+        1210,
+        150
+      ],
+      "size": [
+        330,
+        250
       ],
       "flags": {},
       "order": 4,
       "mode": 0,
       "inputs": [
         {
+          "name": "sam3d_body_model",
+          "type": "SAM3D_BODY_MODEL",
+          "link": 4
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "name": "track_data",
+          "type": "SAM3_TRACK_DATA",
+          "link": null
+        },
+        {
+          "name": "bboxes",
+          "type": "BOUNDING_BOX",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mhr_pose_data",
+          "type": "MHR_POSE_DATA",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody_Predict"
+      },
+      "widgets_values": [
+        false,
+        0.0,
+        8
+      ],
+      "title": "4 \u00b7 SAM3D Body prediction \u00b7 core"
+    },
+    {
+      "id": 6,
+      "type": "S3F_CorePoseAdapter",
+      "pos": [
+        1620,
+        150
+      ],
+      "size": [
+        300,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mhr_pose_data",
+          "type": "MHR_POSE_DATA",
+          "link": 5
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 6
+        },
+        {
+          "name": "sam3d_body_model",
+          "type": "SAM3D_BODY_MODEL",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
           "name": "poses",
           "type": "S3F_POSE_SEQUENCE",
-          "link": 3
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "cache_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "S3F_CorePoseAdapter"
+      },
+      "widgets_values": [],
+      "title": "5 \u00b7 Adapt native poses & timing"
+    },
+    {
+      "id": 7,
+      "type": "S3F_BuildMotion",
+      "pos": [
+        2000,
+        150
+      ],
+      "size": [
+        380,
+        440
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "S3F_POSE_SEQUENCE",
+          "link": 7
         },
         {
           "name": "target_anchor_override",
@@ -175,11 +314,12 @@
       ],
       "outputs": [
         {
-          "name": "project",
+          "name": "S3F_MOTION_PROJECT",
           "type": "S3F_MOTION_PROJECT",
           "links": [
-            6
-          ]
+            8
+          ],
+          "slot_index": 0
         }
       ],
       "properties": {
@@ -195,76 +335,21 @@
         "L0,L1,L2,R0,R1,R2",
         "{}"
       ],
-      "title": "project_1 \u00b7 Woman only \u00b7 camera baseline"
+      "title": "6 \u00b7 Anchors & axis calibration"
     },
     {
-      "id": 5,
-      "type": "S3F_BuildMotion",
-      "pos": [
-        1070,
-        1200
-      ],
-      "size": [
-        410,
-        440
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "poses",
-          "type": "S3F_POSE_SEQUENCE",
-          "link": 4
-        },
-        {
-          "name": "target_anchor_override",
-          "type": "S3F_ANCHOR",
-          "link": null
-        },
-        {
-          "name": "reference_anchor_override",
-          "type": "S3F_ANCHOR",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "project",
-          "type": "S3F_MOTION_PROJECT",
-          "links": [
-            7
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "S3F_BuildMotion"
-      },
-      "widgets_values": [
-        1,
-        "pelvis",
-        -1,
-        "pelvis",
-        "camera",
-        30.0,
-        "L0,L1,L2,R0,R1,R2",
-        "{}"
-      ],
-      "title": "project_2 \u00b7 Man only \u00b7 inspect partial pose"
-    },
-    {
-      "id": 6,
+      "id": 8,
       "type": "S3F_StandaloneExport",
       "pos": [
-        1580,
-        140
+        2470,
+        150
       ],
       "size": [
         380,
-        278
+        234
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -275,20 +360,10 @@
         {
           "name": "project_0",
           "type": "S3F_MOTION_PROJECT",
-          "link": 5
+          "link": 8
         },
         {
           "name": "project_1",
-          "type": "S3F_MOTION_PROJECT",
-          "link": 6
-        },
-        {
-          "name": "project_2",
-          "type": "S3F_MOTION_PROJECT",
-          "link": 7
-        },
-        {
-          "name": "project_3",
           "type": "S3F_MOTION_PROJECT",
           "link": null
         }
@@ -310,7 +385,7 @@
           "name": "editor_session",
           "type": "S3F_EDITOR_SESSION",
           "links": [
-            8
+            10
           ],
           "slot_index": 2
         }
@@ -319,53 +394,29 @@
         "Node name for S&R": "S3F_StandaloneExport"
       },
       "widgets_values": [
-        "partial_person_reference_test"
+        "motion_core"
       ],
       "title": "Motion Studio \u00b7 open in new tab"
     },
     {
-      "id": 7,
-      "type": "Note",
-      "pos": [
-        530,
-        800
-      ],
-      "size": [
-        420,
-        640
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {
-        "Node name for S&R": "Note"
-      },
-      "widgets_values": [
-        "PARTIAL-PERSON SAM3D TEST\n\nLocal test: the second pose still often follows the woman. Use this workflow to inspect that failure; the relative curve is not a validated male-reference result.\n\nOne extraction creates two person slots. All three motion branches use that same pose result.\n\nROI format: [x, y, width, height], normalized 0 to 1.\nSlot 0: woman / upper 91% of frame.\nSlot 1: partial man / lower-left region (55% width, bottom 17%).\nThese static crops are starting selections, not identity masks. SAM3D pads crops internally, so surrounding people can still influence the pose. Adjust them if a pose follows the wrong person. Leave mask_video disconnected; it would replace the two slots with one.\n\nproject_0: woman pelvis minus man pelvis (initial main).\nproject_1: woman pelvis in camera coordinates.\nproject_2: man pelvis in camera coordinates.\n\nRun, then select each source row with Edit to inspect its target marker and 3D pose. Check project_2 through the entire clip before trusting project_0.\n\nFrame=camera avoids using the unseen male torso as the reference orientation. His pelvis is still inferred from a very partial crop; SAM3D has no dedicated landmark for the indicated region.\n\nAuto fits each curve independently, so curve height is not an accuracy comparison. Pose presence is not tracking confidence.\n\nEvery frame, up to 1000 frames; bounded streaming batches, cached poses. Changing anchors or calibration reuses the cache."
-      ],
-      "title": "Read first \u00b7 test setup and review"
-    },
-    {
-      "id": 8,
+      "id": 9,
       "type": "S3F_PreviewExport",
       "pos": [
-        2040,
-        140
+        2930,
+        150
       ],
       "size": [
-        1180,
-        1100
+        1100,
+        980
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
           "name": "editor_session",
           "type": "S3F_EDITOR_SESSION",
-          "link": 8
+          "link": 10
         },
         {
           "name": "project_0",
@@ -391,7 +442,7 @@
         "Node name for S&R": "S3F_PreviewExport"
       },
       "widgets_values": [
-        "partial_person_reference_test"
+        "motion_core"
       ],
       "title": "Linked preview \u00b7 same editing session"
     }
@@ -411,89 +462,105 @@
       0,
       3,
       0,
-      "S3F_POSE_SEQUENCE"
+      "VIDEO"
+    ],
+    [
+      3,
+      3,
+      0,
+      5,
+      1,
+      "IMAGE"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "SAM3D_BODY_MODEL"
     ],
     [
       5,
-      3,
+      5,
       0,
       6,
+      0,
+      "MHR_POSE_DATA"
+    ],
+    [
+      6,
+      2,
+      0,
+      6,
+      1,
+      "VIDEO"
+    ],
+    [
+      7,
+      6,
+      0,
+      7,
+      0,
+      "S3F_POSE_SEQUENCE"
+    ],
+    [
+      8,
+      7,
+      0,
+      8,
       1,
       "S3F_MOTION_PROJECT"
     ],
     [
-      3,
-      2,
-      0,
-      4,
-      0,
-      "S3F_POSE_SEQUENCE"
-    ],
-    [
-      6,
+      9,
       4,
       0,
       6,
       2,
-      "S3F_MOTION_PROJECT"
+      "SAM3D_BODY_MODEL"
     ],
     [
-      4,
-      2,
-      0,
-      5,
-      0,
-      "S3F_POSE_SEQUENCE"
-    ],
-    [
-      7,
-      5,
-      0,
-      6,
-      3,
-      "S3F_MOTION_PROJECT"
-    ],
-    [
+      10,
       8,
-      6,
       2,
-      8,
+      9,
       0,
       "S3F_EDITOR_SESSION"
     ]
   ],
   "groups": [
     {
-      "title": "Core video input",
+      "title": "Core video & SAM3D",
       "bounding": [
         50,
-        60,
-        420,
-        890
+        70,
+        1520,
+        710
       ],
       "color": "#365770",
       "font_size": 22,
       "flags": {}
     },
     {
-      "title": "Shared two-person extraction \u00b7 static ROI test",
+      "title": "Native pose adapter",
       "bounding": [
-        500,
-        60,
-        480,
-        1440
+        1590,
+        70,
+        360,
+        280
       ],
-      "color": "#365770",
+      "color": "#446958",
       "font_size": 22,
       "flags": {}
     },
     {
-      "title": "Relative motion and individual baselines",
+      "title": "Motion authoring",
       "bounding": [
-        1040,
-        60,
-        470,
-        1630
+        1970,
+        70,
+        440,
+        610
       ],
       "color": "#446958",
       "font_size": 22,
@@ -502,10 +569,10 @@
     {
       "title": "Motion Studio \u00b7 standalone + linked preview",
       "bounding": [
-        1550,
-        60,
-        1700,
-        1240
+        2440,
+        70,
+        1620,
+        1100
       ],
       "color": "#655079",
       "font_size": 22,

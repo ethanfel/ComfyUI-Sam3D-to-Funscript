@@ -38,7 +38,7 @@ def main():
             time.sleep(.5)
         raise TimeoutError(f"{name} exceeded six minutes")
 
-    api = json.loads((ROOT / "workflows/core_video_to_funscript.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/core_video_to_funscript.api.json").read_text())
     # Match the existing browser smoke test's exported script filename.
     api["8"]["inputs"]["filename"] = "rcowgirl_6"
     full, full_path, full_history = queue(api, "full core video")

@@ -21,7 +21,7 @@ def main():
     assert len(choices) == 9 and "mouth" in choices and "neck" in choices
     detailed = info["S3F_AnchorOverride"]["input"]["required"]["anchor"][0]
     assert len(detailed) == 70 and "left_index_tip" in detailed
-    api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/video_to_funscript.api.json").read_text())
     api["1"]["inputs"]["use_cache"] = False
     full, full_path = project_from_history(queue(api))
     assert not full["metadata"]["cache_hit"]

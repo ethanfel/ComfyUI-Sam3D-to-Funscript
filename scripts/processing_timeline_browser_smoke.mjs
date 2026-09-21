@@ -21,7 +21,7 @@ async function connect(target){
  await call("Runtime.enable");await call("Page.enable");connections.push(ws);return {call,evaluate};
 }
 try{
- const preparation=JSON.parse(fs.readFileSync('workflows/processing_timeline.api.json','utf8'));
+ const preparation=JSON.parse(fs.readFileSync('extras/api/01_single_video.api.json','utf8'));
  preparation['1'].inputs.file='videos/general/2601102105_OC_00001.mp4';
  const queued=await(await fetch(base+'/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:preparation,partial_execution_targets:['2'],extra_data:{extra_pnginfo:{workflow:{nodes:[{id:2,properties:{s3f_timeline_session:session}}]}}}})})).json();assert.ok(queued.prompt_id,JSON.stringify(queued));
  await until(async()=>{const response=await fetch(`${base}/sam3d_funscript/timelines/${session}`);return response.ok},'prepared session');
@@ -32,7 +32,7 @@ try{
  await until(()=>parent.evaluate("!!document.querySelector('canvas')"),"Comfy canvas");
  await parent.evaluate("(async()=>{window.testApp=(await import('/scripts/app.js')).app})()");
  await until(()=>parent.evaluate("!!window.LiteGraph?.registered_node_types?.S3F_ProcessingTimeline&&!!window.testApp?.graph&&!!window.testApp.positionConversion"),"timeline registration");
- const workflow=JSON.parse(fs.readFileSync("workflows/processing_timeline.json","utf8"));
+ const workflow=JSON.parse(fs.readFileSync("workflows/01_single_video.json","utf8"));
  workflow.nodes.find(n=>n.id===1).widgets_values[0]='videos/general/2601102105_OC_00001.mp4';
  const node=workflow.nodes.find(n=>n.id===2);node.properties.s3f_timeline_session=session;node.properties.s3f_timeline_ready=true;
  await parent.evaluate(`window.testApp.loadGraphData(${JSON.stringify(workflow)})`);
@@ -88,8 +88,8 @@ try{
  assert.equal(complete.timeline.sources.length,4);report.checks.push('Process unfinished reuses completed region and assembles both anchors across the full video');
  assert.ok(state.editor_session,'Result must expose its persistent Motion Studio session');
  assert.equal(new URL(await editor.evaluate("document.querySelector('#openStudio').href")).searchParams.get('session'),state.editor_session);
- const ownerSession=await parent.evaluate("window.testApp.graph.getNodeById(3).properties.s3f_session");assert.equal(state.editor_session,ownerSession);
- const draft=await(await fetch(`${base}/sam3d_funscript/editors/${ownerSession}`)).json();assert.ok(draft.project);report.checks.push('Direct Motion Studio link shares the downstream editor session and its saved draft');
+ assert.equal(state.editor_session,new URL(await studio.evaluate('location.href')).searchParams.get('session'));
+ const draft=await(await fetch(`${base}/sam3d_funscript/editors/${state.editor_session}`)).json();assert.ok(draft.project);report.checks.push('Timeline Motion Studio keeps its editing session and saved draft across reruns');
  assert.equal(draft.project.timeline.main.L0.regions.length,2);assert.ok(draft.project.references.L0);report.checks.push('Reference comparisons persist without preventing generated main curves from refreshing');
  await parent.evaluate("window.testApp.graph.getNodeById(2).widgets.find(w=>w.name==='sample_fps').value=0;window.testApp.graph.getNodeById(2).widgets.find(w=>w.name==='use_cache').value=false");
  await click('processAll');await until(()=>editor.evaluate("document.querySelector('#progressText').textContent.includes('poses')||document.querySelector('#progressText').textContent.includes('stabilization')"),'running job before cancel');

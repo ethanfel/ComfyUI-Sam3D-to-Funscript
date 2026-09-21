@@ -21,7 +21,7 @@ async function connect(target){
  await call("Runtime.enable");await call("Page.enable");connections.push(ws);return {call,evaluate};
 }
 try{
- const preparation=JSON.parse(fs.readFileSync('workflows/processing_timeline.api.json','utf8'));
+ const preparation=JSON.parse(fs.readFileSync('extras/api/01_single_video.api.json','utf8'));
  preparation['1'].inputs.file='cut-test.mp4';
  const queued=await(await fetch(base+'/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:preparation,partial_execution_targets:['2'],extra_data:{extra_pnginfo:{workflow:{nodes:[{id:2,properties:{s3f_timeline_session:session}}]}}}})})).json();assert.ok(queued.prompt_id,JSON.stringify(queued));
  await until(async()=>{const response=await fetch(`${base}/sam3d_funscript/timelines/${session}`);return response.ok},'prepared session');
@@ -32,7 +32,7 @@ try{
  await until(()=>parent.evaluate("!!document.querySelector('canvas')"),"Comfy canvas");
  await parent.evaluate("(async()=>{window.testApp=(await import('/scripts/app.js')).app})()");
  await until(()=>parent.evaluate("!!window.LiteGraph?.registered_node_types?.S3F_ProcessingTimeline&&!!window.testApp?.graph&&!!window.testApp.positionConversion"),"timeline registration");
- const workflow=JSON.parse(fs.readFileSync("workflows/processing_timeline.json","utf8"));
+ const workflow=JSON.parse(fs.readFileSync("workflows/01_single_video.json","utf8"));
  workflow.nodes.find(n=>n.id===1).widgets_values[0]='cut-test.mp4';
  const node=workflow.nodes.find(n=>n.id===2);node.properties.s3f_timeline_session=session;node.properties.s3f_timeline_ready=true;
  await parent.evaluate(`window.testApp.loadGraphData(${JSON.stringify(workflow)})`);

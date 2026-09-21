@@ -1,18 +1,24 @@
 # Folder Processing Timeline
 
-Add **Folder Processing Timeline** (`S3F_FolderTimeline`) or load [the example workflow](../workflows/folder_timeline.json). Enter a folder path, leave **operation** on **prepare**, and queue once. **Open folder workspace** opens one clip at a time, with the existing processing Timeline and resulting Motion Studio together on the same page. No output connections are needed.
+Add **Folder Processing Timeline** (`S3F_FolderTimeline`) or load [the example workflow](../workflows/02_folder_library.json). Enter a folder path, leave **operation** on **prepare**, and queue once. **Open folder workspace** opens one clip at a time, with **Timeline** and **Motion Studio** tabs. Only the active editor and its video preview are visible; switching tabs pauses playback and keeps your edits, selection and scroll position. Opening a clip never starts playback. No output connections are needed.
 
 Use **Previous / Next** or the video selector to browse. The arrows follow the current subfolder, script-status, quality and search filters. A selected clip stays open when filters change, so filtering does not discard edits. Subfolders are included by default; scanning does not decode every video. Each clip has its own plan and editor session. Returning restores its saved regions, locks and curves. A changed video file gets a new session.
 
+Choose **Review order → Random · mix folders** to review a varied selection. It shuffles clips within each folder and takes turns between folders, so a large folder does not dominate the start of the pass. Use **Whole folder** or tick several subfolders to mix their clips, and **Show → Drafts ready for review** to focus on completed drafts. Previous/Next, the video selector, **Approve & next**, and **Ignore & next** all follow the same order, without repeating a clip before wrapping around. The current clip stays open when the order changes.
+
+Refreshing the listing or approving a clip keeps the remaining order; newly eligible clips join at the end. **Reshuffle** starts a new order from the open clip. Changing review filters creates a new mix for that selection. The browser remembers the mode and order for each library, including across reloads when the filters match. This setting controls review, not the bulk processing queue.
+
 ## Bulk processing
 
-Select a **Subfolder**, expand **Bulk automatic processing**, and click **Process unscripted clips in subfolder**. This includes its nested folders and uses the node's model, sampling, batch size and cut sensitivity. Automatic mode finds scenes, prepares all detected people and four anchors, and uses any stabilization masks already prepared separately for each video. A single shared mask input must be disconnected for bulk processing.
+Open **Subfolders** and tick one or more folders, then expand **Bulk automatic processing** and click **Process selected folders**. **Whole folder** includes everything; **Clear** removes the selection. Selected folders include their nested folders, and overlapping selections process each clip only once. Show, Quality and Find filter the review list, not the batch. Processing keeps each clip’s own folder preset and uses the node's model, sampling, batch size and cut sensitivity. Automatic mode finds scenes, prepares all detected people and four anchors, and uses any stabilization masks already prepared separately for each video. A single shared mask input must be disconnected for bulk processing.
 
 The batch runs sequentially through ComfyUI's queue. It skips matching base or multi-axis funscripts, ignored videos, and drafts already completed by a previous bulk pass. Eligibility is checked again before each clip, including scripts that appear while a batch is running. Failed clips are listed and do not stop later clips. **Check models** verifies the selected SAM3D model, person detector and any required stabilization tracker before inference; starting bulk performs this check too. The remaining-time estimate starts after the first clip and uses observed processing times, so clips of different lengths can change it considerably.
 
-**Pause after clip** finishes the current video before stopping. **Resume remaining clips** retains completed drafts. **Retry failed clips** processes only previous failures in the selected subfolder. **Stop now** cancels that specific queued job; completed drafts remain available. After a ComfyUI restart, an interrupted batch is shown as interrupted; check ComfyUI's queue before resuming it.
+**Pause after clip** finishes the current video before stopping. **Resume remaining clips** retains completed drafts. **Retry failed clips** processes only previous failures in the selected folders. **Stop now** cancels that specific queued job; completed drafts remain available. After a ComfyUI restart, an interrupted batch is shown as interrupted; check ComfyUI's queue before resuming it.
 
 Bulk processing saves **drafts in ComfyUI's output directory**. It does not approve results or write funscripts beside videos. Select **Show → Drafts ready for review**, then use the arrows to review them. Each clip can still be reprocessed manually with Timeline's usual controls.
+
+To share completed Main scripts through Hugging Face, use the [public dataset exporter](public-dataset.md). It supports Civitai ID lookup and runs independently while the batch continues.
 
 ## Refine and approve
 
@@ -26,11 +32,11 @@ When scripts already exist, the button reads **Approve & replace scripts**. It c
 
 Approval and switching first save the open editors. Approval checks the Motion Studio revision and video identity. During bulk processing, only the clip being processed is read-only: other completed clips can be edited and approved. Opening a waiting clip for review defers it from this pass, avoiding a collision with your edits. Completed results appear in the open viewer as each clip finishes. An ordinary queued single-clip job still blocks switching until it finishes.
 
-**Approve & next** and **Ignore & next** advance through the filtered list. Shortcuts work in the folder page and its embedded editors: **Alt + Left/Right** browses, **Alt + Enter** approves and advances, **Alt + Backspace** ignores and advances, and **Alt + 1–5** sets the rating. They do not intercept typing in a form field. **Play selected section** plays the selected range when opening a clip or clicking a review flag; browser autoplay restrictions may require a first playback click.
+**Approve & next** and **Ignore & next** advance through the filtered list. Shortcuts work in the folder page and its embedded editors: **Alt + Left/Right** browses, **Alt + Enter** approves and advances, **Alt + Backspace** ignores and advances, and **Alt + 1–5** sets the rating. They do not intercept typing in a form field. **Play when selecting an issue** is off by default. Enable it to play a flagged range when you explicitly select that issue.
 
 ## Review flags and script versions
 
-Review checks identify missing tracking samples, uncertain person detections, clipped motion, abrupt jumps and long flat ranges. Click a flag or **Next issue** to select and play that range in Motion Studio. Orange marks also identify the ranges on Main. These are inspection hints: a still scene can correctly produce a flat curve, and flags never change your star rating.
+Review checks identify missing tracking samples, uncertain person detections, clipped motion, abrupt jumps and long flat ranges. Click a flag or **Next issue** to open that range in the Motion Studio tab. Playback starts only if **Play when selecting an issue** is enabled. Orange marks also identify the ranges on Main. These are inspection hints: a still scene can correctly produce a flat curve, and flags never change your star rating.
 
 **Script versions · compare and restore** saves named Main-curve snapshots with independent ratings and notes. Imported existing scripts, completed automatic drafts and approvals receive snapshots automatically. **Compare with Main** overlays a saved version in pink against the green current Main using the same time scale and video. **Show current Main** removes the overlay. Comparing never changes exported motion.
 
@@ -38,7 +44,7 @@ Review checks identify missing tracking samples, uncertain person detections, cl
 
 ## Subfolder presets
 
-Select a subfolder, expand **Subfolder preset**, adjust its preferred anchor, smoothing, adaptive/fixed movement range, sample FPS, batch size and cut sensitivity, then save. Nested folders inherit the nearest saved parent preset. Without a saved preset, the node settings are used. Models always come from the node.
+Select exactly one subfolder, expand **Subfolder preset**, adjust its preferred anchor, smoothing, adaptive/fixed movement range, sample FPS, batch size and cut sensitivity, then save. Nested folders inherit the nearest saved parent preset. Without a saved preset, the node settings are used. Models always come from the node.
 
 Presets apply to automatic processing, including a manual rerun of Automatic. All detected people and all four anchors remain available; the preferred anchor changes which candidate is suggested first. Manual and locked regions are retained. Presets cannot be changed during a batch, keeping its settings consistent.
 

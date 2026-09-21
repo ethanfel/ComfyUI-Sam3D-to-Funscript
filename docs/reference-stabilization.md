@@ -4,7 +4,7 @@
 file-backed `VIDEO`. Connect it before **SAM3D Video → Cached Poses** when a visible
 reference region is more useful than an inferred partial-body pose.
 
-Open [the example workflow](../workflows/reference_stabilization.json). Its Motion
+Open [the example workflow](../extras/advanced/reference_stabilization.json). Its Motion
 Studio standalone node and embedded preview share the same editing session.
 
 ## Optional masks in the Processing Timeline

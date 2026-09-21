@@ -30,7 +30,7 @@ def main():
     args = parser.parse_args()
     info = get("/object_info")
     assert "mouth" in info["S3F_BuildMotion"]["input"]["required"]["target_anchor"][0]
-    api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/video_to_funscript.api.json").read_text())
     api["2"]["inputs"]["target_anchor"] = "mouth"
     api["3"]["inputs"]["filename"] = "mouth"
     stream, stream_path = result(api, 3)
@@ -44,7 +44,7 @@ def main():
     reused, _ = result(cached, 3)
     assert reused["scripts"] == stream["scripts"]
 
-    core = json.loads((ROOT / "workflows/core_video_to_funscript.api.json").read_text())
+    core = json.loads((ROOT / "extras/advanced/api/core_video_to_funscript.api.json").read_text())
     core["2"]["inputs"]["duration"] = .25
     core["7"]["inputs"]["target_anchor"] = "mouth"
     core["8"]["inputs"]["filename"] = "mouth_core"
@@ -75,7 +75,7 @@ def main():
         assert [i for i, valid in enumerate(project["valid"]) if not valid] == [12, 13, 14, 15]
         assert all(project["points"][i][0][70:] == [[None] * 3, [None] * 3] for i in range(12, 16))
         report.update(mask_project=str(mask_path), mask_missing_frames_preserved=True)
-    workflow = json.loads((ROOT / "workflows/cached_pose_to_funscript.json").read_text())
+    workflow = json.loads((ROOT / "extras/advanced/cached_pose_to_funscript.json").read_text())
     workflow["nodes"][0]["widgets_values"] = [stream["metadata"]["cache_path"]]
     workflow["nodes"][1]["widgets_values"][1] = "mouth"
     (ROOT / "development/mouth-workflow.json").write_text(json.dumps(workflow, indent=2))

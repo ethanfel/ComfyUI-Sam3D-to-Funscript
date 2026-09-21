@@ -32,7 +32,7 @@ export function updateFolderNode(node,folder,entry){
 }
 async function responseJSON(response){if(!response.ok)throw new Error(await response.text());return response.json();}
 const bulkJobs=new Map(),actions=new Set();
-const isBatch=definition=>{try{return !!JSON.parse(definition.inputs?.plan_json||'{}').folder_batch}catch{return false}};
+const isBatch=definition=>{try{const plan=JSON.parse(definition.inputs?.plan_json||'{}');return !!(plan.folder_batch||plan.folder_queue)}catch{return false}};
 export function setupFolder(jobs){
     api.addEventListener('s3f_folder_progress',event=>{
         for(const [node,win]of windows)if(node.properties.s3f_folder===event.detail.folder)
@@ -60,50 +60,57 @@ export function setupFolder(jobs){
                 const queue=await responseJSON(await api.fetchApi('/queue',{cache:'no-store'}));
                 const folderPath=node.widgets.find(w=>w.name==='folder_path')?.value;
                 const queued=[...queue.queue_running,...queue.queue_pending].flatMap(item=>Object.values(item[2]||{})).filter(n=>n.class_type==='S3F_FolderTimeline'&&n.inputs?.folder_path===folderPath);
-                if(queued.some(n=>!isBatch(n))||(data.action==='bulk'&&(queued.length||bulkJobs.has(node))))
+                if(queued.some(n=>!isBatch(n))||(['bulk','queue_start'].includes(data.action)&&(queued.length||bulkJobs.has(node))))
                     throw new Error('This folder has a queued or running job for this action.');
                 const listing=await responseJSON(await api.fetchApi(`/sam3d_funscript/folders/${data.folder}`,{cache:'no-store'}));
                 const active=listing.entries.find(e=>e.id===node.properties.s3f_folder_entry?.id)?.processing;
                 if(active&&data.action!=='open'&&data.action!=='preset')throw new Error('This clip is processing. Open another completed clip to review it.');
                 if(!active)await flushWorkspaceNode(node);
             }
-            if(data.action==='bulk'){
+            if(data.action==='bulk'||data.action==='queue_start'){
+                const persistent=data.action==='queue_start';
                 const prompt=await app.graphToPrompt(),definition=prompt.output[String(node.id)];
                 if(!definition)throw new Error('Enable the folder node before processing.');
                 if(definition.inputs.mask_video)throw new Error('Disconnect the shared mask input before bulk processing. Prepare masks per clip.');
-                const checks=await post('preflight',{settings:definition.inputs,subfolder:data.subfolder||'',retry_failed:data.retry_failed===true});
+                const checks=await post('preflight',{settings:definition.inputs,subfolder:data.subfolder||'',retry_failed:data.retry_failed===true,clip_ids:data.clip_ids,queue:persistent});
                 if(!checks.ok)throw new Error(checks.errors.join(' · '));
                 await post('lease',{clip:null,client:data.client});
                 prompt.output={[String(node.id)]:definition};definition.inputs.operation='automatic';
-                definition.inputs.plan_json=JSON.stringify({folder_batch:{subfolder:data.subfolder||'',retry_failed:data.retry_failed===true}});
+                const saved=persistent?await post('queue_start',{}):null;
+                definition.inputs.plan_json=JSON.stringify(persistent?{folder_queue:{ticket:saved.ticket}}:{folder_batch:{subfolder:data.subfolder||'',retry_failed:data.retry_failed===true,clip_ids:data.clip_ids}});
                 const job={};bulkJobs.set(node,job);
+                let acceptSubmission,rejectSubmission;
+                const submitted=persistent?new Promise((resolve,reject)=>{acceptSubmission=resolve;rejectSubmission=reject;}):null;
                 const completion=queueReferenceTracking(api,prompt,node.id,event=>{
-                    if(event.prompt_id)job.prompt_id=event.prompt_id;
+                    if(event.prompt_id){job.prompt_id=event.prompt_id;acceptSubmission?.();}
                     win.postMessage({type:'s3f-folder-progress',text:event.text},location.origin);
                 },{nodeType:node.type,resultKey:'s3f_folder'});
                 completion.then(output=>win.postMessage({type:'s3f-folder-finished',batch:output.s3f_folder_batch?.[0]},location.origin),
-                    error=>win.postMessage({type:'s3f-folder-finished',error:error.message},location.origin)).finally(()=>bulkJobs.delete(node));
-                reply({result:{started:true}});return;
+                    async error=>{rejectSubmission?.(error);if(saved)await post('queue_failed',{ticket:saved.ticket,error:error.message}).catch(()=>{});win.postMessage({type:'s3f-folder-finished',error:error.message},location.origin);}).finally(()=>bulkJobs.delete(node));
+                if(submitted)await submitted;
+                reply({result:{started:true,queue:saved}});return;
             }
-            if(!['open','approve','ignore','review','lease','issues','preset','preflight','pause','versions','version','save_version','restore_version','rate_version'].includes(data.action))throw new Error('Unknown folder action');
+            if(!['open','approve','civitai_approve','civitai_reject','ignore','review','lease','issues','preset','preflight','pause','versions','version','save_version','restore_version','rate_version'].includes(data.action))throw new Error('Unknown folder action');
             const body={clip:data.clip,client:data.client};
-            if(['approve','save_version','restore_version'].includes(data.action)){
+            if(['approve','civitai_approve','civitai_reject','save_version','restore_version'].includes(data.action)){
                 const current=node.properties.s3f_folder_entry;
                 if(current?.id!==data.clip)throw new Error('Open and review this video in Motion Studio first.');
                 const editor=workspaceEditor(node,current.editor_session);
                 if(!editor?.s3fEditorRevision)throw new Error('Wait for Motion Studio to load.');
                 body.revision=editor.s3fEditorRevision();body.replace=data.replace===true;body.expected=current.script_versions;
             }
-            for(const key of ['ignored','quality','note','version','name','subfolder','settings'])if(data[key]!==undefined)body[key]=data[key];
-            if(data.action==='preflight')body.settings=Object.fromEntries(node.widgets.map(w=>[w.name,w.value]));
+            for(const key of ['ignored','quality','note','version','name','subfolder','settings','category'])if(data[key]!==undefined)body[key]=data[key];
+            if(data.action==='preflight'){body.settings=Object.fromEntries(node.widgets.map(w=>[w.name,w.value]));body.clip_ids=data.clip_ids;}
             const result=await post(data.action,body);
             if(data.action==='open'){
                 updateFolderNode(node,data.folder,result);node.s3fTimelineStatus.textContent=`Folder video · ${result.name}`;await refreshWorkspaces();
             }
-            if(data.action==='approve'){
+            if(data.action==='approve'||data.action==='civitai_approve'){
                 const entry=result.listing.entries.find(e=>e.id===data.clip);
-                node.properties.s3f_folder_entry={...entry,script_versions:result.script_versions};app.graph.change();await refreshWorkspaces();
+                updateFolderNode(node,data.folder,{...entry,script_versions:result.script_versions});await refreshWorkspaces();
+                if(result.relocated){await workspaceEditor(node,entry.editor_session)?.s3fUpdate?.();for(const frame of win.s3fFolderFrames?.()||[])if(frame.key===`timeline:${entry.timeline}`)await frame.window.s3fTimelineLoad?.();}
             }
+            if(data.action==='civitai_reject'&&result.deleted){updateFolderNode(node,data.folder,null);await refreshWorkspaces();}
             if(data.action==='restore_version')await workspaceEditor(node,node.properties.s3f_folder_entry.editor_session)?.s3fUpdate?.();
             reply({result});
         }catch(error){reply({error:error.message});}

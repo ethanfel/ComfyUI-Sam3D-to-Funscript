@@ -341,18 +341,27 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
         listing = folders.prepare(folder_path, include_subfolders)
         from .sam3d_funscript.processing_timeline import parse_plan
         submitted = parse_plan(kwargs.get('plan_json', '{}'))
-        if operation == 'automatic' and 'folder_batch' in submitted:
+        if operation == 'automatic' and ('folder_batch' in submitted or 'folder_queue' in submitted):
             from comfy.model_management import throw_exception_if_processing_interrupted, InterruptProcessingException
             from server import PromptServer
-            batch = submitted['folder_batch']
+            queued = 'folder_queue' in submitted
+            batch = submitted['folder_queue'] if queued else submitted['folder_batch']
             if not isinstance(batch, dict): raise ValueError('Invalid folder batch')
             if kwargs.get('mask_video') is not None: raise ValueError('Prepare masks separately for each clip; disconnect the shared mask before bulk processing.')
             from .sam3d_funscript.folder_review import preflight
-            needs_tracker = folders.needs_tracker(listing['folder'],batch.get('subfolder',''),batch.get('retry_failed') is True)
+            needs_tracker = not queued and folders.needs_tracker(listing['folder'],batch.get('subfolder',''),batch.get('retry_failed') is True,batch.get('clip_ids'))
             checks = preflight({'model_file':model_file,'tracker_model':kwargs.get('tracker_model','cotracker3_scaled_online.pth')},needs_tracker=needs_tracker)
-            if not checks['ok']:raise ValueError('Batch preflight failed: '+'; '.join(checks['errors']))
+            if not checks['ok']:
+                message='Batch preflight failed: '+'; '.join(checks['errors'])
+                if queued:
+                    from .sam3d_funscript.folder_queue import FolderQueue
+                    FolderQueue(folders.root).failed_start(listing['folder'],batch.get('ticket'),message)
+                raise ValueError(message)
             def process(entry):
                 current = folders.open(listing['folder'], entry['id'])
+                if queued and (folders.plans.read(current['timeline']) or {}).get('plan',{}).get('stabilization'):
+                    checks=preflight({'model_file':model_file,'tracker_model':kwargs.get('tracker_model','cotracker3_scaled_online.pth')},needs_tracker=True)
+                    if not checks['ok']:raise ValueError('; '.join(checks['errors']))
                 options = copy.deepcopy(kwargs)
                 extra = options['extra_pnginfo'] = options.get('extra_pnginfo') or {}
                 nodes = extra.setdefault('workflow', {}).setdefault('nodes', [])
@@ -369,9 +378,15 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
                 editor=folders.editors.read(current['editor_session'])
                 if editor:folders.save_version(listing['folder'],current['id'],'Automatic draft',project=editor['project'])
                 return result
-            report = folders.process_batch(listing['folder'], batch.get('subfolder', ''), process,
-                throw_exception_if_processing_interrupted, (InterruptProcessingException,),
-                lambda event: PromptServer.instance.send_sync('s3f_folder_progress', {'folder': listing['folder'], **event}),retry_failed=batch.get('retry_failed') is True)
+            progress=lambda event: PromptServer.instance.send_sync('s3f_folder_progress', {'folder': listing['folder'], **event})
+            if queued:
+                from .sam3d_funscript.folder_queue import FolderQueue
+                report=FolderQueue(folders.root).run(listing['folder'],batch.get('ticket'),process,
+                    throw_exception_if_processing_interrupted,(InterruptProcessingException,),progress)
+            else:
+                report = folders.process_batch(listing['folder'], batch.get('subfolder', ''), process,
+                    throw_exception_if_processing_interrupted, (InterruptProcessingException,),
+                    progress,retry_failed=batch.get('retry_failed') is True,clip_ids=batch.get('clip_ids'))
             # Never navigate the review workspace when a background batch ends.
             return {'ui':{'s3f_folder':[listing['folder']], 's3f_folder_batch':[report],
                 's3f_timeline_status':[f"Bulk {report['stage']} · {len(report['completed'])} drafts ready, {len(report['failed'])} failed"]},

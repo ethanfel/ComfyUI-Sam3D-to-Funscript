@@ -7,7 +7,7 @@ import sys
 from queue_smoke import queue, ROOT
 
 cache = sys.argv[1]
-api = json.loads((ROOT / "workflows/multitrack_anchors.api.json").read_text())
+api = json.loads((ROOT / "extras/advanced/api/multitrack_anchors.api.json").read_text())
 api["1"]["inputs"]["cache_path"] = cache
 result = queue(api)
 path = Path(result["outputs"]["5"]["text"][0])
@@ -17,7 +17,7 @@ assert len(project["timeline"]["tracks"]) == 3
 assert not project["timeline"]["geometries"]
 assert [s["data"]["config"]["target_anchor"] for s in project["timeline"]["sources"]] == ["mouth", "left_hand", "right_hand"]
 assert project["scripts"] == project["timeline"]["sources"][0]["data"]["scripts"]
-workflow = json.loads((ROOT / "workflows/multitrack_anchors.json").read_text())
+workflow = json.loads((ROOT / "extras/advanced/multitrack_anchors.json").read_text())
 workflow["nodes"][0]["widgets_values"] = [cache]
 next(node for node in workflow["nodes"] if node["id"] == 5)["properties"]["s3f_project"] = path.parent.name
 (ROOT / "development/timeline-workflow.json").write_text(json.dumps(workflow, indent=2))

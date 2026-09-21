@@ -37,9 +37,9 @@
   "3": {
     "class_type": "S3F_StandaloneExport",
     "inputs": {
-      "filename": "rcowgirl_6",
+      "filename": "motion",
       "project_0": [
-        "5",
+        "2",
         0
       ]
     }
@@ -47,29 +47,17 @@
   "4": {
     "class_type": "LoadVideo",
     "inputs": {
-      "file": "videos/nsfw/rcowgirl_6.mp4"
+      "file": ""
     }
   },
   "5": {
-    "class_type": "S3F_CompareReference",
-    "inputs": {
-      "project": [
-        "2",
-        0
-      ],
-      "reference_path": "/absolute/path/to/reference.funscript",
-      "axis": "L0",
-      "reference_offset_ms": 0.0
-    }
-  },
-  "6": {
     "class_type": "S3F_PreviewExport",
     "inputs": {
       "editor_session": [
         "3",
         2
       ],
-      "filename": "rcowgirl_6"
+      "filename": "motion"
     }
   }
 }

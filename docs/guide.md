@@ -4,54 +4,34 @@
 
 Detailed controls, formats, validation and development notes.
 
-A working first version of a local **video → SAM 3D Body → multi-axis motion → editable preview → funscript** pipeline.
+The extension uses ComfyUI's native SAM3D Body implementation. Pose inference is cached separately from motion authoring. Motion Studio combines source sections, manual edits and audio patterns into six output axes.
 
-The node uses ComfyUI's native SAM 3D Body implementation and your existing model. Pose inference is cached separately from motion authoring. The browser editor includes the source video, projected skeleton, an orbitable 3D skeleton, a main timeline with additional anchor tracks, six output axes and selectable Handy 2 / SR6 wireframe previews.
+This is a development-stage authoring tool. Review tracking around occlusions and camera changes. Device previews are schematic and do not control hardware.
 
-**Status:** development version, tested on the provided `rcowgirl_6.mp4` and the local `13_env_py313` environment. This is an authoring tool. Device models are schematic; the SR6 renderer solves illustrative linkage geometry, without device calibration, collision modelling or hardware control. Static person ROIs require visual review; they do not provide automatic identity tracking.
+## Start a project
 
-## Open it locally
+Choose one of the two [starter workflows](../workflows/README.md):
 
-The project is installed in:
+- **[Single video](../workflows/01_single_video.json):** choose or upload a video, leave **operation** on **prepare**, and click **Run**. Open the processing timeline for Automatic mode or manual sections, then open Motion Studio from the timeline. You can use audio patterns and manual authoring without running pose extraction.
+- **[Folder library](../workflows/02_folder_library.json):** set **folder_path**, run **prepare**, then open the folder workspace. Browse local clips or Civitai, process individually or in bulk, and approve reviewed scripts beside their videos.
 
-```text
-/media/p5/Comfyui/custom_nodes/ComfyUI-Sam3D-to-Funscript
-```
+Save the ComfyUI workflow to return to its editing session. Export your project and scripts from Motion Studio. Both starters include Motion Studio through the workspace; a separate export node is optional.
 
-Load [workflows/video_to_funscript.json](../workflows/video_to_funscript.json) in ComfyUI. It is a canvas-editable workflow using core video input and streaming inference:
+See [processing timeline](processing-timeline.md), [folder review](folder-timeline.md), [Civitai review](civitai-browser.md) and [audio patterns](audio-patterns.md) for their controls.
 
-1. **Load Video** (core): select or upload a video and connect its `VIDEO` output.
-2. **SAM3D Video → Cached Poses:** select the model, sampling and person ROI(s).
-3. **Poses → Multi-axis Motion:** choose anchors, reference frame, smoothing and enabled axes.
-4. **Motion Studio · Standalone:** write scripts and a project, then click **Open Motion Studio in new tab**.
-5. **Preview & Export Funscripts:** the connected `editor_session` displays the same editing session inside the workflow.
+## Advanced node workflows
 
-Core **Load Video → SAM3D Video → Cached Poses** preserves the original node's lower-RAM streaming behavior. **Load Video** supplies a lazy file reference; the inference node decodes selected frames in small batches. No **Get Video Components** node is needed. Optional core **Trim Video** can sit between them.
+The [advanced recipes](../extras/advanced/README.md) demonstrate individual nodes for custom graphs. They use blank media selections or placeholder paths; choose your own inputs before running. [API prompts](../extras/api/README.md) are separate from canvas workflows.
 
-The streaming extractor feeds uint8 frames directly into native SAM3D crop processing, bounds full-resolution working buffers separately from the GPU batch, and skips unused mesh-preview calculations. On the tested RTX 5090, repeated 128-frame runs were about **2× faster**, with batch-64 peak process RAM reduced from **10.4 GiB to 4.2 GiB**. Start with batch **32**, then try **64** if memory permits. Batch 128 provided little additional throughput on that clip. See [performance measurements and reproduction commands](../docs/performance.md).
+The [streaming recipe](../extras/advanced/video_to_funscript.json) connects **Load Video → SAM3D Video → Cached Poses → Poses → Multi-axis Motion → Motion Studio · Standalone**, with a linked embedded preview. **Load Video** supplies a lazy file reference, and inference decodes selected frames in batches. Changing anchors or calibration reuses the pose cache.
 
-Saved path-based canvas workflows migrate on opening: the extension adds **Load Video**, transfers the saved filename and keeps the existing inference settings and downstream connections. If the old filename was an absolute path outside ComfyUI's input directory, select/upload it through **Load Video**. API clients should use the updated [API example](../workflows/video_to_funscript.api.json).
+Start with batch size **8** and increase it if memory permits. See [performance measurements](performance.md) for tested batch sizes. The standalone recipe's `max_frames` limits extraction; timeline sections set their own ranges.
 
-The development server uses port **8197** and stores results under this repository's `development/output/`. Your regular ComfyUI uses its own configured output directory. A regular ComfyUI process already running before installation needs to reload custom nodes, normally by restarting it when its queue is idle.
-
-To start the isolated development server again:
-
-```bash
-mkdir -p /tmp/s3f-comfy-user /tmp/s3f-comfy-temp
-PYTHONDONTWRITEBYTECODE=1 /media/p5/miniforge3/envs/13_env_py313/bin/python \
-  /media/p5/Comfyui/main.py \
-  --listen 127.0.0.1 --port 8197 --disable-auto-launch \
-  --disable-all-custom-nodes --whitelist-custom-nodes ComfyUI-Sam3D-to-Funscript \
-  --output-directory /media/p5/ComfyUI-Sam3D-to-Funscript/development/output \
-  --user-directory /tmp/s3f-comfy-user --temp-directory /tmp/s3f-comfy-temp \
-  --database-url sqlite:///:memory:
-```
-
-Only this custom node pack is enabled in that test process. Existing native model paths are read from ComfyUI's configuration. No model weights are bundled or downloaded.
+Saved path-based canvas workflows migrate on opening: the extension adds **Load Video**, transfers the filename and keeps existing settings and connections. If the old filename is outside ComfyUI's input directory, select/upload it through **Load Video**. API clients should use the [streaming API example](../extras/advanced/api/video_to_funscript.api.json).
 
 ### Core-node alternative
 
-Load [workflows/core_video_to_funscript.json](../workflows/core_video_to_funscript.json) for a separate workflow using ComfyUI's native input and inference nodes. The original combined node and all original workflows remain available.
+Load [extras/advanced/core_video_to_funscript.json](../extras/advanced/core_video_to_funscript.json) for a separate workflow using ComfyUI's native input and inference nodes. The streaming node remains available in the advanced recipes.
 
 ```text
 Load Video → Trim Video → Get Video Components → Run SAM3D Body Prediction
@@ -70,7 +50,7 @@ The example uses every frame, batch size 8, and hand refinement disabled to matc
 
 Core **Get Video Components** materializes the selected frames in RAM. Set a duration in **Trim Video** for long sources; the original combined node remains the streaming option with sampling and frame limits. The adapter currently supports file-backed **Load Video / Trim Video** inputs and matching uncropped image batches. It does not infer person identity or detect scene cuts. Model choice remains in the saved upstream workflow; native pose output does not carry checkpoint provenance.
 
-After reloading ComfyUI's custom nodes, both entry points appear under `motion/SAM3D Funscript`. The API companion is [core_video_to_funscript.api.json](../workflows/core_video_to_funscript.api.json).
+After reloading ComfyUI's custom nodes, both entry points appear under `motion/SAM3D Funscript`. The API companion is [core_video_to_funscript.api.json](../extras/advanced/api/core_video_to_funscript.api.json).
 
 ## Nodes
 
@@ -86,7 +66,7 @@ After reloading ComfyUI's custom nodes, both entry points appear under `motion/S
 | Motion Studio · Standalone | Accept the same numbered projects in a compact node, open the editor in a dedicated tab and output `project_path` plus the offline HTML `viewer_path`. |
 | Compare Reference Funscript | Attach a paired authored script, measure curve agreement and display it in the editor. |
 
-Video selection now belongs to core **Load Video**, which reads ComfyUI's input directory. The supplied example uses `videos/nsfw/rcowgirl_6.mp4`. Cache, project and reference-script paths may still be absolute or relative to the input directory. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
+Video selection belongs to core **Load Video**, which reads ComfyUI's input directory. Choose or upload your own video. Cache, project and reference-script paths may still be absolute or relative to the input directory. Select `sam_3d_body_dinov3_bf16.safetensors`; the tested installation resolves it through the existing detection model path.
 
 In the original combined node, `sample_fps=16` selects actual frames on a 16 Hz sampling grid. Set `0` for all frames. `max_frames` bounds memory and inference work; `duration_seconds=0` processes until the upstream trim ends, EOF or that limit. Inference holds at most one batch of source frames and retains compact landmarks, rather than all meshes and images. Model memory requirements are unchanged. This streaming input supports file-backed **Load Video / Trim Video**; generated in-memory videos and spatial crops need saving/loading first. Use the node's person ROIs for inference crops, and bake any video rotation metadata into the pixels.
 
@@ -110,7 +90,7 @@ The streaming node accepts an optional **`mask_video` VIDEO input** from another
 
 Connect the original clip to `video` and the person's mask clip to `mask_video`. In this mode the mask supplies the moving crop, `rois_json` is ignored, and the selected person is always **`target_person=0`**. The preview shows the mask's moving bounding rectangle and the selected anatomical anchor.
 
-Use [mask_videos_to_funscripts.json](../workflows/mask_videos_to_funscripts.json) for two independent script branches sharing one source video. Select a source and one mask file for each person. Both branches use person slot 0 because each analyses its own mask. Duplicate a branch for more people. These are separate scripts; this workflow does not combine the branches into a body-relative two-person pose sequence.
+Use [mask_videos_to_funscripts.json](../extras/advanced/mask_videos_to_funscripts.json) for two independent script branches sharing one source video. Select a source and one mask file for each person. Both branches use person slot 0 because each analyses its own mask. Duplicate a branch for more people. These are separate scripts; this workflow does not combine the branches into a body-relative two-person pose sequence.
 
 - Masks must cover the full source canvas. A lower resolution with the same aspect ratio is supported; cropped mask images are not aligned.
 - Preserve the original frame timestamps. Encoding rounding up to 1 ms is accepted. Mismatched timestamps or a mask ending before a required frame stop extraction rather than silently shifting the selected person.
@@ -142,7 +122,7 @@ The selector offers all 70 named [MHR70 landmarks](https://github.com/facebookre
 - Feet: big-toe tips, small-toe tips and heels.
 - Additional surface landmarks: olecranon (back of elbow), cubital fossa (inner elbow) and acromion (shoulder tip), on both sides.
 
-The [detailed-anchor example](../workflows/detailed_anchor_override.json) reopens a pose cache and overrides `left_hand` with `left_index_tip`. Disconnect the override to return to the hand average. Its [API companion](../workflows/detailed_anchor_override.api.json) shows the same connection.
+The [detailed-anchor example](../extras/advanced/detailed_anchor_override.json) reopens a pose cache and overrides `left_hand` with `left_index_tip`. Disconnect the override to return to the hand average. Its [API companion](../extras/advanced/api/detailed_anchor_override.api.json) shows the same connection.
 
 Saved canvas workflows that selected a detailed point migrate on opening: their selection moves into a connected override node. Existing detailed values in API prompts and saved projects remain supported.
 
@@ -223,9 +203,9 @@ Simplification limits vertical interpolation error to `tolerance` position units
 
 ### Main timeline and anchor tracks
 
-Load [workflows/multitrack_anchors.json](../workflows/multitrack_anchors.json) for a shared pose cache feeding **mouth**, **left hand** and **right hand** motion projects into one editor. Set the cache path, or connect the same `poses` output from your streaming/core workflow to the three **Poses → Multi-axis Motion** nodes. Each branch has independent anchor, reference and axis calibration. Changing these branches does not rerun pose inference.
+Load [extras/advanced/multitrack_anchors.json](../extras/advanced/multitrack_anchors.json) for a shared pose cache feeding **mouth**, **left hand** and **right hand** motion projects into one editor. Set the cache path, or connect the same `poses` output from your streaming/core workflow to the three **Poses → Multi-axis Motion** nodes. Each branch has independent anchor, reference and axis calibration. Changing these branches does not rerun pose inference.
 
-**Preview & Export Funscripts** and **Motion Studio · Standalone** place `editor_session` first, followed by `project_0`. Connecting a project adds `project_1`, and each connected last project socket adds another below it. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket and input order automatically, preserving existing wires; existing API prompts using `project` still work. The [multitrack API example](../workflows/multitrack_anchors.api.json) shows numbered inputs connected to the standalone node.
+**Preview & Export Funscripts** and **Motion Studio · Standalone** place `editor_session` first, followed by `project_0`. Connecting a project adds `project_1`, and each connected last project socket adds another below it. There is no fixed project/track count limit. Disconnecting a middle project retains the other socket names and connections. Old canvas workflows migrate their `project` socket and input order automatically, preserving existing wires; existing API prompts using `project` still work. The [multitrack API example](../extras/advanced/api/multitrack_anchors.api.json) shows numbered inputs connected to the standalone node.
 
 1. Select the **Main axis** to assemble, such as **L0 · stroke**. The first numbered project supplies its initial main curve; other enabled axes are retained too.
 2. Every connected project adds a source track. The default **Section blocks · one row** view places each curve inside its analysed time interval, leaving unprocessed gaps empty. Click a block heading to select its range, or click its curve to seek and edit. **Anchor** lists the latest person/anchor tracks covering the selected zone and switches between them without changing their curves or calibration. The **Section** selector and previous/next buttons reach short or offscreen sections. Choose **Separate rows** to compare several curves at once. The selected track keeps its **Change source…**, **Axis**, name, lock, copy and remove controls. **Source project** (inside **Change source…**) or **Axis** reassignment resets that track to the chosen project's calibration and curve; Undo restores its previous edits. **Add track** creates another independently editable track, including alternate calibrations of the same project.
@@ -270,7 +250,7 @@ The smoother averages the interpolated motion over elapsed milliseconds, so extr
 
 ### Dedicated-tab editing
 
-Every bundled workflow and its API companion includes **Motion Studio · Standalone** with a session connection to an embedded preview. Motion projects feed the standalone node; each masked-person branch has its own session. Remove the linked preview if you only want the compact node and dedicated tab. To add this setup to an existing graph, find **Motion Studio · Standalone** under `motion/SAM3D Funscript` and connect your motion projects. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
+The two starter workflows open Motion Studio directly from their workspace. The advanced node recipes include **Motion Studio · Standalone** with a session connection to an embedded preview. Motion projects feed the standalone node; each masked-person branch has its own session. Remove the linked preview if you only want the compact node and dedicated tab. To add this setup to an existing graph, find **Motion Studio · Standalone** under `motion/SAM3D Funscript` and connect your motion projects. Click **Open Motion Studio in new tab** once; if no result exists yet, the tab waits for the first run. Further clicks focus the same tab.
 
 Keep the tab open while running your workflow. It receives the latest projects automatically, including newly connected anchors, using the same track refresh, composition and lock rules as the embedded editor. The workspace reconnects after a ComfyUI restart or page reload when the matching workflow is open. It keeps the existing Timeline and Motion Studio tabs, their selections and unsaved edits. Interrupted saves retry automatically; a genuine conflict between authored curves still requires recovery. Reconnecting never starts a processing job. If a restart interrupted processing, check the ComfyUI queue and completed regions before running it again. Separate export nodes have separate editor sessions. The existing preview node's **Open full motion editor** button uses this same dedicated-tab behaviour.
 
@@ -317,7 +297,7 @@ The project contains raw/processed motion, camera-space landmarks, projections, 
 
 ## Compare a paired reference
 
-Open [workflows/video_with_reference.json](../workflows/video_with_reference.json), set the video and `.funscript` paths, and run. **Compare Reference Funscript** sits between motion conversion and export. Alternatively, use **Open reference script** in the editor to attach a reference to the currently selected axis.
+Open [extras/advanced/video_with_reference.json](../extras/advanced/video_with_reference.json), set the video and `.funscript` paths, and run. **Compare Reference Funscript** sits between motion conversion and export. Alternatively, use **Open reference script** in the editor to attach a reference to the currently selected axis.
 
 The reference appears in purple. The editor displays mean absolute error (MAE), root mean squared error (RMSE), and correlation over the common analysed interval. Positions are compared as written; legacy `inverted`/`range` headers are recorded but not applied. A positive **reference offset** shifts reference actions later in the video. It never changes generated action timing.
 
@@ -354,7 +334,7 @@ node tests/test_migrate.mjs
 
 Tests cover variable-rate timestamps, rigid-camera invariance in a body reference frame, gap holds, filter isolation across cuts, fixed-gain behavior, interpolation error, cache/project round trips, action validation and browser/Python export parity.
 
-`node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 /absolute/path/to/poses.npz` checks all seven bundled workflows against their API companions in a disposable Chrome profile. It verifies socket order, save/reload, dynamic connections, independent person sessions and node spacing, then runs the cached example to check that both editor views reuse one export. Omit the cache argument to skip execution. Use an isolated ComfyUI instance; QA screenshots hide the source video.
+`node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 /absolute/path/to/poses.npz` checks the two starter workflows against their API companions in a disposable Chrome profile. It verifies socket order, save/reload, dynamic connections, independent person sessions and node spacing, then runs the cached example to check that both editor views reuse one export. Omit the cache argument to skip execution. To check advanced recipes or fixtures, pass their repository-relative JSON paths after the output directory, for example `node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 '' development/workflows-browser extras/advanced/*.json`. Use an isolated ComfyUI instance; QA screenshots hide the source video.
 
 The multitrack suite covers geometry deduplication, different sampling, mismatched-video rejection, source isolation, section joins, overlapping section provenance, undo snapshots, and numbered socket growth with no fixed cap. Reproduce it with:
 

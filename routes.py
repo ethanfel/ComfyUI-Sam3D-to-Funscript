@@ -38,6 +38,56 @@ def register_routes():
         from .sam3d_funscript.folder_store import FolderStore
         return FolderStore(Path(folder_paths.get_output_directory()) / "sam3d_funscript")
 
+    civitai_download_slots = asyncio.Semaphore(2)
+
+    @routes.get('/sam3d_funscript/civitai/{folder}/thumbnail/{clip}')
+    async def civitai_local_thumbnail(request):
+        from .sam3d_funscript.civitai_library import CivitaiLibrary
+        try:
+            async with thumbnail_slots:
+                path=await asyncio.to_thread(CivitaiLibrary(folder_store().root).thumbnail,
+                    request.match_info['folder'],request.match_info['clip'])
+            return web.FileResponse(path,headers={'Cache-Control':'private, max-age=86400'})
+        except (ValueError,OSError) as error:raise web.HTTPNotFound(text=str(error))
+
+    @routes.get('/sam3d_funscript/civitai/{folder}/local/{clip}')
+    async def civitai_local_video(request):
+        try:
+            _,path=await asyncio.to_thread(folder_store().entry,request.match_info['folder'],request.match_info['clip'])
+            return web.FileResponse(path,headers={'Cache-Control':'private, no-cache'})
+        except (ValueError,OSError) as error:raise web.HTTPNotFound(text=str(error))
+
+    @routes.get('/sam3d_funscript/civitai/{folder}')
+    async def civitai_library(request):
+        from .sam3d_funscript.civitai_library import CivitaiLibrary
+        try:
+            library=CivitaiLibrary(folder_store().root)
+            return web.json_response(await asyncio.to_thread(library.catalogue,request.match_info['folder']),headers={'Cache-Control':'no-store'})
+        except (ValueError,OSError) as error:raise web.HTTPBadRequest(text=str(error))
+
+    @routes.post('/sam3d_funscript/civitai/{folder}/{action}')
+    async def civitai_action(request):
+        from .sam3d_funscript.civitai_library import CivitaiLibrary
+        try:
+            body=await request.json();library=CivitaiLibrary(folder_store().root)
+            if not isinstance(body,dict):raise ValueError('Send a JSON object for the Civitai action.')
+            folder=request.match_info['folder'];action=request.match_info['action']
+            library.folders.read(folder)
+            if action=='browse':result=await asyncio.to_thread(library.browse,folder,body)
+            elif action=='category':result=await asyncio.to_thread(library.add_category,folder,body['name'])
+            elif action=='ignore':result=await asyncio.to_thread(library.ignore,folder,body['id'],body.get('ignored',True))
+            elif action=='key':result=await asyncio.to_thread(library.set_token,body.get('token',''))
+            elif action=='queue':
+                from .sam3d_funscript.folder_queue import FolderQueue
+                result=await asyncio.to_thread(FolderQueue(library.root).change,folder,body.get('action'),body)
+            elif action=='download':
+                async with civitai_download_slots:
+                    result=await asyncio.to_thread(library.download,folder,body['id'],body['category'],body.get('site','civitai.red'))
+            else:raise ValueError('Unknown Civitai action.')
+            return web.json_response(result,headers={'Cache-Control':'no-store'})
+        except PlanConflict as error:raise web.HTTPConflict(text=str(error))
+        except (ValueError,TypeError,KeyError,OSError) as error:raise web.HTTPBadRequest(text=str(error))
+
     @routes.get("/sam3d_funscript/folders/{folder}")
     async def folder_get(request):
         try:
@@ -52,9 +102,23 @@ def register_routes():
             store, folder, action = folder_store(), request.match_info['folder'], request.match_info['action']
             if action == 'open':
                 result = await asyncio.to_thread(store.open, folder, body['clip'], body.get('client'))
+            elif action in ('queue_start','queue_failed'):
+                from .sam3d_funscript.folder_queue import FolderQueue
+                queue=FolderQueue(store.root)
+                if action=='queue_start':result=await asyncio.to_thread(queue.start,folder)
+                else:result=await asyncio.to_thread(queue.failed_start,folder,body['ticket'],str(body.get('error','Queue submission failed.')))
+            elif action in ('civitai_approve','civitai_reject'):
+                from .sam3d_funscript.civitai_library import CivitaiLibrary
+                from .sam3d_funscript.civitai_review import CivitaiReview
+                review=CivitaiReview(CivitaiLibrary(store.root))
+                if action=='civitai_approve':
+                    result=await asyncio.to_thread(review.approve,folder,body['clip'],body.get('category',''),body['revision'],body.get('replace',False),body.get('expected'))
+                else:result=await asyncio.to_thread(review.reject,folder,body['clip'])
             elif action == 'ignore':
                 result = await asyncio.to_thread(store.ignore, folder, body['clip'], body.get('ignored', True), body.get('note', ''))
             elif action == 'approve':
+                entry,_=await asyncio.to_thread(store.entry,folder,body['clip'])
+                if entry.get('civitai_temporary'):raise ValueError('Review this temporary clip in the Civitai tab and choose its approval category.')
                 result = await asyncio.to_thread(store.approve, folder, body['clip'], body['revision'], body.get('replace', False), body.get('expected'))
             elif action == 'review':
                 result = await asyncio.to_thread(store.review, folder, body['clip'], body.get('quality', 0), body.get('note', ''))
@@ -78,7 +142,7 @@ def register_routes():
                 result = await asyncio.to_thread(store.pause_batch, folder)
             elif action == 'preflight':
                 from .sam3d_funscript.folder_review import preflight
-                needs_tracker=await asyncio.to_thread(store.needs_tracker,folder,body.get('subfolder',''),body.get('retry_failed') is True)
+                needs_tracker=False if body.get('queue') is True else await asyncio.to_thread(store.needs_tracker,folder,body.get('subfolder',''),body.get('retry_failed') is True,body.get('clip_ids'))
                 result = await asyncio.to_thread(preflight, body.get('settings',{}), needs_tracker=needs_tracker)
             else:
                 raise ValueError('Unknown folder action')
@@ -307,7 +371,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
-        if name not in ("folder.html", "folder.js", "folder.css", "viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
+        if name not in ("civitai-browser.mjs", "civitai-queue.mjs", "civitai-browser.css", "folder.html", "folder.js", "folder.css", "viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
             raise web.HTTPNotFound()
         # Module entry points and imported helpers must revalidate together after
         # an update. Heuristic caching can otherwise mix incompatible exports.

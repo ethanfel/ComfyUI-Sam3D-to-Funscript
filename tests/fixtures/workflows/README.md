@@ -1,6 +1,6 @@
 # Partial-person reference test
 
-Open [partial_person_reference.json](partial_person_reference.json). The [API companion](partial_person_reference.api.json) uses the same settings. The source is preselected as `videos/general/2601102105_OC_00001.mp4`; no video is bundled.
+Open [partial_person_reference.json](partial_person_reference.json). The [API companion](partial_person_reference.api.json) uses the same settings. Choose your own source and adjust the two crops to match it; no video or private path is bundled. This is a diagnostic fixture, not a starter workflow.
 
 Core **Load Video** feeds the streaming extractor, which analyses every frame, up to 1000 frames, in batches of 16 person crops. One extraction contains both person slots:
 
@@ -28,5 +28,5 @@ The local run completed all 321 frames with two person slots, three source track
 To check canvas loading, connection round trips and node spacing on an isolated server:
 
 ```bash
-node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 '' development/partial-person/browser tests/partial_person_reference.json
+node scripts/workflows_browser_smoke.mjs http://127.0.0.1:8198 '' development/partial-person/browser tests/fixtures/workflows/partial_person_reference.json
 ```

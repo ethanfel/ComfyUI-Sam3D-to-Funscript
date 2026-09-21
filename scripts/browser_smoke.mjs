@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 const base=process.argv[2]||"http://127.0.0.1:8197";
 const id=process.argv[3]||"rcowgirl_6_d60f261e17cf";
-const workflowFile=process.argv[4]||"workflows/video_to_funscript.json";
+const workflowFile=process.argv[4]||"extras/advanced/video_to_funscript.json";
 const output=path.resolve(process.argv[5]||"development/browser");fs.mkdirSync(output,{recursive:true});
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),"s3f-chrome-"));
 const chrome=spawn("/opt/google/chrome/chrome",["--headless","--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--no-first-run","--no-default-browser-check","--remote-debugging-port=0",`--user-data-dir=${profile}`,"about:blank"],{stdio:["ignore","ignore","pipe"]});

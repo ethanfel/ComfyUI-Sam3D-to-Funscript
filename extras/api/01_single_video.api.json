@@ -21,25 +21,5 @@
       "use_cache": true,
       "cut_sensitivity": "normal"
     }
-  },
-  "3": {
-    "class_type": "S3F_StandaloneExport",
-    "inputs": {
-      "project_0": [
-        "2",
-        0
-      ],
-      "filename": "processing_timeline"
-    }
-  },
-  "4": {
-    "class_type": "S3F_PreviewExport",
-    "inputs": {
-      "editor_session": [
-        "3",
-        2
-      ],
-      "filename": "processing_timeline"
-    }
   }
 }

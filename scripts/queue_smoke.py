@@ -32,7 +32,7 @@ def queue(prompt):
 
 
 def main():
-    api = json.loads((ROOT / "workflows/video_to_funscript.api.json").read_text())
+    api = json.loads((ROOT / "extras/advanced/api/video_to_funscript.api.json").read_text())
     api["4"]["inputs"]["file"] = "videos/nsfw/cowgirl_7.mp4"
     api["1"]["inputs"].update(duration_seconds=4.0, sample_fps=16.0)
     api["3"]["inputs"]["filename"] = "cowgirl_7_cache_check"

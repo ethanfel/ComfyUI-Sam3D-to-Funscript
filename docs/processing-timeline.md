@@ -5,12 +5,12 @@ result in Motion Studio. It accepts a core `VIDEO`, keeps the source video's clo
 and provides separate **Tracking** and **Stabilization** lanes. A region can use a
 different set of anchors without requiring a separate copy of the entire video workflow.
 
-Open [processing_timeline.json](../workflows/processing_timeline.json) in ComfyUI.
+Open [01 · Single video](../workflows/01_single_video.json) in ComfyUI.
 The example connects:
 
 ```text
-Load Video → Processing Timeline → Motion Studio · Standalone
-                                           └─ editor_session → Linked preview
+Load Video → Processing Timeline
+                  └─ workspace: Timeline / Motion Studio
 ```
 
 The input video stays file-backed. The new timeline does not replace core video
@@ -39,14 +39,14 @@ loading or Motion Studio's curve editor.
 5. Use **Process marked range**, **Process selected regions**, **Process all**, or
    **Process unfinished**. Each action applies the plan and queues the timeline and its upstream inputs;
    they do not repeatedly run the downstream Motion Studio export nodes.
-6. After processing completes, run the workflow normally to pass the latest
-   completed motion project into Motion Studio. `prepare` can pass this existing
-   result without starting another analysis job. Choose another **operation** in
-   the node when you want the normal workflow run to process regions as well.
+6. Open **Motion Studio** from the timeline to review the latest result. The
+   workspace refreshes it after processing. Choose another **operation** in the
+   node when you want a normal workflow run to process regions as well.
 
 The plan is stored in the node's `plan_json` widget. Save the ComfyUI workflow after
-editing it. The standalone Motion Studio and the embedded preview in this example
-share one editing session through the `editor_session` connection.
+editing it. The starter uses the timeline's own Motion Studio session. For custom
+graphs, you can also connect the `project` output to a separate export node; see
+[advanced recipes](../extras/advanced/README.md).
 
 Changing the input video keeps that Motion Studio connection, but stores the
 previous video's edits separately. Its locked tracks do not block the new video

@@ -2,19 +2,19 @@
   "1": {
     "class_type": "LoadVideo",
     "inputs": {
-      "file": "videos/nsfw/rcowgirl_6.mp4"
+      "file": ""
     }
   },
   "2": {
     "class_type": "LoadVideo",
     "inputs": {
-      "file": "person_0_mask.mp4"
+      "file": ""
     }
   },
   "3": {
     "class_type": "LoadVideo",
     "inputs": {
-      "file": "person_1_mask.mp4"
+      "file": ""
     }
   },
   "4": {
