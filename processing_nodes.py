@@ -16,7 +16,7 @@ from .sam3d_funscript.video import video_input_range
 def motion_editor_session(workflow, node_id, timeline_session):
     """Share a sole direct standalone consumer; ambiguous branches stay separate."""
     nodes = {str(node["id"]): node for node in workflow.get("nodes", [])}
-    if nodes.get(str(node_id), {}).get('type') == 'S3F_FolderTimeline':
+    if nodes.get(str(node_id), {}).get('type') in ('S3F_FolderTimeline', 'S3F_H3ProjectTimeline'):
         from .sam3d_funscript.folder_store import motion_session
         return motion_session(timeline_session)
     candidates = []
@@ -43,7 +43,7 @@ def motion_editor_session(workflow, node_id, timeline_session):
     return hashlib.sha256(f"{timeline_session}:motion".encode()).hexdigest()[:32]
 
 
-def publish_motion(project, session, output_root, timeline_state=None):
+def publish_motion(project, session, output_root, timeline_state=None, *, preserve_main=False):
     if timeline_state is not None:
         metadata = project["metadata"]
         metadata.setdefault("processing_timeline", {})["session"] = timeline_state["session"]
@@ -55,7 +55,7 @@ def publish_motion(project, session, output_root, timeline_state=None):
     for main in project.get("timeline", {}).get("main", {}).values():
         if not main.get("edited"):
             main["processing_generated"] = True
-    path, _ = EditorStore(output_root).export(session, project, lambda data: export_project(data, output_root, "timeline"))
+    path, _ = EditorStore(output_root).export(session, project, lambda data: export_project(data, output_root, "timeline"), preserve_main=preserve_main)
     return path
 
 
@@ -149,7 +149,7 @@ class S3F_ProcessingTimeline:
                     raise ValueError('Invalid automatic stabilization mode')
                 plan, automatic_report = prepare_automatic(info, state['plan'], cuts, store.directory(session),
                     replace_default=not state.get('report') and (state.get('editor_only') or not state.get('project_path')),
-                    people_mode=options.get('people', 'all'), use_cache=use_cache, progress=auto_progress,
+                    people_mode=options.get('people', 'all'), confidence=options.get('confidence', .4), min_track_confidence=options.get('min_track_confidence', .45), use_cache=use_cache, progress=auto_progress,
                     interrupt=throw_exception_if_processing_interrupted)
                 if options.get('folder_preset'):
                     from .sam3d_funscript.folder_review import apply_preset
@@ -279,7 +279,7 @@ class S3F_ProcessingTimeline:
                     **({'stabilization_errors': stabilization_errors} if stabilization_errors else {}),
                     **({'stabilization_reviews': stabilization_reviews} if stabilization_reviews else {}),
                     progress=progress, interrupt=throw_exception_if_processing_interrupted)
-                result_path = publish_motion(result, editor_session, output_root, store.read(session)) if result is not None else None
+                result_path = publish_motion(result, editor_session, output_root, store.read(session), preserve_main=submitted.get("preserve_main") is True) if result is not None else None
                 state = store.finish(session, revision, report, result_path)
             except (Exception, InterruptProcessingException) as error:
                 message = str(error) or ("Processing cancelled; completed chunks are kept." if isinstance(error, InterruptProcessingException) else type(error).__name__)
@@ -321,6 +321,7 @@ class S3F_ProcessingTimeline:
 
 
 class S3F_FolderTimeline(S3F_ProcessingTimeline):
+    LIBRARY_KIND = None
     @classmethod
     def INPUT_TYPES(cls):
         inputs = super().INPUT_TYPES()
@@ -338,9 +339,30 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
         from comfy_api.latest._input_impl.video_types import VideoFromFile
         from .sam3d_funscript.folder_store import FolderStore
         folders = FolderStore(Path(folder_paths.get_output_directory()) / 'sam3d_funscript')
-        listing = folders.prepare(folder_path, include_subfolders)
+        listing = folders.prepare(folder_path, include_subfolders, kind=self.LIBRARY_KIND)
         from .sam3d_funscript.processing_timeline import parse_plan
         submitted = parse_plan(kwargs.get('plan_json', '{}'))
+        if 'h3_trial' in submitted:
+            if self.LIBRARY_KIND != 'h3': raise ValueError('Drawing trials require an H3 project node.')
+            from .sam3d_funscript.h3_project import tracking_trial
+            from .sam3d_funscript.folder_store import LOCK as folder_lock, ACTIVE
+            from comfy.model_management import throw_exception_if_processing_interrupted
+            request = submitted['h3_trial']
+            entry, path = folders.entry(listing['folder'], request.get('clip'))
+            if entry['name'] != video_name: raise PlanConflict('The selected take changed. Run the trial again.')
+            if entry['status'] == 'ignored': raise PlanConflict('Restore this panel or take before testing motion.')
+            import threading
+            with folder_lock:
+                if entry['timeline'] in ACTIVE: raise PlanConflict('This take is already processing.')
+                ACTIVE[entry['timeline']] = ACTIVE[entry['editor_session']] = threading.get_ident()
+            try:
+                info = source_info(path)
+                result = tracking_trial(info, request, model_file, folders.root, interrupt=throw_exception_if_processing_interrupted)
+            finally:
+                with folder_lock:
+                    ACTIVE.pop(entry['timeline'], None); ACTIVE.pop(entry['editor_session'], None)
+            result['clip'] = entry['id']
+            return {'ui': {'s3f_h3_trial': [result]}, 'result': (ExecutionBlocker(None), '')}
         if operation == 'automatic' and ('folder_batch' in submitted or 'folder_queue' in submitted):
             from comfy.model_management import throw_exception_if_processing_interrupted, InterruptProcessingException
             from server import PromptServer
@@ -349,7 +371,8 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
             if not isinstance(batch, dict): raise ValueError('Invalid folder batch')
             if kwargs.get('mask_video') is not None: raise ValueError('Prepare masks separately for each clip; disconnect the shared mask before bulk processing.')
             from .sam3d_funscript.folder_review import preflight
-            needs_tracker = not queued and folders.needs_tracker(listing['folder'],batch.get('subfolder',''),batch.get('retry_failed') is True,batch.get('clip_ids'))
+            reprocess = not queued and batch.get('reprocess') is True
+            needs_tracker = not queued and folders.needs_tracker(listing['folder'],batch.get('subfolder',''),batch.get('retry_failed') is True,batch.get('clip_ids'),reprocess=reprocess)
             checks = preflight({'model_file':model_file,'tracker_model':kwargs.get('tracker_model','cotracker3_scaled_online.pth')},needs_tracker=needs_tracker)
             if not checks['ok']:
                 message='Batch preflight failed: '+'; '.join(checks['errors'])
@@ -367,16 +390,24 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
                 nodes = extra.setdefault('workflow', {}).setdefault('nodes', [])
                 node = next((n for n in nodes if str(n['id']) == str(options.get('unique_id'))), None)
                 if node is None:
-                    node = {'id': options.get('unique_id'), 'type': 'S3F_FolderTimeline'}; nodes.append(node)
+                    node = {'id': options.get('unique_id'), 'type': type(self).__name__}; nodes.append(node)
                 node.setdefault('properties', {})['s3f_timeline_session'] = current['timeline']
                 options['plan_json'] = '{}'
-                result = self.run(folder_path, model_file, include_subfolders, current['name'], 'automatic', **options)
+                operation = 'automatic'
+                if reprocess:
+                    editor = folders.editors.read(current['editor_session'])
+                    if editor: folders.save_version(listing['folder'], current['id'], 'Before bulk reprocess', project=editor['project'])
+                    state = folders.plans.read(current['timeline'])
+                    operation = 'all' if state.get('report') and state['plan'].get('tracking') else 'automatic'
+                    options['plan_json'] = json.dumps({'plan': {}, 'preserve_main': True})
+                    options['use_cache'] = False
+                result = self.run(folder_path, model_file, include_subfolders, current['name'], operation, **options)
                 state = folders.plans.read(current['timeline'])
                 errors = [job.get('error', 'Processing failed') for job in (state.get('report') or {}).get('jobs', []) if job.get('state') == 'error']
                 if errors or state.get('editor_only') or not state.get('project_path'):
                     raise ValueError('; '.join(errors[:3]) or 'No motion was generated. Review this clip manually.')
                 editor=folders.editors.read(current['editor_session'])
-                if editor:folders.save_version(listing['folder'],current['id'],'Automatic draft',project=editor['project'])
+                if editor and not reprocess:folders.save_version(listing['folder'],current['id'],'Automatic draft',project=editor['project'])
                 return result
             progress=lambda event: PromptServer.instance.send_sync('s3f_folder_progress', {'folder': listing['folder'], **event})
             if queued:
@@ -386,13 +417,14 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
             else:
                 report = folders.process_batch(listing['folder'], batch.get('subfolder', ''), process,
                     throw_exception_if_processing_interrupted, (InterruptProcessingException,),
-                    progress,retry_failed=batch.get('retry_failed') is True,clip_ids=batch.get('clip_ids'))
+                    progress,retry_failed=batch.get('retry_failed') is True,clip_ids=batch.get('clip_ids'),reprocess=reprocess)
             # Never navigate the review workspace when a background batch ends.
             return {'ui':{'s3f_folder':[listing['folder']], 's3f_folder_batch':[report],
                 's3f_timeline_status':[f"Bulk {report['stage']} · {len(report['completed'])} drafts ready, {len(report['failed'])} failed"]},
                 'result':(ExecutionBlocker(None),str(folders.path(listing['folder'])))}
         entry = folders.choose(listing['folder'], video_name)
-        if entry is None and listing['entries']: entry = listing['entries'][0]
+        if entry is None and listing['entries']:
+            entry = next((e for e in listing['entries'] if e.get('h3', {}).get('main', True)), listing['entries'][0])
         if entry is None:
             return {'ui': {'s3f_folder': [listing['folder']], 's3f_folder_entry': [None],
                 's3f_timeline_status': ['No pending videos · open the folder to review completed or ignored clips.']},
@@ -405,7 +437,7 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
         workflow = extra.setdefault('workflow', {}); nodes = workflow.setdefault('nodes', [])
         node = next((n for n in nodes if str(n['id']) == str(kwargs.get('unique_id'))), None)
         if node is None:
-            node = {'id': kwargs.get('unique_id'), 'type': 'S3F_FolderTimeline'}; nodes.append(node)
+            node = {'id': kwargs.get('unique_id'), 'type': type(self).__name__}; nodes.append(node)
         properties = node.setdefault('properties', {})
         if properties.get('s3f_timeline_session') != entry['timeline']:
             if operation != 'prepare':
@@ -414,6 +446,11 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
         properties['s3f_timeline_session'] = entry['timeline']
         entry = folders.open(listing['folder'], entry['id'])
         if operation=='automatic':
+            if self.LIBRARY_KIND == 'h3':
+                from .sam3d_funscript.h3_project import preset as h3_preset
+                submitted.setdefault('automatic_options', {})['confidence'] = h3_preset(listing['root'], panel=entry['h3']['panel_id'])['settings']['confidence']
+                submitted['automatic_options']['min_track_confidence'] = submitted['automatic_options']['confidence']
+                kwargs['plan_json'] = json.dumps(submitted)
             preset=folders.clip_preset(listing['folder'],entry)
             if preset:
                 for key in ('sample_fps','batch_size','cut_sensitivity'):kwargs[key]=preset[key]
@@ -427,3 +464,14 @@ class S3F_FolderTimeline(S3F_ProcessingTimeline):
             if editor: result['result'] = (editor['project'], result['result'][1])
         result['ui'].update(s3f_folder=[listing['folder']], s3f_folder_entry=[entry])
         return result
+
+
+class S3F_H3ProjectTimeline(S3F_FolderTimeline):
+    LIBRARY_KIND = 'h3'
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs['required']['folder_path'] = ('STRING', {'default': '', 'tooltip': 'H3 Animator project directory containing project.json and index.json. Uses active pages, panels and completed takes in reading order.'})
+        inputs['required'].pop('include_subfolders')
+        return inputs

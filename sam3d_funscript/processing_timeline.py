@@ -620,8 +620,11 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             continue
         region_jobs = [deepcopy(j) for j in jobs if j["region_id"] == region["id"]]
         dependencies = {j["stabilization_id"] for j in region_jobs} - {None}
+        from .processing_split import signature_region
+        signature_source, inherited_dependencies = signature_region(region, state['regions'].get(region['id']), stabilizers)
+        signature_dependencies = dependencies if inherited_dependencies is None else inherited_dependencies
         tracker_identity = {}
-        for k in sorted(dependencies):
+        for k in sorted(signature_dependencies):
             reference = stabilizers[k]['reference']
             if reference.get('transform_mode') == 'orientation':
                 from .orientation import VERSION as orientation_version
@@ -630,22 +633,22 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                 p = resolve_checkpoint(checkpoint, reference.get('tracking_mode', 'online'))
                 tracker_identity[k] = fingerprint(p) if p else None
         # Preserve the existing signature for unchanged, online-only plans.
-        if not dependencies:
+        if not signature_dependencies:
             tracker_identity = None
         elif all(stabilizers[k]['reference'].get('transform_mode') != 'orientation' and
-                 stabilizers[k]["reference"].get("tracking_mode", "online") == "online" for k in dependencies):
+                 stabilizers[k]["reference"].get("tracking_mode", "online") == "online" for k in signature_dependencies):
             tracker_identity = next(iter(tracker_identity.values()))
-        signature = digest({"version": VERSION, "region": _stable(region), "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)],
+        signature = digest({"version": VERSION, "region": _stable(signature_source), "stabilization": [_stable(stabilizers[k]) for k in sorted(signature_dependencies)],
                             "model": model, "checkpoint": tracker_identity,
                             "sample_fps": sample_fps, "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
-        pose_region = {k: v for k, v in _stable(region).items() if k not in ("anchor", "additional_anchors", "settings", "candidate_people", "automatic")}
+        pose_region = {k: v for k, v in _stable(signature_source).items() if k not in ("anchor", "additional_anchors", "settings", "candidate_people", "automatic")}
         if region.get('candidate_people'):
             pose_region.pop('person', None)  # All ROI slots are already cached.
         pose_signature = digest({"region": pose_region,
-            "stabilization": [_stable(stabilizers[k]) for k in sorted(dependencies)], "model": model,
+            "stabilization": [_stable(stabilizers[k]) for k in sorted(signature_dependencies)], "model": model,
             "checkpoint": tracker_identity, "sample_fps": sample_fps,
             "mask": [fingerprint(mask_video_range[0]), *map(str, mask_video_range[1:])] if mask_video_range else None})
-        mask_dependencies = {k: state.get("masks", {}).get(k, {}).get("id") for k in sorted(dependencies)
+        mask_dependencies = {k: state.get("masks", {}).get(k, {}).get("id") for k in sorted(signature_dependencies)
                              if stabilizers[k]['reference'].get('transform_mode') != 'orientation' and
                              stabilizers[k]["reference"].get("point_mask", {}).get("strokes")}
         if mask_dependencies:
@@ -672,7 +675,9 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
             continue
         if not entry or entry["signature"] != signature:
             retained = entry.get("jobs", []) if entry and entry.get("pose_signature") == pose_signature else []
-            entry = {"signature": signature, "pose_signature": pose_signature, "jobs": retained, "region": deepcopy(region)}
+            origin = entry.get('split_origin') if entry and inherited_dependencies is not None else None
+            entry = {"signature": signature, "pose_signature": pose_signature, "jobs": retained, "region": deepcopy(region),
+                     **({'split_origin': origin} if origin else {})}
             state["regions"][region["id"]] = entry
         entry["stabilization_regions"] = [deepcopy(stabilizers[k]) for k in sorted(dependencies)]
         row.update(region=deepcopy(entry["region"]), stabilization_regions=deepcopy(entry["stabilization_regions"]))
@@ -770,6 +775,14 @@ def run_timeline(info, plan, root, model_file, sample_fps=0, batch_size=8, check
                     continue
                 raise
         records = [r for r in entry["jobs"] if Path(r["path"]).is_file() and r.get('stabilization_id') not in stabilization_errors]
+        if records and entry.get('split_origin') and entry.get('project_path') and not pending:
+            paths = [entry['project_path'], *entry.get('additional_project_paths', [])]
+            if all(Path(path).is_file() for path in paths):
+                projects.extend(json.loads(Path(path).read_text()) for path in paths)
+                coverage = _coverage(records)
+                row.update(state='complete' if coverage == [[region['start_ms'], region['end_ms']]] else 'partial',
+                           coverage=coverage, project_path=paths[0], anchors=[region['anchor'], *region['additional_anchors']])
+                continue
         if records:
             emit("assembly", region["id"])
             try:

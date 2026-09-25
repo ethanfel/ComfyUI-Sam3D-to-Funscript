@@ -1,0 +1,4 @@
+# Optional local CPU tagging in Folder workspace.
+onnxruntime>=1.17
+huggingface_hub
+Pillow

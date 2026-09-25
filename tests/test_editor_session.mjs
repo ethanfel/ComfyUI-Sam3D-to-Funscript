@@ -212,3 +212,23 @@ test('An edit made while checking the Timeline is kept until the next refresh',a
     validate=async()=> 'new.mp4 has no motion result yet';await window.s3fUpdate();
     assert.equal(a.project,null);assert.equal(h.state.project.scripts.L0.actions[0].pos,37);
 });
+
+test('Prefetched editors stay read-only until promoted and revalidate newer drafts',async t=>{
+    const h=harness(t);window.frameElement={dataset:{prefetch:'true'}};
+    const a=h.editor();await a.session.load();changeCurve(a,99);await a.session.flush();
+    assert.equal(h.posts,0);assert.equal(h.timers.size,0);
+    a.channel.onmessage({data:{type:'prepare-run',request:'test'}});
+    assert.equal(a.channel.messages?.length||0,0,'Preload does not participate in workflow saves');
+    h.state.revision++;h.state.project.scripts.L0.actions[0].pos=46;
+    await window.s3fUpdate();assert.equal(a.project.scripts.L0.actions[0].pos,46);
+    delete window.frameElement.dataset.prefetch;
+    changeCurve(a,71);await a.session.flush();assert.equal(h.posts,1);
+    assert.equal(h.state.project.scripts.L0.actions[0].pos,71);
+});
+
+test('Prefetch never creates a missing editor draft',async t=>{
+    const h=harness(t);window.frameElement={dataset:{prefetch:'true'}};
+    globalThis.fetch=async()=>Response.json(null);
+    let fallback=false;const a=h.editor();await a.session.load(()=>{fallback=true;return fixture()});
+    assert.equal(fallback,false);assert.equal(a.project,null);assert.equal(h.posts,0);
+});

@@ -41,6 +41,65 @@ class FolderQueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):queue.change(self.folder,'add',{'items':[{'id':'4'},{'id':'invalid'}]})
         self.assertEqual(len(queue.read(self.folder)['items']),3)
 
+    def test_set_aside_preserves_draft_files_and_category_across_reloads(self):
+        self.network();queue=self.queue([1,2,3])
+        queue.run(self.folder,queue.start(self.folder)['ticket'],lambda entry:None)
+        entries=self.library.catalogue(self.folder)['items']
+        first=entries['1'][0];self.edit(first)
+        before={p:p.read_bytes() for p in self.videos.rglob('*') if p.is_file()}
+        editor_before=self.folders.editors.path(first['editor_session']).read_bytes()
+        queue.change(self.folder,'set_aside',{'items':[{'id':'1','clip':first['id'],'category':'Separate/Long'},{'id':'2'}]})
+        library=fixtures.CivitaiLibrary(self.library.root).catalogue(self.folder)
+        self.assertEqual(set(library['set_aside']),{'1','2'})
+        self.assertEqual(library['set_aside']['1']['category'],'Separate/Long')
+        self.assertEqual(library['set_aside']['2']['category'],'Dance')
+        self.assertEqual([r['id'] for r in library['queue']['items']],['3'])
+        self.assertEqual(before,{p:p.read_bytes() for p in before})
+        self.assertEqual(editor_before,self.folders.editors.path(first['editor_session']).read_bytes())
+        self.assertEqual(library['items']['1'][0]['status'],'pending')
+        with self.assertRaisesRegex(ValueError,'set-aside'):
+            queue.change(self.folder,'add',{'items':[{'id':'1'}]})
+        queue.change(self.folder,'restore_review',{'items':[{'id':'1'}]})
+        self.assertNotIn('1',self.library.catalogue(self.folder)['set_aside'])
+        self.assertEqual(self.library.catalogue(self.folder)['items']['1'][0]['category'],'Separate/Long')
+        self.assertEqual([r['id'] for r in queue.read(self.folder)['items']],['3'],'Restoring must not auto-queue')
+
+    def test_set_aside_during_processing_finishes_active_and_skips_waiting(self):
+        self.network();queue=self.queue([1,2,3]);calls=[]
+        def process(entry):
+            calls.append(entry['civitai_id'])
+            if len(calls)==1:
+                queue.change(self.folder,'set_aside',{'items':[{'id':'1'},{'id':'2'}]})
+        queue.run(self.folder,queue.start(self.folder)['ticket'],process)
+        self.assertEqual(calls,['1','3'])
+        library=self.library.catalogue(self.folder)
+        self.assertEqual(set(library['set_aside']),{'1','2'})
+        self.assertEqual(next(r for r in library['queue']['items'] if r['id']=='1')['state'],'ready')
+        self.assertNotIn('2',library['items'],'Waiting clip was never downloaded')
+
+    def test_folder_batches_also_skip_set_aside_clips_and_keep_manual_review(self):
+        for id in (1,2,3):self.local(f'Neutral_civitai_{id}.mp4')
+        entries=self.library.catalogue(self.folder)['items'];queue=FolderQueue(self.library.root)
+        queue.change(self.folder,'set_aside',{'items':[{'id':'1','clip':entries['1'][0]['id']}]})
+        self.assertEqual(len(self.folders.batch_entries(self.folder)),2)
+        self.assertEqual(self.folders.batch_entries(self.folder,clip_ids=[entries['1'][0]['id']],reprocess=True),[])
+        opened=self.folders.open(self.folder,entries['1'][0]['id'])
+        self.assertTrue(opened['civitai_set_aside'],'The video can still open for manual editing')
+        calls=[]
+        def process(entry):
+            calls.append(entry['id'])
+            queue.change(self.folder,'set_aside',{'items':[{'id':'3','clip':entries['3'][0]['id']}]})
+        self.folders.process_batch(self.folder,'',process)
+        self.assertEqual(calls,[entries['2'][0]['id']],'An already running folder batch checks new exclusions')
+
+    def test_set_aside_validates_whole_selection_before_mutating(self):
+        self.local('Neutral_civitai_9.mp4');entry=self.library.catalogue(self.folder)['items']['9'][0]
+        queue=self.queue([1,2]);before=self.folders.read(self.folder)
+        for bad in ({'id':'invalid'},{'id':'2','category':'../escape'},{'id':'2','clip':entry['id']},{'id':'2','site':'localhost'}):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):
+                queue.change(self.folder,'set_aside',{'items':[{'id':'1'},bad]})
+            self.assertEqual(self.folders.read(self.folder),before)
+
     def test_background_worker_downloads_generates_and_keeps_temporary_drafts(self):
         fetch,transfer=self.network();queue=self.queue([1,2]);ticket=queue.start(self.folder)['ticket'];calls=[]
         result=queue.run(self.folder,ticket,lambda entry:calls.append(entry['id']))
@@ -64,6 +123,26 @@ class FolderQueueTests(unittest.TestCase):
                 queue.change(self.folder,'first',{'key':last['key']})
         queue.run(self.folder,queue.start(self.folder)['ticket'],process)
         self.assertEqual(calls,['1','4','3'])
+
+    def test_new_selection_after_completed_queue_replaces_stale_queued_report(self):
+        self.network();queue=self.queue([1])
+        queue.run(self.folder,queue.start(self.folder)['ticket'],lambda entry:None)
+        queue.change(self.folder,'clear_finished',{})
+        queue.change(self.folder,'add',{'items':[{'id':'2'}]})
+        self.assertEqual(queue.read(self.folder)['stage'],'idle')
+        listing=self.folders.scan(self.folder)
+        self.assertEqual((listing['batch']['stage'],listing['batch']['total']),('idle',1))
+        self.assertEqual(queue.start(self.folder)['stage'],'queued')
+
+    def test_idle_queue_does_not_hide_a_real_local_batch_or_block_additions(self):
+        queue=self.queue([1]);state=self.folders.read(self.folder)
+        state['batch']=dict(stage='running',total=7,current='Local fixture',current_id=None,completed=[],failed=[],skipped=[],deferred=[])
+        self.folders.write(state);BATCH_RUNNING.add(self.folder);self.addCleanup(BATCH_RUNNING.discard,self.folder)
+        queue.change(self.folder,'add',{'items':[{'id':'2'}]})
+        self.assertEqual([item['id'] for item in queue.read(self.folder)['items']],['1','2'])
+        listing=self.folders.scan(self.folder)
+        self.assertEqual((listing['batch']['stage'],listing['batch']['total']),('running',7))
+        with self.assertRaises(PlanConflict):queue.start(self.folder)
 
     def test_pause_resume_and_retry_keep_completed_work(self):
         _,transfer=self.network();queue=self.queue([1,2,3]);calls=[]

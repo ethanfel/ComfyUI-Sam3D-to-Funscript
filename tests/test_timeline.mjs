@@ -3,7 +3,7 @@ import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {evaluate} from "../assets/curve.mjs";
 import {generatePattern,rememberPattern} from "../assets/patterns.mjs";
-import {initializeTimeline, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, trackCoverage, boundedSelection, sceneCutTimes} from "../assets/timeline.mjs";
+import {initializeTimeline, latestTrack, recreatedTrackChoices, missingLatestSources, defaultTrackSource, restoreLatestTracks, visibleTrackRanges, motionSections, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, spliceActions, applyTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, trackCoverage, boundedSelection, sceneCutTimes} from "../assets/timeline.mjs";
 import {syncProjectInputs, migrateProjectInputs} from "../web/projects.mjs";
 
 const main=[{at:0,pos:10},{at:127,pos:91},{at:522,pos:7},{at:1000,pos:62},{at:2000,pos:23}];
@@ -34,6 +34,39 @@ test("Cut guards, short blends, video-edge replacement, gaps and invalid ranges"
     const blend=spliceActions(main,gap,100,1000,"blend",50);
     assert.equal(evaluate(blend,599),30);assert.equal(evaluate(blend,600),85);
     for(const [a,b,w] of [[5,5,200],[-1,5,200],[0,5,-2],[0,NaN,200]])assert.throws(()=>spliceActions(main,source,a,b,"blend",w));
+});
+
+test("Copying through video edges preserves the source endpoints and only blends the interior join",()=>{
+    const end=14531, old=[{at:0,pos:85},{at:end,pos:85}], motion=[{at:0,pos:12},{at:500,pos:35},{at:14000,pos:25},{at:end,pos:12}];
+    for(const [start,stop] of [[0,end],[7281,end],[0,7000]]){
+        const joined=spliceActions(old,motion,start,stop,'blend',200,[],end);
+        if(start===0)assert.equal(evaluate(joined,0),12);else assert.equal(evaluate(joined,start),85);
+        if(stop===end){
+            assert.equal(evaluate(joined,end),12);
+            for(let at=end-200;at<=end;at++)assert.ok(Math.abs(evaluate(joined,at)-evaluate(motion,at))<=.51);
+        }else assert.equal(evaluate(joined,stop),85);
+        assert.ok(joined.every(p=>p.at<=end));
+    }
+});
+
+test("Replacing the final source section drops fractional leftovers without changing earlier sections",()=>{
+    const project=fixture();initializeTimeline(project);
+    project.metadata.duration_ms=14531.25;
+    project.timeline.sources[0].data.metadata.duration_ms=14531.25;
+    const track=project.timeline.tracks[0],main=project.timeline.main.L0;
+    project.scripts.L0.actions=[{at:0,pos:85},{at:14531,pos:85}];
+    track.script.actions=[{at:0,pos:12},{at:14000,pos:25},{at:14531,pos:12}];
+    const section={source:track.source,axis:'L0',settings:structuredClone(track.settings),join:'blend',blend_ms:200};
+    main.regions=[{...section,start:0,end:7281},{...section,start:7281,end:14531.25}];
+    const first=structuredClone(main.regions[0]);
+    applyTrack(project,track,'L0',{start:7281,end:14531});
+    assert.deepEqual(main.regions.map(r=>[r.start,r.end]),[[0,7281],[7281,14531]]);
+    assert.deepEqual(main.regions[0],first);
+    assert.equal(evaluate(project.scripts.L0.actions,14531),12);
+    // Recopying also cleans up a sliver already left by an older editor.
+    main.regions.push({...section,start:14531,end:14531.25});
+    applyTrack(project,track,'L0',{start:7281,end:14531});
+    assert.equal(main.regions.length,2);
 });
 
 function fixture(){
@@ -252,3 +285,34 @@ for(const file of process.argv.slice(2)){
     });
 }
 function validate(actions){assert.ok(actions.every((a,i)=>Number.isInteger(a.at)&&Number.isInteger(a.pos)&&a.pos>=0&&a.pos<=100&&(!i||a.at>actions[i-1].at)));}
+
+function replacementFixture(){
+    const p=fixture();initializeTimeline(p);
+    const old=p.timeline.sources[0];old.input='region:old:mouth';old.data.metadata.processing_region={id:'old',name:'Scene 1',start_ms:0,end_ms:1000};old.data.metadata.duration_ms=1000;p.metadata={...p.metadata,duration_ms:2000};
+    const newest=structuredClone(old);newest.id='replacement';newest.input='region:full:pelvis';newest.data.config.target_anchor='pelvis';newest.data.metadata.duration_ms=2000;
+    newest.data.metadata.processing_region={id:'full',name:'Tracking 1',start_ms:0,end_ms:2000};
+    p.timeline.sources.push(newest);p.timeline.latest={[newest.input]:newest.id};return p;
+}
+test('Deleted latest rows can be restored without rerunning or changing Main, edits, and saved sources',()=>{
+    const p=replacementFixture(),old=p.timeline.tracks[0];old.edited=true;old.script.actions[0].pos=37;
+    const before=structuredClone(p);
+    assert.equal(defaultTrackSource(p,old),'replacement');assert.equal(missingLatestSources(p).length,1);
+    const [restored]=restoreLatestTracks(p);
+    assert.equal(restored.source,'replacement');assert.equal(missingLatestSources(p).length,0);
+    assert.deepEqual(restoreLatestTracks(p),[],'Repeated restore does not duplicate sources');
+    assert.deepEqual(p.scripts,before.scripts);assert.deepEqual(p.timeline.main,before.timeline.main);
+    assert.deepEqual(p.timeline.sources,before.timeline.sources);assert.deepEqual(p.timeline.tracks[0],before.timeline.tracks[0]);
+    p.timeline.tracks=[];assert.equal(defaultTrackSource(p),'replacement');assert.equal(restoreLatestTracks(p).length,1);
+});
+test('Merged full-length detection replaces old scene boundaries while history stays selectable',()=>{
+    const p=replacementFixture(),old=p.timeline.tracks[0],previous=structuredClone(p);
+    previous.timeline.latest={'region:old:mouth':old.source};
+    const [fresh]=restoreLatestTracks(p);
+    assert.equal(latestTrack(p,old).id,fresh.id,'A unique rebuilt zone can use a different anchor');
+    assert.equal(recreatedTrackChoices(p,previous).get(old.id),fresh.id);
+    assert.deepEqual(motionSections(visibleTrackRanges(p,fresh.id),[fresh.id]),[{id:fresh.id,start:0,end:2000,choices:[fresh.id]}]);
+    assert.ok(visibleTrackRanges(p,old.id).some(r=>r.id===old.id),'Explicitly choosing history shows that curve');
+    const src=p.timeline.sources.find(s=>s.id===fresh.source);src.data.metadata.duration_ms=700;
+    const ranges=visibleTrackRanges(p,fresh.id);
+    assert.ok(ranges.some(r=>r.id===old.id&&r.start===700&&r.end===1000),'Unreplaced old-only coverage remains available');
+});

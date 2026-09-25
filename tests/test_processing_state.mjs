@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {trackingResultCurrent,processingScope,planForScope} from '../assets/processing-state.mjs';
+import {trackingResultCurrent,processingScope,planForScope,trackingSplits,flushSplitEditor} from '../assets/processing-state.mjs';
 import {restoreCandidate} from '../assets/timeline-restore.mjs';
 import {frameClock} from '../assets/frame-clock.mjs';
 const r={id:'t',name:'Track',start_ms:0,end_ms:2000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:30,settings:{},additional_anchors:[]};
@@ -46,6 +46,22 @@ for(const reference of [
 ])assert.throws(()=>restoreCandidate({...referencePlan,stabilization:[{...referencePlan.stabilization[0],reference}]},info,clock));
 assert.equal(restoreCandidate({...referencePlan,stabilization:[{...referencePlan.stabilization[0],reference:{...stable.reference,points:[]}}]},info,clock).stabilization[0].reference.points.length,0,'unfinished references can be restored as drafts');
 console.log('Processing scope, output freshness, source-bound restore and malformed plan rejection passed');
+
+const divided={...plan,tracking:[{...r,end_ms:1000},{...r,id:'right',start_ms:1000}]};
+assert.deepEqual([...trackingSplits(plan,divided).keys()],['t','right']);
+assert.equal(trackingSplits(plan,{...divided,tracking:[divided.tracking[0],{...divided.tracking[1],anchor:'mouth'}]}).size,0,'changed anchor is not a boundary-only split');
+assert.equal(trackingSplits(plan,{...divided,stabilization:[stable]}).size,0,'changed stabilization invalidates the old detection');
+const flushChannel=new BroadcastChannel('s3f-editor-split-fixture');let flushFailed=false,notifications=0;
+flushChannel.onmessage=({data})=>{
+    if(data.type!=='prepare-run')return;
+    notifications++;assert.equal(data.project,undefined);
+    flushChannel.postMessage({type:'preparing',request:data.request,editor:'test'});
+    flushChannel.postMessage({type:'prepared',request:data.request,editor:'test',...(flushFailed?{error:'unsaved curve'}:{})});
+};
+try{
+    await flushSplitEditor('split-fixture');assert.equal(notifications,1);
+    flushFailed=true;await assert.rejects(flushSplitEditor('split-fixture'),/unsaved curve/);
+}finally{flushChannel.close();}
 
 const similarityPlan=structuredClone(referencePlan);similarityPlan.stabilization[0].reference.transform_mode="similarity";
 assert.equal(restoreCandidate(similarityPlan,info,clock).stabilization[0].reference.transform_mode,"similarity");

@@ -1,8 +1,8 @@
 // Queue controls stay separate from gallery selection and manual approval.
-export function civitaiQueue(root,{change,start,review,thumbnail,error}){
+export function civitaiQueue(root,{change,start,review,edit,setAside,thumbnail,error}){
     root.innerHTML=`<details class="cv-queue" open><summary>Processing queue · <span data-count>Empty</span></summary>
     <p class="hint">Download if needed → generate draft funscript → review and approve into a category.</p>
-    <div class="controls"><button data-start class="primary">Start queue</button><button data-pause>Pause after current clip</button><button data-review>Review ready clips</button><button data-clear>Clear finished</button></div>
+    <div class="controls"><button data-start class="primary">Start queue</button><button data-pause>Pause after current clip</button><button data-review>Review ready clips</button><button data-edit-review>Edit review list</button><button data-clear>Clear finished</button></div>
     <p data-status role="status"></p><ol class="cv-queue-list"></ol></details>`;
     const $=key=>root.querySelector(`[data-${key}]`),list=root.querySelector('ol');
     const labels={waiting:'Waiting',downloading:'Downloading',processing:'Generating funscript',ready:'Ready for review',approved:'Approved',error:'Failed',interrupted:'Interrupted',deferred:'Open for review',skipped:'Skipped'};
@@ -13,12 +13,14 @@ export function civitaiQueue(root,{change,start,review,thumbnail,error}){
         $('start').disabled=busy||running||!waiting;$('start').textContent=['paused','interrupted'].includes(queue.stage)?'Resume queue':'Start queue';
         $('pause').disabled=busy||!running||queue.pause;$('pause').textContent=queue.pause&&running?'Pausing after current clip…':'Pause after current clip';
         $('review').disabled=busy||!queue.items.some(i=>i.state==='ready'&&i.clip);
+        $('edit-review').disabled=!edit||!queue.items.some(i=>!['approved','skipped'].includes(i.state));
         $('clear').disabled=busy||!queue.items.some(i=>['ready','approved','skipped'].includes(i.state));
         for(const button of list.querySelectorAll('button'))button.disabled=busy;
     }
     $('start').onclick=()=>action(start);$('pause').onclick=()=>action(()=>change('pause'));
     $('clear').onclick=()=>action(()=>change('clear_finished'));
     $('review').onclick=()=>action(()=>review(queue.items.filter(i=>i.state==='ready'&&i.clip)));
+    $('edit-review').onclick=()=>edit();
     return {update(value){
         queue=value||{stage:'idle',items:[]};
         const next=JSON.stringify(queue);if(next===signature){buttons();return;}signature=next;
@@ -36,6 +38,7 @@ export function civitaiQueue(root,{change,start,review,thumbnail,error}){
             if(['ready','approved'].includes(item.state)&&item.clip)button('Review',()=>review([item]));
             if(['error','interrupted','deferred'].includes(item.state))button('Retry',()=>change('retry',item.key));
             if(item.state==='waiting')button('Do next',()=>change('first',item.key));
+            if(setAside&&queue.set_aside_available&&!['downloading','processing'].includes(item.state))button('Set aside',()=>setAside([item]));
             if(!['downloading','processing'].includes(item.state))button('Remove',()=>change('remove',item.key));
             row.append(controls);return row;
         }));buttons();

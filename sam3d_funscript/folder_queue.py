@@ -22,6 +22,9 @@ class FolderQueue:
         queue = state.setdefault('processing_queue', {'stage': 'idle', 'items': []})
         changed=False
         for item in queue['items']:
+            aside = state.get('civitai_set_aside', {}).get(item['id'])
+            if aside and item.get('clip') and aside.get('clip') != item['clip']:
+                aside.update(clip=item['clip'], name=item['name']);changed=True
             decision=state.get('decisions',{}).get(item.get('clip'),{})
             managed=state.get('civitai',{}).get(item.get('clip'))
             if managed and managed['name']!=item['name']:
@@ -45,7 +48,7 @@ class FolderQueue:
             return copy.deepcopy(queue)
 
     def change(self, folder, action, body):
-        from .civitai_library import CivitaiLibrary, video_id, category_name, SITES
+        from .civitai_library import CivitaiLibrary, video_id, category_name, SITES, ID_PATTERN
         with LOCK:
             state, queue = self._state(folder)
             items = queue['items']
@@ -58,6 +61,8 @@ class FolderQueue:
                 additions = []
                 for row in rows:
                     identifier = video_id(row.get('id', ''))
+                    if identifier in state.get('civitai_set_aside', {}):
+                        raise ValueError('Return set-aside clips to review before adding them to the queue.')
                     category = category_name(row['category']) if row.get('category') else ''
                     site = row.get('site', 'civitai.red')
                     if site not in SITES:raise ValueError('Invalid Civitai site.')
@@ -77,6 +82,39 @@ class FolderQueue:
                 state, queue = self._state(folder)
                 queue['items'].extend(additions)
                 if queue['stage']=='complete' and any(item['state']=='waiting' for item in additions):queue['stage']='idle'
+            elif action in ('set_aside', 'restore_review'):
+                rows = body.get('items')
+                if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
+                    raise ValueError('Select clips to set aside or return to review.')
+                saved = copy.deepcopy(state.get('civitai_set_aside', {}))
+                for row in rows:
+                    identifier = video_id(row.get('id', ''))
+                    if action == 'restore_review':
+                        restored = saved.pop(identifier, {})
+                        managed = state.get('civitai', {}).get(restored.get('clip'))
+                        if managed and managed.get('temporary'):
+                            managed['category'] = restored['category']
+                        continue
+                    queued = next((item for item in items if item['id'] == identifier), {})
+                    old = saved.get(identifier, {})
+                    clip = row.get('clip') or queued.get('clip') or old.get('clip')
+                    name = queued.get('name') or old.get('name') or 'Civitai ' + identifier
+                    if clip:
+                        entry, path = self.folders.entry(folder, clip)
+                        match = ID_PATTERN.search(path.name)
+                        if not match or match.group(1) != identifier:
+                            raise ValueError('The selected copy belongs to a different Civitai video.')
+                        name = entry['name']
+                    category = row.get('category', queued.get('category', old.get('category', '')))
+                    category = category_name(category) if category else ''
+                    site = row.get('site', queued.get('site', old.get('site', 'civitai.red')))
+                    if site not in SITES:raise ValueError('Invalid Civitai site.')
+                    saved[identifier] = dict(id=identifier, clip=clip, name=name, category=category, site=site)
+                state['civitai_set_aside'] = saved
+                # An active clip finishes safely. Waiting clips cannot be picked
+                # up between this decision and the worker's next iteration.
+                if action == 'set_aside':
+                    queue['items'] = [item for item in items if item['id'] not in saved or item['state'] in IN_FLIGHT]
             elif action == 'pause':
                 queue['pause'] = True
                 if queue['stage'] != 'running':queue['stage'] = 'paused'
@@ -86,6 +124,8 @@ class FolderQueue:
                 item = next((item for item in items if item['key'] == body.get('key')), None)
                 if item is None:raise ValueError('This clip is no longer in the queue.')
                 if item['state'] in IN_FLIGHT:raise PlanConflict('This clip is active. Pause after it finishes.')
+                if action != 'remove' and item['id'] in state.get('civitai_set_aside', {}):
+                    raise ValueError('Return set-aside clips to review before queuing them again.')
                 if action == 'remove':items.remove(item)
                 elif action == 'retry':
                     if item['state'] not in RETRYABLE:raise ValueError('Only failed or interrupted clips need retrying.')

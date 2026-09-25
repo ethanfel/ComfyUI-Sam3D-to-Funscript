@@ -49,6 +49,25 @@ export function validateInterval(plan, lane, id, start, end, info) {
     const overlap = (plan[lane] || []).find(item => item.id !== id && item.enabled !== false && start < item.end_ms - .01 && end > item.start_ms + .01);
     if (overlap) throw new Error(`This overlaps ${overlap.name || "another region"} in the same lane. Use adjacent regions or disable the other region first.`);
 }
+function adjacentBounds(regions, id, start, end) {
+    const neighbours=regions.filter(r=>r.id!==id&&r.enabled!==false);
+    return {start_ms:neighbours.find(r=>Math.abs(r.end_ms-start)<=TIME_EPSILON_MS)?.end_ms??start,
+        end_ms:neighbours.find(r=>Math.abs(r.start_ms-end)<=TIME_EPSILON_MS)?.start_ms??end};
+}
+export function alignEditedBoundaries(plan, saved) {
+    // Recovered browser drafts can contain a rounded frame edge beside an
+    // automatic cut. Keep saved/locked regions exact; align only edited edges.
+    let result=plan;
+    for(const lane of LANES)for(const region of plan[lane]){
+        if(region.enabled===false||region.locked)continue;
+        const before=saved[lane].find(r=>r.id===region.id);
+        if(before&&before.start_ms===region.start_ms&&before.end_ms===region.end_ms)continue;
+        const bounds=adjacentBounds(result[lane],region.id,region.start_ms,region.end_ms);
+        if(bounds.start_ms!==region.start_ms||bounds.end_ms!==region.end_ms)
+            result={...result,[lane]:result[lane].map(r=>r.id===region.id?{...r,...bounds}:r)};
+    }
+    return result;
+}
 export function changeRegion(plan, id, patch, info, clock=null) {
     const found = regionById(plan, id);
     if (!found) throw new Error("Select a region first.");
@@ -56,7 +75,10 @@ export function changeRegion(plan, id, patch, info, clock=null) {
     if (region.locked && !(Object.keys(patch).length === 1 && patch.locked === false)) throw new Error("This region is locked. Unlock it before editing.");
     const updated = {...region, ...clone(patch)};
     if (lane === "tracking") updated.additional_anchors = [...new Set(updated.additional_anchors || [])].filter(anchor => anchor !== updated.anchor);
-    if (updated.enabled !== false) validateInterval(plan, lane, id, updated.start_ms, updated.end_ms, info);
+    if (updated.enabled !== false) {
+        Object.assign(updated,adjacentBounds(plan[lane],id,updated.start_ms,updated.end_ms));
+        validateInterval(plan, lane, id, updated.start_ms, updated.end_ms, info);
+    }
     const changedBounds=updated.start_ms!==region.start_ms||updated.end_ms!==region.end_ms;
     if (lane === "stabilization" && changedBounds) {
         updated.reference=sliceReference(updated.reference,region,updated.start_ms,updated.end_ms,clock);
@@ -137,7 +159,7 @@ export function validateReference(region) {
 export function regionRows(regions) {
     const rows = [], positions = new Map();
     for (const region of [...regions].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms)) {
-        let row = rows.findIndex(end => end <= region.start_ms);
+        let row = rows.findIndex(end => end <= region.start_ms + TIME_EPSILON_MS);
         if (row < 0) row = rows.length;
         rows[row] = region.end_ms; positions.set(region.id, row);
     }
@@ -159,6 +181,7 @@ export function isolateSelection(plan, id, newId, info, clock=null) {
 export function regionFromSelection(plan,lane,newId,info,clock=null){
     let [a,b]=selectionRange(plan,info);
     if(!LANES.includes(lane)||b-a<1)throw new Error("Select a nonempty range before making a region.");
+    ({start_ms:a,end_ms:b}=adjacentBounds(plan[lane],null,a,b));
     const overlaps=plan[lane].filter(r=>r.enabled!==false&&overlapsRange(r,a,b));
     if(overlaps.length===1&&a>=overlaps[0].start_ms-TIME_EPSILON_MS&&b<=overlaps[0].end_ms+TIME_EPSILON_MS){
         const region=overlaps[0];

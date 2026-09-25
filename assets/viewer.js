@@ -1,11 +1,11 @@
 import {AXES, SUFFIX, evaluate, rebuildAxis, roundEven, makeZip, validateReference, referenceAgreement, motionForAxis, autoFitAxis, fitComponentAxis, bodyFrame, invertAxis, axisValue, reduceActions} from "./curve.mjs";
-import {initializeTimeline, trackLabel, processingTrackState, latestTrack, recreatedTrackChoices, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries, motionSections, sectionAt} from "./timeline.mjs";
+import {initializeTimeline, trackLabel, processingTrackState, latestTrack, recreatedTrackChoices, missingLatestSources, defaultTrackSource, restoreLatestTracks, visibleTrackRanges, sourceChoices, sourceProject, newTrack, assignTrack, trackProject, editProject, mainPoseProject, timelineState, restoreTimeline, trackCoverage, boundedSelection, sceneCutTimes, fitSelectionTrack, copyTrackToMain, trackCopyAxes, selectionTrack, selectionProblem, reductionBoundaries, motionSections, sectionAt} from "./timeline.mjs";
 import {timelineView, zoomView, panView, followView, sliderSpan, spanSlider, formatTime, rulerTicks, visibleRange, displayIndices} from "./viewport.mjs";
 import {cutIndex, neighboringCut, cutSideRange} from "./cut-markers.mjs";
 import {smoothActions} from "./curve-edit.mjs";
 import {PATTERNS, RHYTHM_PATTERNS, rhythmValue, generatePattern, continuePattern, rememberPattern, patternRemovalProblem, removePattern} from "./patterns.mjs";
 import {editorSession, sameVideoSource} from "./editor-session.mjs";
-import {DEVICE_INFO, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
+import {DEVICE_INFO, buildDeviceWireframe, projectWireframe, drawDeviceWireframe} from "./device-previews/device-wireframes.mjs";
 import {DEVICE_PROFILES, deviceSettings, buildDeviceOutput, deviceOutputFiles} from "./device-output.mjs";
 import {originalPixel, previewMediaTime, previewTimelineTime} from "./video-preview.mjs";
 import {decodeBeatAudio, analyzeBeatAudio} from "./audio-analysis.mjs";
@@ -33,7 +33,7 @@ let sectionPreferences=[],sectionBlocks=[],sectionRanges=[],audioSourceSections=
 let folderComparison=null,folderIssues=[];
 const sectionSurfaces=new Map();
 const viewKey = (()=>{const params=new URLSearchParams(location.search);return 's3f-timeline-view:'+(params.get('session')||params.get('project')||location.pathname);})();
-function previewState() {return {...project.preview,beat_sound:$("beatSound").value,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
+function previewState() {return {...project.preview,beat_sound:$("beatSound").value,source_layout:$("sourceLayout").value,section_choices:sectionPreferences,sections_collapsed:$("sectionLane").classList.contains("collapsed"),device:$("device").value,device_layout:$("deviceLayout").value,device_corner:$("devicePanel").dataset.corner,device_position:devicePosition&&{...devicePosition},timeline_view:{...view},show_cuts:$("showSceneCuts").checked,main_collapsed:$("mainLane").classList.contains("collapsed"),wide_layout:$("wideLayout").checked,loop_selection:$("loopSelection").checked};}
 $("outputProfile").replaceChildren(new Option("Off · authored only","none"),...DEVICE_PROFILES.map(p=>new Option(p.label,p.id)));
 function deviceOutputControls() {
     const settings=project.device_output??deviceSettings();
@@ -125,6 +125,7 @@ function timelineWheel(event, canvas) {
 }
 let orbit = {yaw: .2, pitch: -.1, zoom: 1};
 const deviceOrbit = {yaw: .62, pitch: .27, zoom: 1};
+let deviceFitCache=null;
 // Capture the untouched offline document before project installation updates its UI.
 let standaloneTemplate = document.getElementById("s3f-project") ? document.documentElement.outerHTML : null;
 const status = message => { $("status").textContent = message; };
@@ -191,6 +192,102 @@ $("wideLayout").onchange=()=>{
     if(project)session?.changed();
 };
 restoreWideLayout();
+const deviceLayoutKey="s3f-device-layout:1";
+const deviceChoiceKey="s3f-preview-device:1";
+let preferredDevice=null;
+function restoreDeviceChoice(data) {
+    try{const saved=localStorage.getItem(deviceChoiceKey);if(Object.hasOwn(DEVICE_INFO,saved))preferredDevice=saved;}catch{/* Keep this tab's choice when storage is unavailable. */}
+    $("device").value=preferredDevice||(Object.hasOwn(DEVICE_INFO,data.preview?.device)?data.preview.device:"sr6");
+}
+let devicePosition=null,deviceDrag=null;
+function deviceOverlayBounds() {
+    const stage=$('videoDeviceStage').getBoundingClientRect(),panel=$('devicePanel').getBoundingClientRect();
+    // Keep the overlay inside the image; playback controls sit below this stage.
+    const maxX=Math.max(0,stage.width-panel.width-8),maxY=Math.max(0,stage.height-panel.height-8);
+    return {stage,panel,minX:Math.min(8,maxX),minY:Math.min(8,maxY),maxX,maxY};
+}
+function placeDeviceOverlay() {
+    const panel=$('devicePanel'),custom=!!devicePosition;
+    $('deviceCustomPosition').hidden=!custom;$('deviceCorner').value=custom?'custom':panel.dataset.corner;
+    if($('deviceLayout').value!=='overlay'||!custom){
+        for(const key of ['left','top','right','bottom'])panel.style.removeProperty(key);
+        return;
+    }
+    const {stage,minX,minY,maxX,maxY}=deviceOverlayBounds();
+    if(!stage.width||!stage.height)return;
+    Object.assign(panel.style,{left:`${minX+devicePosition.x*(maxX-minX)}px`,top:`${minY+devicePosition.y*(maxY-minY)}px`,right:'auto',bottom:'auto'});
+}
+function moveDeviceOverlay(left,top) {
+    const {minX,minY,maxX,maxY}=deviceOverlayBounds();
+    devicePosition={x:maxX>minX?Math.max(0,Math.min(1,(left-minX)/(maxX-minX))):0,
+        y:maxY>minY?Math.max(0,Math.min(1,(top-minY)/(maxY-minY))):0};
+    placeDeviceOverlay();
+}
+function saveDeviceLayout() {
+    const layout=$('deviceLayout').value,corner=$('devicePanel').dataset.corner;
+    try{localStorage.setItem(deviceLayoutKey,JSON.stringify({layout,corner,position:devicePosition}));}catch{/* Keep this tab's preference. */}
+    if(project)session?.changed();
+}
+function applyDeviceLayout(layout,corner) {
+    layout=['panels','beside','overlay'].includes(layout)?layout:'panels';
+    corner=['bottom-right','bottom-left','top-right','top-left'].includes(corner)?corner:'bottom-right';
+    const compact=layout!=='panels',panel=$('devicePanel');
+    document.body.dataset.deviceLayout=layout;document.body.classList.toggle('device-compact',compact);
+    panel.dataset.corner=corner;$('deviceLayout').value=layout;$('deviceCorner').value=corner;
+    const parent=compact?$('videoDeviceStage'):document.querySelector('.stage');
+    if(panel.parentElement!==parent){if(compact)parent.append(panel);else parent.insertBefore(panel,$('posePanel'));}
+    $('deviceSettings').hidden=!compact;$('deviceSettings').setAttribute('aria-expanded','false');
+    $('deviceOptions').hidden=compact;$('deviceCornerLabel').hidden=layout!=='overlay';
+    $('deviceGrip').querySelector('h2').tabIndex=layout==='overlay'?0:-1;
+    panel.classList.remove('show-settings');placeDeviceOverlay();render();
+}
+function restoreDeviceLayout(data) {
+    let layout=data?.preview?.device_layout,corner=data?.preview?.device_corner,position=data?.preview?.device_position;
+    if(!document.getElementById('s3f-project')||!layout){
+        try{const saved=JSON.parse(localStorage.getItem(deviceLayoutKey));if(saved){layout=saved.layout||layout;corner=saved.corner||corner;position=saved.position;}}catch{/* Browser storage is optional. */}
+    }
+    devicePosition=position&&Number.isFinite(position.x)&&Number.isFinite(position.y)?{x:Math.max(0,Math.min(1,position.x)),y:Math.max(0,Math.min(1,position.y))}:null;
+    applyDeviceLayout(layout,corner);
+}
+for(const id of ['deviceLayout','deviceCorner'])$(id).onchange=()=>{
+    const corner=id==='deviceCorner'?$('deviceCorner').value:$('devicePanel').dataset.corner;
+    if(id==='deviceCorner')devicePosition=null;
+    applyDeviceLayout($('deviceLayout').value,corner);saveDeviceLayout();
+};
+$('deviceGrip').addEventListener('pointerdown',event=>{
+    if(event.button!==0||deviceDrag||$('deviceLayout').value!=='overlay'||event.target.closest('button,input,select,label'))return;
+    event.preventDefault();event.stopPropagation();
+    const {panel,stage}=deviceOverlayBounds();
+    deviceDrag={id:event.pointerId,x:event.clientX,y:event.clientY,left:panel.left-stage.left,top:panel.top-stage.top,moved:false};
+    $('deviceGrip').querySelector('h2').focus({preventScroll:true});
+    $('deviceGrip').setPointerCapture(event.pointerId);$('devicePanel').classList.add('dragging-device');
+});
+$('deviceGrip').addEventListener('pointermove',event=>{
+    if(deviceDrag?.id!==event.pointerId)return;
+    const dx=event.clientX-deviceDrag.x,dy=event.clientY-deviceDrag.y;
+    if(!dx&&!dy)return;
+    deviceDrag.moved=true;moveDeviceOverlay(deviceDrag.left+dx,deviceDrag.top+dy);
+});
+for(const type of ['pointerup','pointercancel','lostpointercapture'])$('deviceGrip').addEventListener(type,event=>{
+    if(deviceDrag?.id!==event.pointerId)return;
+    const moved=deviceDrag.moved;deviceDrag=null;$('devicePanel').classList.remove('dragging-device');
+    if($('deviceGrip').hasPointerCapture(event.pointerId))$('deviceGrip').releasePointerCapture(event.pointerId);
+    if(moved)saveDeviceLayout();
+});
+$('deviceGrip').addEventListener('keydown',event=>{
+    if($('deviceLayout').value!=='overlay'||event.target.tagName!=='H2'||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
+    event.preventDefault();event.stopPropagation();
+    const {panel,stage}=deviceOverlayBounds(),step=event.shiftKey?40:10;
+    moveDeviceOverlay(panel.left-stage.left+(event.key==='ArrowRight'?step:event.key==='ArrowLeft'?-step:0),
+        panel.top-stage.top+(event.key==='ArrowDown'?step:event.key==='ArrowUp'?-step:0));saveDeviceLayout();
+});
+$('deviceSettings').onclick=()=>{
+    const open=$('deviceOptions').hidden;$('deviceOptions').hidden=!open;
+    $('deviceSettings').setAttribute('aria-expanded',String(open));$('devicePanel').classList.toggle('show-settings',open);render();
+};
+restoreDeviceLayout();
+const deviceLayoutObserver=new ResizeObserver(()=>{placeDeviceOverlay();render();});
+deviceLayoutObserver.observe($('videoDeviceStage'));deviceLayoutObserver.observe($('devicePanel'));
 let fullscreenDocument=document;
 try{if(window.parent!==window&&window.parent.location.origin===location.origin&&window.parent.location.pathname.endsWith("/workspace.html"))fullscreenDocument=window.parent.document;}catch{/* Other frames use their own document. */}
 const fullscreenLabel=()=>{const active=!!fullscreenDocument.fullscreenElement;$("fullscreenLayout").textContent=active?"Exit full screen":"Full screen";$("fullscreenLayout").setAttribute("aria-pressed",String(active));render();};
@@ -216,7 +313,7 @@ $("floatVideo").onclick=()=>{
     const floating=!floatingPanel.classList.contains('floating');
     document.body.classList.toggle('video-floating',floating);floatingPanel.classList.toggle('floating',floating);
     $("floatVideo").textContent=floating?'Dock video':'Float video';$("floatVideo").setAttribute('aria-pressed',String(floating));$("videoResize").hidden=!floating;
-    if(floating){floatingRect||={left:18,top:innerHeight-360,width:420,height:330};placeFloatingVideo();}
+    if(floating){const compact=$('deviceLayout').value!=='panels';floatingRect||={left:18,top:innerHeight-(compact?470:360),width:compact?640:420,height:compact?440:330};placeFloatingVideo();}
     else{floatingPanel.removeAttribute('style');render();}
 };
 for(const [id,resizePanel] of [['videoGrip',false],['videoResize',true]]){
@@ -240,6 +337,36 @@ for(const [id,resizePanel] of [['videoGrip',false],['videoResize',true]]){
 window.addEventListener('resize',()=>{if(floatingPanel.classList.contains('floating'))placeFloatingVideo();});
 
 let playingSelection=false;
+function videoControls() {
+    const duration=project?.metadata.duration_ms||0,ready=!!project&&!!video.getAttribute('src')&&video.readyState>0&&!mediaLoading;
+    $('videoPlay').disabled=!ready;$('videoSeek').disabled=!ready||duration<=0;
+    $('videoPlay').textContent=video.paused?'▶':'Ⅱ';$('videoPlay').setAttribute('aria-label',video.paused?'Play video':'Pause video');
+    $('videoSeek').max=Math.max(1,duration);$('videoSeek').value=Math.max(0,Math.min(duration,currentMs));
+    const time=formatTime(Math.max(0,currentMs)),total=formatTime(duration);
+    $('videoTime').textContent=`${time} / ${total}`;$('videoSeek').setAttribute('aria-valuetext',`${time} of ${total}`);
+    const silent=video.muted||video.volume===0;
+    $('videoMute').textContent=silent?'Unmute':'Mute';$('videoMute').setAttribute('aria-label',silent?'Unmute video':'Mute video');
+    $('videoMute').setAttribute('aria-pressed',String(silent));$('videoVolume').value=video.muted?0:video.volume;
+    const fullscreen=document.fullscreenElement===$('videoPanel');
+    $('videoFullscreen').disabled=!document.fullscreenEnabled;
+    $('videoFullscreen').setAttribute('aria-label',fullscreen?'Exit video full screen':'Full screen video');
+    $('videoFullscreen').title=fullscreen?'Exit video full screen':'Full screen video';
+}
+function toggleVideoPlayback() {
+    if(!project||mediaLoading||!video.getAttribute('src')||!video.readyState)return;
+    if(video.paused)video.play().catch(error=>status(error.message));else video.pause();
+}
+$('videoPlay').onclick=toggleVideoPlayback;video.addEventListener('click',toggleVideoPlayback);
+$('videoSeek').oninput=()=>{if(!project||mediaLoading||!video.readyState)return;seek(Number($('videoSeek').value));};
+$('videoMute').onclick=()=>{if(video.volume===0){video.volume=1;video.muted=false;}else video.muted=!video.muted;};
+$('videoVolume').oninput=()=>{video.volume=Number($('videoVolume').value);video.muted=false;};
+$('videoFullscreen').onclick=async()=>{
+    try{if(document.fullscreenElement===$('videoPanel'))await document.exitFullscreen();else await $('videoPanel').requestFullscreen();}
+    catch{status('The browser declined full screen. Float video is still available.');}
+};
+for(const event of ['play','pause','ended','volumechange','loadedmetadata','emptied','error'])video.addEventListener(event,videoControls);
+document.addEventListener('fullscreenchange',()=>{videoControls();placeDeviceOverlay();render();});
+videoControls();
 function playbackRange() {
     if(!project)return null;
     const [a,b]=project.timeline.selection||[],start=Math.max(0,a),end=Math.min(project.metadata.duration_ms,b);
@@ -370,7 +497,7 @@ function install(data, keepPlayback=false, output=null) {
     sectionPreferences=Array.isArray(data.preview?.section_choices)?data.preview.section_choices:[];
     $("sourceLayout").value=data.preview?.source_layout==='rows'?'rows':'sections';
     $("sectionLane").classList.toggle('collapsed',!!data.preview?.sections_collapsed);
-    $("device").value = Object.hasOwn(DEVICE_INFO, data.preview?.device) ? data.preview.device : "sr6";
+    restoreDeviceChoice(data);
     $("axis").replaceChildren(...Object.keys(data.scripts).map(axis => new Option(axis + " · " + ({L0:"stroke",L1:"surge",L2:"sway",R0:"twist",R1:"roll",R2:"pitch"}[axis]), axis)));
     $("name").textContent = data.metadata.source.path.split("/").at(-1);
     $("warnings").replaceChildren(...(data.warnings||[]).map(text=>{const li=document.createElement("li");li.textContent=text;return li;}));
@@ -382,7 +509,7 @@ function install(data, keepPlayback=false, output=null) {
     $("loopSelection").checked=data.preview?.loop_selection===true;if(!keepPlayback)playingSelection=false;
     collapseLane($("mainLane"),!!data.preview?.main_collapsed);
     currentMs=keepPlayback?previousMs:data.times_ms[0]; buildTracks(); selectionControls(); controls(); deviceOutputControls(); render(); status("Project loaded · choose the matching source video");
-    restoreWideLayout(data);
+    restoreWideLayout(data);restoreDeviceLayout(data);
     if(output&&(!keepPlayback||!hadVideo))loadPreviewVideo();
     loadVideoComparison(data,output);
     refreshSceneCuts();
@@ -423,7 +550,7 @@ async function refreshSceneCuts() {
     }catch{/* Keep the saved markers available while ComfyUI is disconnected. */}
     finally{cutLoading=false;}
 }
-setInterval(()=>{if(!document.hidden)refreshSceneCuts();},4000);
+setInterval(()=>{if(!document.hidden&&window.frameElement?.dataset.prefetch!=='true')refreshSceneCuts();},4000);
 window.addEventListener("focus",refreshSceneCuts);
 $("showSceneCuts").onchange=()=>{if(project){session?.changed();render();}};
 $("collapseMain").onclick=()=>{if(project){collapseLane($("mainLane"),!$("mainLane").classList.contains("collapsed"));session?.changed();render();}};
@@ -516,7 +643,11 @@ function controls() {
     const manual=!!data.metadata.manual_only;
     for(const id of ['component','calibration','range','center'])$(id).parentElement.hidden=manual;
     for(const id of ['rebuild','autoFit','fitSelection'])$(id).hidden=manual;
-    $('addTrack').disabled=!sourceChoices(project).length;
+    const missing=missingLatestSources(project),addSource=defaultTrackSource(project,track);
+    $('addTrack').disabled=!addSource;
+    $('addTrack').title=addSource?'Add '+sourceChoices(project).find(s=>s.id===addSource)?.label:'No saved detection is available.';
+    $('restoreLatest').hidden=!missing.length;
+    $('restoreLatest').textContent=`Restore latest detections (${missing.length})`;
     if(track)project.timeline.selection_track=track.id;
     $("component").value=s.component; $("range").value=s.range; $("center").value=s.center; $("invert").checked=s.invert;
     $("unit").textContent=axis.startsWith("R")?"degrees":"metres";
@@ -649,13 +780,12 @@ function buildTracks() {
 }
 function sectionControls() {
     const compact=$('sourceLayout').value==='sections',tracks=project.timeline.tracks;
-    const current=tracks.find(t=>t.id===project.timeline.active)||selectionTrack(project)||latestTrack(project,tracks[0]);
+    const current=tracks.find(t=>t.id===project.timeline.active)||selectionTrack(project)||tracks.find(t=>processingTrackState(project,t)==='Latest detection')||tracks[0];
     const byId=new Map(tracks.map(t=>[t.id,t])),sources=new Map(project.timeline.sources.map(s=>[s.id,s]));
     const isPrevious=t=>processingTrackState(project,t)==='Previous detection';
     const allRanges=tracks.map(t=>{const [start,end]=trackCoverage(project,t);return {id:t.id,start,end};}).sort((a,b)=>a.start-b.start||a.end-b.end);
     const available=allRanges.filter(r=>!isPrevious(byId.get(r.id)));
-    // Keep old-only coverage available; hide superseded results from the usual choices.
-    const visibleRanges=allRanges.filter(r=>!isPrevious(byId.get(r.id))||r.id===current?.id||!available.some(n=>n.start===r.start&&n.end===r.end));
+    const visibleRanges=visibleTrackRanges(project,current?.id);
     if(current)sectionPreferences=[current.id,...sectionPreferences.filter(id=>id!==current.id&&tracks.some(t=>t.id===id))];
     const preferred=[...sectionPreferences.filter(id=>!isPrevious(byId.get(id))||id===current?.id),...available.map(r=>r.id)];
     sectionBlocks=motionSections(visibleRanges,preferred);
@@ -843,13 +973,28 @@ function drawSkeleton(index, project, axis) {
     }
     const origin=map(center);[[[.25,0,0],"#e89393"],[[0,-.25,0],"#8fd399"],[[0,0,-.25],"#8eb7f7"]].forEach(([p,c])=>line(ctx,origin,map(center.map((v,i)=>v+p[i])),c));
 }
+function deviceFit(width,height) {
+    const device=$('device').value,sleeve=$('deviceSleeve').checked;
+    const key=[device,sleeve,deviceOrbit.yaw,deviceOrbit.pitch,width,height].join(':');
+    if(deviceFitCache?.key===key)return deviceFitCache;
+    // Frame the neutral model consistently so playback cannot zoom in and out
+    // with every stroke. User zoom is applied separately below.
+    const lines=projectWireframe(buildDeviceWireframe(device,{}, {sleeve}),width,height,{...deviceOrbit,zoom:1});
+    let left=Infinity,right=-Infinity,top=Infinity,bottom=-Infinity;
+    for(const line of lines)for(const p of [line.a,line.b]){left=Math.min(left,p[0]);right=Math.max(right,p[0]);top=Math.min(top,p[1]);bottom=Math.max(bottom,p[1]);}
+    const zoom=Math.min(2.5,.84*Math.min(width/Math.max(1,right-left),height/Math.max(1,bottom-top)));
+    deviceFitCache={key,zoom,x:(width/2-(left+right)/2)*zoom,y:(height/2-(top+bottom)/2)*zoom};return deviceFitCache;
+}
 function drawRobot() {
     const [ctx,w,h]=resize($("robot"));
     const output=deviceOutputResult(),adjusted=$("deviceMotion").value==="adjusted"&&output?.script;
     const scripts=adjusted?{L0:output.script}:project.scripts;
     const values=Object.fromEntries(AXES.map(a=>[a,evaluate(scripts[a]?.actions,currentMs)]));
     const device=$("device").value;
-    const frame=drawDeviceWireframe(ctx,w,h,device,values,{...deviceOrbit,sleeve:$("deviceSleeve").checked});
+    const framing=deviceFit(w,h);
+    ctx.save();ctx.translate(w/2,h/2);ctx.scale(deviceOrbit.zoom,deviceOrbit.zoom);ctx.translate(-w/2+framing.x,-h/2+framing.y);
+    const frame=drawDeviceWireframe(ctx,w,h,device,values,{...deviceOrbit,zoom:framing.zoom,sleeve:$("deviceSleeve").checked});
+    ctx.restore();
     $("readouts").replaceChildren(...DEVICE_INFO[device].axes.map(a=>{const el=document.createElement("span");el.dataset.axis=a;el.textContent=`${a} ${values[a].toFixed(1)}${scripts[a]?"":" (off)"}`;return el;}));
     $("deviceMotionStatus").textContent=adjusted?`Adjusted L0 · ${(output.mapping.zone_min_mm+values.L0/100*(output.mapping.zone_max_mm-output.mapping.zone_min_mm)).toFixed(1)} mm in selected zone · other axes neutral. Commanded motion; physical response unknown.`:"Authored main · schematic playback";
     $("deviceReach").hidden=frame.reachable!==false;
@@ -975,6 +1120,7 @@ function drawCurve(canvas, data, axis, isMain, active, window, size) {
     if(s.component==="auto")$("directionInfo").textContent=direction?`Auto ${axis} · ${layer.source.ranges?`Adaptive ${data.config.target_anchor.replaceAll("_"," ")} · `:"Whole clip · "}${["Up","Forward","Left"].map((name,i)=>`${name} ${vector[i]>=0?"+":""}${vector[i].toFixed(2)}`).join(" / ")} · ${(direction.share*100).toFixed(0)}% directional share${direction.mode==="still"?" · very little motion":direction.mode==="body_fallback"?` · mixed movement; ${direction.orientation} direction used`:""} · blue arrow in 3D view`:"Auto · no analysed direction at this time";
 }
 function render() {
+    videoControls();
     if(!project)return;
     playbackControls();
     patternControls();reductionControls();
@@ -1346,7 +1492,13 @@ bindCurve($('sectionCurve'),time=>sectionAt(sectionBlocks,time)?.id??null);
 $("selectMain").onclick=()=>selectLane("main");
 $("tracks").addEventListener("scroll",render,{passive:true});
 window.addEventListener("scroll",render,{passive:true});
-$("addTrack").onclick=()=>{if(!project)return;const current=selected().track,source=current?.source||sourceChoices(project)[0]?.id;if(!source)return;record();const track=newTrack(project,source,current?.axis||$("axis").value);project.timeline.active=track.id;buildTracks();dirty();controls();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});};
+$('restoreLatest').onclick=()=>{
+    if(!project||!missingLatestSources(project).length)return;
+    record();const restored=restoreLatestTracks(project,$('axis').value);
+    buildTracks();chooseSection(restored[0].id);dirty(false);controls();render();
+    status(`Restored ${restored.length} latest detection${restored.length===1?'':'s'} from saved data. Select a range and copy it to Main when ready.`);
+};
+$("addTrack").onclick=()=>{if(!project)return;const current=selected().track,source=defaultTrackSource(project,current);if(!source)return;record();const track=newTrack(project,source,current?.axis||$("axis").value);project.timeline.active=track.id;buildTracks();dirty();controls();render();$("tracks").lastElementChild?.scrollIntoView({block:"nearest"});};
 $("markIn").onclick=()=>{if(project){const at=selectedCut?.at??currentMs;setSelection(at,Math.max(at,project.timeline.selection[1]));}};
 $("markOut").onclick=()=>{if(project){const at=selectedCut?.at??currentMs;setSelection(Math.min(at,project.timeline.selection[0]),at);}};
 for(const id of ["selectionStart","selectionEnd"])$(id).onchange=()=>{
@@ -1383,11 +1535,10 @@ document.addEventListener("keydown",event=>{
     }
     if(!project||event.defaultPrevented||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||event.target.closest('input,select,textarea,button,[role="textbox"]'))return;
     if(event.code==='Space'||event.key===' '){
-        // Native controls keep their own Space action, including the video player.
-        if(event.target.closest('video,audio,summary,a[href],[role="button"]'))return;
+        // Other media and interactive controls keep their own Space action.
+        if(event.target.closest('audio,summary,a[href],[role="button"]'))return;
         event.preventDefault();
-        if(event.repeat||mediaLoading||!video.getAttribute('src'))return;
-        if(video.paused)video.play().catch(error=>status(error.message));else video.pause();
+        if(!event.repeat)toggleVideoPlayback();
         return;
     }
     if(["+","=","-"].includes(event.key)&&event.target.closest(".curves")){event.preventDefault();zoomTimeline(view.span_ms*(event.key==="-"?2:.5));}
@@ -1399,7 +1550,18 @@ $("skeleton").addEventListener("pointerdown",e=>{lastOrbit=[e.clientX,e.clientY]
 $("skeleton").addEventListener("pointermove",e=>{if(!lastOrbit)return;orbit.yaw+=(e.clientX-lastOrbit[0])*.01;orbit.pitch+=(e.clientY-lastOrbit[1])*.01;lastOrbit=[e.clientX,e.clientY];render();});
 $("skeleton").addEventListener("pointerup",()=>lastOrbit=null);$("skeleton").addEventListener("pointercancel",()=>lastOrbit=null);
 $("skeleton").addEventListener("wheel",e=>{e.preventDefault();orbit.zoom=Math.max(.1,Math.min(5,orbit.zoom*Math.exp(-e.deltaY*.001)));render();},{passive:false});
-$("device").addEventListener("change",render);
+$('deviceFit').onclick=()=>{Object.assign(deviceOrbit,{yaw:.62,pitch:.27,zoom:1});render();};
+const zoomDevice=factor=>{deviceOrbit.zoom=Math.max(.4,Math.min(4,deviceOrbit.zoom*factor));render();};
+$('deviceZoomIn').onclick=()=>zoomDevice(1.2);$('deviceZoomOut').onclick=()=>zoomDevice(1/1.2);
+$("device").addEventListener("change",()=>{
+    preferredDevice=$("device").value;
+    try{localStorage.setItem(deviceChoiceKey,preferredDevice);}catch{/* Keep this tab's choice. */}
+    if(project)session?.changed();render();
+});
+window.addEventListener('storage',event=>{
+    if(event.key!==deviceChoiceKey||!Object.hasOwn(DEVICE_INFO,event.newValue))return;
+    preferredDevice=event.newValue;$("device").value=preferredDevice;if(project)render();
+});
 $("deviceSleeve").addEventListener("change",render);
 let devicePointer;
 $("robot").addEventListener("pointerdown",e=>{if(e.button!==0||devicePointer)return;devicePointer={id:e.pointerId,x:e.clientX,y:e.clientY};$("robot").setPointerCapture(e.pointerId);});
@@ -1410,14 +1572,14 @@ $("robot").addEventListener("pointermove",e=>{
     devicePointer.x=e.clientX;devicePointer.y=e.clientY;render();
 });
 for(const event of ["pointerup","pointercancel","lostpointercapture"])$("robot").addEventListener(event,e=>{if(devicePointer?.id===e.pointerId)devicePointer=null;});
-$("robot").addEventListener("wheel",e=>{e.preventDefault();deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom*Math.exp(-e.deltaY*.001)));render();},{passive:false});
+$("robot").addEventListener("wheel",e=>{e.preventDefault();zoomDevice(Math.exp(-e.deltaY*.001));},{passive:false});
 $("robot").addEventListener("keydown",e=>{
     if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","+","=","-"].includes(e.key))return;
     e.preventDefault();
     if(e.key==="ArrowLeft")deviceOrbit.yaw-=.1;if(e.key==="ArrowRight")deviceOrbit.yaw+=.1;
     if(e.key==="ArrowUp")deviceOrbit.pitch-=.1;if(e.key==="ArrowDown")deviceOrbit.pitch+=.1;
     if(e.key==="+"||e.key==="=")deviceOrbit.zoom*=1.1;if(e.key==="-")deviceOrbit.zoom/=1.1;
-    deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch));deviceOrbit.zoom=Math.max(.5,Math.min(2,deviceOrbit.zoom));render();
+    deviceOrbit.pitch=Math.max(-1.25,Math.min(1.25,deviceOrbit.pitch));deviceOrbit.zoom=Math.max(.4,Math.min(4,deviceOrbit.zoom));render();
 });
 $("projectFile").addEventListener("change",async e=>{try{install(JSON.parse(await e.target.files[0].text()));dirty(false);}catch(error){status(error.message);}});
 $("videoFile").addEventListener("change",e=>{if(!e.target.files[0])return;const resume=!video.paused;if(localVideos[videoVariant])URL.revokeObjectURL(localVideos[videoVariant]);localVideoFiles[videoVariant]=e.target.files[0];videoURL=URL.createObjectURL(e.target.files[0]);localVideos[videoVariant]=videoURL;loadPreviewVideo(resume);status(`Local ${videoMapping?videoVariant:"source"} video loaded`);e.target.value="";render();});
@@ -1471,3 +1633,5 @@ else if(id||session){try{
     const fetchProject=async()=>{if(!id)return null;const response=await fetch(`../projects/${encodeURIComponent(id)}`);if(!response.ok)throw new Error(`Project load failed (${response.status})`);return response.json();};
     if(session)await session.load(fetchProject);else install(await fetchProject(),false,id);
 }catch(error){status(error.message);}}
+window.s3fEditorReady=true;
+try{window.parent.s3fFolderEditorReady?.(window);}catch{/* Standalone viewer. */}

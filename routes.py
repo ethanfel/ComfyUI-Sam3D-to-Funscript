@@ -74,6 +74,11 @@ def register_routes():
             folder=request.match_info['folder'];action=request.match_info['action']
             library.folders.read(folder)
             if action=='browse':result=await asyncio.to_thread(library.browse,folder,body)
+            elif action=='gallery':result=await asyncio.to_thread(library.gallery,folder,body)
+            elif action=='metadata_start':
+                catalogue=await asyncio.to_thread(library.catalogue,folder)
+                result=await asyncio.to_thread(library.metadata.start,folder,list(catalogue['items']),body.get('site','civitai.red'),library.token(),body.get('force',False))
+            elif action=='metadata_stop':result=await asyncio.to_thread(library.metadata.stop,folder)
             elif action=='category':result=await asyncio.to_thread(library.add_category,folder,body['name'])
             elif action=='ignore':result=await asyncio.to_thread(library.ignore,folder,body['id'],body.get('ignored',True))
             elif action=='key':result=await asyncio.to_thread(library.set_token,body.get('token',''))
@@ -91,9 +96,66 @@ def register_routes():
     @routes.get("/sam3d_funscript/folders/{folder}")
     async def folder_get(request):
         try:
-            return web.json_response(await asyncio.to_thread(folder_store().scan, request.match_info['folder']), headers={'Cache-Control': 'no-store'})
+            store, folder = folder_store(), request.match_info['folder']
+            clip = request.query.get('clip')
+            result = await asyncio.to_thread(store.clip_listing, folder, clip) if clip is not None else await asyncio.to_thread(store.scan, folder, refresh=request.query.get('refresh') == '1')
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
         except (ValueError, OSError) as error:
             raise web.HTTPBadRequest(text=str(error))
+
+    h3_probe_slots = asyncio.Semaphore(1)
+    h3_probe_requests = {}
+
+    @routes.post('/sam3d_funscript/h3/{folder}/cancel_probe')
+    async def h3_cancel_probe(request):
+        body = await request.json()
+        event = h3_probe_requests.get((request.match_info['folder'], str(body.get('request_id', ''))))
+        if event is not None: event.set()
+        return web.json_response({'cancelled': event is not None})
+
+    @routes.get('/sam3d_funscript/h3/{folder}/image')
+    async def h3_image(request):
+        from .sam3d_funscript.h3_project import image_path
+        try:
+            state = folder_store().read(request.match_info['folder'])
+            if state.get('kind') != 'h3': raise ValueError('Open an H3 Animator project first.')
+            path = await asyncio.to_thread(image_path, state['root'], page=request.query.get('page'), panel=request.query.get('panel'))
+            return web.FileResponse(path, headers={'Cache-Control': 'no-cache'})
+        except (ValueError, OSError) as error: raise web.HTTPBadRequest(text=str(error))
+
+    @routes.post('/sam3d_funscript/h3/{folder}/probe')
+    async def h3_probe(request):
+        from .sam3d_funscript.h3_project import image_path, probe, preset
+        import threading
+        request_key = None
+        try:
+            body = await request.json()
+            store, folder = folder_store(), request.match_info['folder']
+            state = store.read(folder)
+            if state.get('kind') != 'h3': raise ValueError('Open an H3 Animator project first.')
+            request_id = body.get('request_id')
+            if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 64):
+                raise ValueError('Invalid detector check ID.')
+            key = (folder, request_id)
+            if key in h3_probe_requests: raise ValueError('This detector check is already running.')
+            if len(h3_probe_requests) >= 8: raise ValueError('Detector checks are busy. Try again shortly.')
+            request_key = key
+            cancelled = threading.Event(); h3_probe_requests[request_key] = cancelled
+            if body.get('clip'):
+                entry, path = await asyncio.to_thread(store.entry, folder, body['clip'])
+                scope = {'panel': entry['h3']['panel_id']}
+            else:
+                path = await asyncio.to_thread(image_path, state['root'], page=body.get('page'), panel=body.get('panel'))
+                scope = {'page':body.get('page'), 'panel':body.get('panel')}
+            async with h3_probe_slots:
+                settings = await asyncio.to_thread(preset, state['root'], **scope)
+                result = await asyncio.to_thread(probe, path, settings['settings']['confidence'], cancelled=cancelled)
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except (ValueError, OSError, RuntimeError, ImportError) as error: raise web.HTTPBadRequest(text=str(error))
+        finally:
+            if request_key is not None:
+                event = h3_probe_requests.pop(request_key, None)
+                if event is not None: event.set()
 
     @routes.post("/sam3d_funscript/folders/{folder}/{action}")
     async def folder_action(request):
@@ -102,6 +164,18 @@ def register_routes():
             store, folder, action = folder_store(), request.match_info['folder'], request.match_info['action']
             if action == 'open':
                 result = await asyncio.to_thread(store.open, folder, body['clip'], body.get('client'))
+            elif action == 'h3_exclude_page':
+                result = await asyncio.to_thread(store.exclude_h3_page, folder, body['page'], body['excluded'])
+            elif action == 'h3_exclude_panel':
+                result = await asyncio.to_thread(store.exclude_h3_page, folder, None, body['excluded'], panel=body['panel'])
+            elif action == 'h3_confidence':
+                result = await asyncio.to_thread(store.h3_confidence, folder, body['confidence'])
+            elif action == 'h3_preset':
+                result = await asyncio.to_thread(store.h3_preset, folder, page=body.get('page'), panel=body.get('panel'), settings=body.get('settings'))
+            elif action in ('h3_save_draft', 'h3_restore_draft'):
+                result = await asyncio.to_thread(store.h3_portable_draft, folder, body['clip'], body['revision'], restore=action=='h3_restore_draft')
+            elif action == 'h3_skip_waiting':
+                result = await asyncio.to_thread(store.h3_skip_waiting, folder, body['clip'])
             elif action in ('queue_start','queue_failed'):
                 from .sam3d_funscript.folder_queue import FolderQueue
                 queue=FolderQueue(store.root)
@@ -115,13 +189,30 @@ def register_routes():
                     result=await asyncio.to_thread(review.approve,folder,body['clip'],body.get('category',''),body['revision'],body.get('replace',False),body.get('expected'))
                 else:result=await asyncio.to_thread(review.reject,folder,body['clip'])
             elif action == 'ignore':
-                result = await asyncio.to_thread(store.ignore, folder, body['clip'], body.get('ignored', True), body.get('note', ''))
+                result = await asyncio.to_thread(store.ignore, folder, body['clip'], body.get('ignored', True), body.get('note', ''), compact=body.get('compact') is True)
             elif action == 'approve':
                 entry,_=await asyncio.to_thread(store.entry,folder,body['clip'])
                 if entry.get('civitai_temporary'):raise ValueError('Review this temporary clip in the Civitai tab and choose its approval category.')
-                result = await asyncio.to_thread(store.approve, folder, body['clip'], body['revision'], body.get('replace', False), body.get('expected'))
+                result = await asyncio.to_thread(store.approve, folder, body['clip'], body['revision'], body.get('replace', False), body.get('expected'), compact=body.get('compact') is True)
             elif action == 'review':
-                result = await asyncio.to_thread(store.review, folder, body['clip'], body.get('quality', 0), body.get('note', ''))
+                result = await asyncio.to_thread(store.review, folder, body['clip'], body.get('quality', 0), body.get('note', ''), body.get('audio_sync'), body.get('intensity'), compact=body.get('compact') is True, intensity_mode=body.get('intensity_mode'), tags=body.get('tags'))
+            elif action in ('tags_start', 'tags_stop', 'tags_status'):
+                from .sam3d_funscript.tag_jobs import TagJobs
+                jobs = TagJobs(store.root)
+                if action == 'tags_start':
+                    result = await asyncio.to_thread(jobs.start, folder, body.get('clip_ids'), body.get('source', 'both'), body.get('frames', 1), body.get('threshold', .35), body.get('site', 'civitai.red'), force=body.get('force', False))
+                else: result = await asyncio.to_thread(jobs.stop if action == 'tags_stop' else jobs.read, folder)
+            elif action == 'review_audio_sync':
+                result = await asyncio.to_thread(store.review_audio_sync, folder, body.get('clip_ids'), body.get('audio_sync'))
+            elif action in ('dataset_status', 'dataset_upload'):
+                from .sam3d_funscript.dataset_upload import DatasetUpload
+                uploader = DatasetUpload(store.root)
+                if action == 'dataset_status':
+                    result = await asyncio.to_thread(uploader.read, folder)
+                else:
+                    result = await asyncio.to_thread(uploader.start, folder, body.get('repo'))
+            elif action == 'intensity':
+                result = await asyncio.to_thread(store.intensity_estimate, folder, body['clip'])
             elif action == 'lease':
                 result = await asyncio.to_thread(store.hold_review, folder, body.get('clip'), body['client'])
             elif action == 'preset':
@@ -142,7 +233,7 @@ def register_routes():
                 result = await asyncio.to_thread(store.pause_batch, folder)
             elif action == 'preflight':
                 from .sam3d_funscript.folder_review import preflight
-                needs_tracker=False if body.get('queue') is True else await asyncio.to_thread(store.needs_tracker,folder,body.get('subfolder',''),body.get('retry_failed') is True,body.get('clip_ids'))
+                needs_tracker=False if body.get('queue') is True else await asyncio.to_thread(store.needs_tracker,folder,body.get('subfolder',''),body.get('retry_failed') is True,body.get('clip_ids'),reprocess=body.get('reprocess') is True)
                 result = await asyncio.to_thread(preflight, body.get('settings',{}), needs_tracker=needs_tracker)
             else:
                 raise ValueError('Unknown folder action')
@@ -171,8 +262,10 @@ def register_routes():
         try:
             body = await request.json()
             from .sam3d_funscript.folder_store import editing_session
-            with editing_session(request.match_info['session']):
-                state = processing_store().save(request.match_info["session"], body["revision"], body["plan"])
+            def persist():
+                with editing_session(request.match_info['session']):
+                    return processing_store().save(request.match_info["session"], body["revision"], body["plan"])
+            state = await asyncio.to_thread(persist)
             return web.json_response(state)
         except PlanConflict as error:
             raise web.HTTPConflict(text=str(error))
@@ -371,7 +464,7 @@ def register_routes():
         name = request.match_info["name"]
         if name == "viewer-standalone.html":
             return web.Response(text=standalone_html(), content_type="text/html", headers={"Cache-Control": "no-cache"})
-        if name not in ("civitai-browser.mjs", "civitai-queue.mjs", "civitai-browser.css", "folder.html", "folder.js", "folder.css", "viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
+        if name not in ("folder-upload.mjs", "folder-tags.mjs", "h3-project.mjs", "h3-project.css", "civitai-browser.mjs", "civitai-queue.mjs", "civitai-browser.css", "folder.html", "folder.js", "folder.css", "viewer.html", "viewer.js", "viewer.css", "curve.mjs", "curve-edit.mjs", "patterns.mjs", "audio-analysis.mjs", "audio-patterns.mjs", "audio-lane.mjs", "timeline.mjs", "editor-session.mjs", "viewport.mjs", "device-output.mjs", "reference.html", "reference.js", "reference.css", "reference-edit.mjs", "reference-mask.mjs", "stabilization-steps.mjs", "mesh-anchor.mjs", "video-preview.mjs", "processing-timeline.html", "processing-timeline.css", "processing-timeline.js", "processing-timeline-edit.mjs", "workspace.html", "workspace.css", "workspace.js", "workflow-host.mjs", "cut-markers.mjs", "cut-import.mjs", "timeline-layout.mjs", "frame-clock.mjs", "processing-state.mjs", "timeline-restore.mjs", "timeline-subject.mjs"):
             raise web.HTTPNotFound()
         # Module entry points and imported helpers must revalidate together after
         # an update. Heuristic caching can otherwise mix incompatible exports.
@@ -379,7 +472,7 @@ def register_routes():
 
     @routes.get("/sam3d_funscript/reference-capabilities")
     async def reference_capabilities(request):
-        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1, "orientation_stabilization": 1, "sam3_mask_seed": 1}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"keyframes": 1, "tracking_modes": ["online", "offline"], "timeline_stabilize": 1, "reference_masks": 1, "mask_anchors": 1, "anchor_preview": 1, "timeline_scope": 1, "tracking_splits": 1, "subject_crop": 1, "automatic_scenes": 1, "automatic_stabilization": 1, "similarity_stabilization": 1, "orientation_stabilization": 1, "sam3_mask_seed": 1}, headers={"Cache-Control": "no-store"})
 
     @routes.get('/sam3d_funscript/mask-seed-models')
     async def mask_seed_models(request):

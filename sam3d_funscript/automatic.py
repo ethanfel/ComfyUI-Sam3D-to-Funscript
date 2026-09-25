@@ -98,12 +98,13 @@ def detector_path():
 
 
 class PersonDetector:
-    def __init__(self, path):
+    def __init__(self, path, confidence=.4):
         try:
             from ultralytics import YOLO
         except ImportError as error:
             raise ValueError('Automatic mode needs ultralytics in the ComfyUI Python environment.') from error
         self.model = YOLO(str(path))
+        self.confidence = confidence
         self.workspace = tempfile.TemporaryDirectory(prefix='s3f-person-detection-')
         self.classes = [i for i, name in self.model.names.items() if name.lower() == 'person']
         if not self.classes:
@@ -111,7 +112,7 @@ class PersonDetector:
 
     def __call__(self, rgb):
         # CPU execution leaves ComfyUI's managed GPU models and memory intact.
-        result = self.model.predict(rgb[..., ::-1].copy(), classes=self.classes, conf=.4,
+        result = self.model.predict(rgb[..., ::-1].copy(), classes=self.classes, conf=self.confidence,
                                     imgsz=640, device='cpu', verbose=False, save=False,
                                     save_txt=False, project=self.workspace.name, name='people', exist_ok=True)[0]
         height, width = rgb.shape[:2]
@@ -136,7 +137,7 @@ def association(a, b):
     return overlap - .3*distance/max(np.linalg.norm(a[2:]-a[:2]), .05)
 
 
-def person_envelopes(samples, max_people=None):
+def person_envelopes(samples, max_people=None, *, confidence=.45):
     """Associate sampled boxes inside one scene and retain their movement envelope."""
     tracks = []
     for frame, sample in enumerate(samples):
@@ -160,7 +161,7 @@ def person_envelopes(samples, max_people=None):
                 tracks.append({'boxes': [detection['box']], 'confidence': [detection['confidence']],
                                'last': frame, 'first': frame, 'ambiguous': False})
     tracks = [t for t in tracks if len(t['boxes']) >= min(max(2, math.ceil(len(samples)*.35)), len(samples))
-              and np.mean(t['confidence']) >= .45]
+              and np.mean(t['confidence']) >= confidence]
     tracks.sort(key=lambda t: (len(t['boxes']), np.mean(t['confidence']), np.median(
         np.prod(np.array(t['boxes'])[:, 2:]-np.array(t['boxes'])[:, :2], axis=1))), reverse=True)
     omitted = max(0, len(tracks)-max_people) if max_people is not None else 0
@@ -173,6 +174,7 @@ def person_envelopes(samples, max_people=None):
         low = np.maximum(0, low-margin); high = np.minimum(1, high+margin)
         areas = np.prod(boxes[:, 2:]-boxes[:, :2], axis=1)
         coverage = len(boxes)/max(1, len(samples)); review = []
+        if np.mean(track['confidence']) < .45: review.append('Low-confidence person on drawing; inspect pose and anchor')
         if coverage < .8: review.append('Person missing in sampled frames')
         if track['ambiguous']: review.append('Overlapping people may switch identity')
         if areas.max()/max(areas.min(), 1e-6) > 2: review.append('Large framing change; review crop')
@@ -208,8 +210,8 @@ def available_scenes(info, cuts, plan, replace_default=False):
     return existing, ranges
 
 
-def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_mode='all', use_cache=True,
-                      progress=None, interrupt=None, detector=None):
+def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_mode='all', use_cache=True, confidence=.4,
+                      progress=None, interrupt=None, detector=None, min_track_confidence=.45):
     from .processing_timeline import normalize_plan
     if people_mode not in ('all', 'prominent'):
         raise ValueError('Automatic people mode must be all or prominent')
@@ -219,6 +221,10 @@ def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_m
     output = deepcopy(plan); output['tracking'] = existing
     if not scenes:
         return output, {'scenes_added': 0, 'review': [], 'message': 'Existing regions cover this video. Automatic mode only fills gaps.'}
+    if type(confidence) not in (int, float) or not math.isfinite(confidence) or not .05 <= confidence <= 1:
+        raise ValueError('Person confidence must be between 0.05 and 1.')
+    if type(min_track_confidence) not in (int, float) or not math.isfinite(min_track_confidence) or not .05 <= min_track_confidence <= 1:
+        raise ValueError('Track confidence must be between 0.05 and 1.')
     path = detector_path() if detector is None else None
     detector_key = fingerprint(path) if path else {'test_detector': True}
     detector_instance = detector
@@ -226,13 +232,13 @@ def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_m
     for index, (shot, start, end) in enumerate(scenes):
         if interrupt: interrupt()
         if progress: progress({'stage': 'auto_people', 'completed_jobs': index, 'total_jobs': len(scenes), 'scene': shot})
-        key = digest([VERSION, info['source'], start, end, detector_key, {'fps':2, 'confidence':.4, 'size':640}])
+        key = digest([VERSION, info['source'], start, end, detector_key, {'fps':2, 'confidence':confidence, 'size':640}])
         cache = Path(root) / 'people' / (key+'.json')
         cache.parent.mkdir(parents=True, exist_ok=True)
         if use_cache and cache.is_file():
             samples = json.loads(cache.read_text())
         else:
-            if detector_instance is None: detector_instance = PersonDetector(path)
+            if detector_instance is None: detector_instance = PersonDetector(path, confidence=confidence)
             samples = []
             with closing(video_frames(info['source']['path'], sample_fps=2, start_seconds=start/1000,
                                       duration_seconds=(end-start)/1000, max_frames=2**31-1)) as frames:
@@ -240,7 +246,7 @@ def prepare_automatic(info, plan, cuts, root, *, replace_default=False, people_m
                     if interrupt: interrupt()
                     samples.append({'at_ms': timing['time_ms'], 'people': detector_instance(rgb)})
             atomic_json(cache, samples)
-        people, omitted = person_envelopes(samples)
+        people, omitted = person_envelopes(samples, confidence=min_track_confidence)
         if people_mode == 'prominent' and people:
             people = [max(people, key=lambda p: p['coverage']*p['confidence']*math.sqrt(p['roi'][2]*p['roi'][3]))]
         review = list(dict.fromkeys(reason for p in people for reason in p['review']))

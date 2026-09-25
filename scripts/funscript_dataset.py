@@ -17,7 +17,7 @@ def main():
     build.add_argument('--output', required=True, type=Path, help='New public dataset directory')
     build.add_argument('--folder', action='append', help='Registered folder ID; repeat or omit for all registered folders')
     build.add_argument('--approved-only', action='store_true')
-    build.add_argument('--use-folder-approval', action='store_true', help='Use approved labels only if local approvals represent scripts you personally validated; default labels everything draft')
+    build.add_argument('--use-folder-approval', action='store_true', default=True, help='Preserve saved approval status (already the default)')
     build.add_argument('--min-quality', type=int, default=0)
     check = commands.add_parser('check', help='Verify a local snapshot before upload')
     check.add_argument('directory', type=Path)

@@ -17,6 +17,29 @@ class EditorTests(unittest.TestCase):
         self.hand = build_project(sequence, {'target_anchor': 'right_hand'})
         self.initial = initialize(copy.deepcopy(self.mouth))
 
+    def test_reprocess_fills_blank_main_but_retains_authored_audio_axis(self):
+        old=blank_project(self.mouth['metadata'])
+        old['timeline']['main']['R1']['edited']=True
+        old['scripts']['R1']['actions']=[{'at':0,'pos':13},{'at':500,'pos':83}]
+        new=initialize(copy.deepcopy(self.mouth))
+        for main in new['timeline']['main'].values(): main['processing_generated']=True
+        merged=merge_projects(old,new,preserve_main=True)
+        self.assertEqual(merged['scripts']['L0'],new['scripts']['L0'])
+        self.assertEqual(merged['scripts']['R1'],old['scripts']['R1'])
+
+    def test_reprocess_preserves_main_and_edited_source_tracks(self):
+        old=copy.deepcopy(self.initial)
+        old['timeline']['main']['L0']['processing_generated']=True
+        old['timeline']['tracks'][0]['edited']=True
+        old['timeline']['tracks'][0]['script']['actions'][0]['pos']=13
+        new=initialize(copy.deepcopy(self.hand))
+        new['timeline']['main']['L0']['processing_generated']=True
+        merged=merge_projects(old,new,preserve_main=True)
+        self.assertEqual(merged['scripts'],old['scripts'])
+        self.assertEqual(merged['timeline']['main'],old['timeline']['main'])
+        self.assertEqual(merged['timeline']['tracks'][0],old['timeline']['tracks'][0])
+        self.assertNotEqual(merged['timeline']['latest'],old['timeline']['latest'])
+
     def test_audio_only_canvas_can_export_save_and_gain_detected_sources(self):
         canvas = blank_project(self.mouth['metadata'])
         canvas['metadata']['processing_timeline'] = {'session': 'c'*32, 'coverage': []}

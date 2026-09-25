@@ -62,9 +62,13 @@ class ProcessingStore:
                 raise PlanConflict("The source video changed. Reload the timeline before saving.")
             self.protect_locks(normalize_plan(state["plan"], state["info"]), normalized)
             if normalized != state["plan"]:
+                previous, was_current = state['plan'], state.get('result_current', False)
                 state["plan"] = normalized
                 state["revision"] += 1
                 state["result_current"] = False
+                from .processing_split import retain_splits
+                if retain_splits(self, state, previous, was_current):
+                    return state
                 self.write(state)
             return state
 

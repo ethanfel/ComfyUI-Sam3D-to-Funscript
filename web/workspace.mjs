@@ -21,11 +21,19 @@ function describe(anchor){
     for(const page of pages)if(pages.filter(other=>other.kind===page.kind).length>1)page.label+=` · ${page.node.id}`;
     return {members,pages};
 }
-async function flushWindow(win){
+function waitForWorkspace(promise,signal){
+    signal.throwIfAborted();
+    return new Promise((resolve,reject)=>{
+        const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});
+        Promise.resolve(promise).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+    });
+}
+async function flushWindow(win,signal=AbortSignal.timeout(45000)){
     if(!alive(win))return;
-    if(win.s3fTimelineApply)await win.s3fTimelineApply();
-    else if(win.s3fReferenceApply)await win.s3fReferenceApply();
-    else await win.s3fFlush?.();
+    signal.throwIfAborted();
+    if(win.s3fTimelineApply)await waitForWorkspace(win.s3fTimelineApply(),signal);
+    else if(win.s3fReferenceApply)await waitForWorkspace(win.s3fReferenceApply(),signal);
+    else await waitForWorkspace(win.s3fFlush?.(),signal);
 }
 function attach(record){
     for(const item of record.win.s3fWorkspaceFrames?.()||[]){
@@ -60,16 +68,30 @@ async function configure(record,active){
     attach(record);record.win.s3fWorkspaceNotice("");
 }
 function update(record,active){
-    record.pending=(record.pending||Promise.resolve()).then(()=>configure(record,active)).catch(error=>{
+    if(active!==undefined)record.active=active;
+    if(record.updating){record.refreshAgain=true;return record.pending;}
+    record.updating=true;
+    record.pending=Promise.resolve().then(async()=>{
+        do{
+            record.refreshAgain=false;
+            await configure(record,record.active);
+        }while(record.refreshAgain&&alive(record.win));
+    }).catch(error=>{
         if(alive(record.win))record.win.s3fWorkspaceNotice?.(error.message||String(error));
-    });
+    }).finally(()=>{record.updating=false;});
     return record.pending;
 }
-export function refreshWorkspaces(){return Promise.all([...workspaces].map(record=>update(record)));}
-export async function flushWorkspaceNode(node){
+export function refreshWorkspaces({signal}={}){
+    const pending=Promise.all([...workspaces].map(record=>update(record)));
+    return signal?waitForWorkspace(pending,signal):pending;
+}
+export async function flushWorkspaceNode(node,{signal=AbortSignal.timeout(45000)}={}){
     for(const record of workspaces)if(alive(record.win)&&current(record.anchor)&&record.members?.includes(node)){
-        await record.pending;
-        for(const item of record.win.s3fWorkspaceFrames?.()||[])await flushWindow(item.window);
+        await waitForWorkspace(record.pending,signal);
+        // A freshly loaded/prefetched frame can be ready before its asynchronous
+        // attachment message arrives. Bind it before asking it to Apply.
+        attach(record);
+        for(const item of record.win.s3fWorkspaceFrames?.()||[])await flushWindow(item.window,signal);
     }
 }
 export function releaseWorkspaceNode(node){

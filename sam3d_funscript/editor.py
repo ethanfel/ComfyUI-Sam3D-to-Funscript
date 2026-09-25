@@ -185,7 +185,7 @@ def _fill_processing_gaps(project, incoming, axis, mapping):
         project.setdefault('metrics', {}).pop(axis, None)
 
 
-def merge_projects(previous, incoming):
+def merge_projects(previous, incoming, *, preserve_main=False):
     """Follow changed inputs on unlocked lanes; retain locks and composed sections."""
     old, new = initialize(copy.deepcopy(previous)), initialize(copy.deepcopy(incoming))
     was_processing_generated = 'processing_timeline' in old['metadata'] and all(
@@ -233,7 +233,7 @@ def merge_projects(previous, incoming):
     latest = {name: mapping[source] for name, source in new['timeline']['latest'].items()}
     timeline['latest'] = latest
     for track in timeline['tracks']:
-        if track.get('locked') or track.get('window'):
+        if track.get('locked') or track.get('window') or (preserve_main and track.get('edited')):
             continue
         source = sources[track['source']]
         new_id = latest.get(source.get('input', source['id']))
@@ -256,6 +256,8 @@ def merge_projects(previous, incoming):
         timeline['tracks'].append({**track, 'id': f'track_{n}', 'source': mapping[track['source']]})
     for axis, main in new['timeline']['main'].items():
         prior = timeline['main'].get(axis, {})
+        empty_main = prior.get('source') == 'blank' and not (prior.get('edited') or prior.get('locked') or prior.get('regions'))
+        if preserve_main and prior and not empty_main: continue
         generated = prior.get('processing_generated') and main.get('processing_generated') and not prior.get('edited')
         if (prior.get('processing_generated') and main.get('processing_generated') and prior.get('edited')
                 and not prior.get('locked') and 'processing_timeline' in new['metadata']):
@@ -356,12 +358,12 @@ class EditorStore:
                 raise Conflict('Another editor or rerun updated this session. Download your edits before reloading; they have not overwritten the saved tracks.')
             return self.write(session, dict(revision=revision + 1, project=project, output=old.get('output') if old else None))
 
-    def export(self, session, incoming, exporter):
+    def export(self, session, incoming, exporter, *, preserve_main=False):
         with LOCK:
             old = self.read(session)
             switching = old is not None and not same_video(old['project'], incoming)
             previous = self.read_video(session, incoming) if switching else old
-            project = merge_projects(previous['project'], incoming) if previous else initialize(copy.deepcopy(incoming))
+            project = merge_projects(previous['project'], incoming, preserve_main=preserve_main) if previous else initialize(copy.deepcopy(incoming))
             path = exporter(project)
             if switching:
                 # Archive only after a successful export, before replacing active

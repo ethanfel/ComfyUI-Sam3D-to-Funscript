@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {ANCHORS,DETAILED_ANCHOR_GROUPS,bounds,createRegion,changeRegion,splitRegion,validateInterval,validateReference,selectionRange,regionRows,isolateSelection,regionFromSelection} from '../assets/processing-timeline-edit.mjs';
+import {ANCHORS,DETAILED_ANCHOR_GROUPS,bounds,createRegion,changeRegion,splitRegion,validateInterval,validateReference,selectionRange,regionRows,isolateSelection,regionFromSelection,alignEditedBoundaries} from '../assets/processing-timeline-edit.mjs';
 import {timelineView,zoomView,panView,rulerTicks} from '../assets/viewport.mjs';
 const backendAnchors=JSON.parse(execFileSync('python',['-c','import json,runpy; print(json.dumps(list(runpy.run_path("sam3d_funscript/anchors.py")["ANCHORS"])))'],{encoding:'utf8'}));
 const pickerAnchors=[...ANCHORS,...Object.values(DETAILED_ANCHOR_GROUPS).flat()];
@@ -131,3 +131,37 @@ const lockedAdjacent=structuredClone(adjacent);lockedAdjacent.tracking[1].locked
 assert.equal(regionFromSelection(lockedAdjacent,'tracking',()=>'',info).selected_ids[0],'scene28');
 assert.throws(()=>regionFromSelection({...adjacent,selection:[cut-1000/24,170250]},'tracking',()=>'',info),/crosses existing/);
 console.log('Fractional cut boundaries: only the current scene is proposed, existing anchors and locks preserved, genuine overlaps retained');
+
+// Replacing a 24 fps scene uses the exact saved neighbours, even though the
+// frame index serializes timestamps to six decimals (F457–F564 here).
+const fractionalInfo={...info,start:'0',end_ms:29916.666666666668};
+const leftEdge=19041.666666666668,rightEdge=23500;
+const gapPlan={tracking:[createRegion('tracking','left',0,leftEdge,fractionalInfo),
+    createRegion('tracking','right',rightEdge,fractionalInfo.end_ms,fractionalInfo)],
+    stabilization:[],selection:[19041.666666,rightEdge],selected_ids:[]};
+const gapOriginal=structuredClone(gapPlan);
+const replaced=regionFromSelection(gapPlan,'tracking',()=> 'replacement',fractionalInfo);
+const replacement=replaced.tracking.find(r=>r.id==='replacement');
+assert.equal(replacement.start_ms,leftEdge);
+assert.equal(replacement.end_ms,rightEdge);
+assert.equal(regionRows(replaced.tracking).count,1);
+assert.deepEqual(gapPlan,gapOriginal,'Adjacent saved regions are unchanged');
+const oldDraft=structuredClone(replaced);oldDraft.tracking.at(-1).start_ms=19041.666666;
+assert.equal(regionRows(oldDraft.tracking).count,1,'Sub-microsecond overlap does not create another row');
+const aligned=alignEditedBoundaries(oldDraft,gapPlan);
+assert.deepEqual(aligned.tracking,replaced.tracking,'Recovered replacement draft aligns before saving');
+assert.equal(oldDraft.tracking.at(-1).start_ms,19041.666666,'Alignment preserves the input draft for undo');
+assert.deepEqual(aligned.tracking.slice(0,2),gapPlan.tracking,'Saved neighbours keep exact boundaries');
+oldDraft.tracking.at(-1).locked=true;
+assert.equal(alignEditedBoundaries(oldDraft,gapPlan),oldDraft,'Locked edges are never repaired silently');
+oldDraft.tracking.at(-1).locked=false;oldDraft.tracking.at(-1).start_ms=leftEdge-1000/24;
+assert.equal(regionRows(oldDraft.tracking).count,2,'A real one-frame overlap keeps separate rows');
+assert.equal(alignEditedBoundaries(oldDraft,gapPlan),oldDraft,'A real overlap is not repaired silently');
+assert.throws(()=>regionFromSelection({...gapPlan,selection:[leftEdge-1000/24,rightEdge]},'tracking',()=>'',fractionalInfo),/crosses existing/);
+const movedEdge=changeRegion(replaced,'replacement',{start_ms:19041.666666},fractionalInfo);
+assert.equal(movedEdge.tracking.at(-1).start_ms,leftEdge,'Manual edge edits use the exact neighbour');
+const roundedOut={...gapPlan,tracking:[gapPlan.tracking[1]],selection:[0,rightEdge+.0000007]};
+assert.equal(regionFromSelection(roundedOut,'tracking',()=> 'before',fractionalInfo).tracking.at(-1).end_ms,rightEdge);
+const disabledNeighbour={...gapPlan,tracking:gapPlan.tracking.map(r=>({...r,enabled:false}))};
+assert.equal(regionFromSelection(disabledNeighbour,'tracking',()=> 'new',fractionalInfo).tracking.at(-1).start_ms,19041.666666,'Disabled regions do not shift new edges');
+console.log('Fractional replacement edges: one display row, exact neighbouring boundaries, draft recovery, immutable saved/locked regions, real overlaps retained');

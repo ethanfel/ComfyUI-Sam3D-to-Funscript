@@ -4,6 +4,7 @@ import sys
 import types
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,191 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         await self.client.start_server()
         self.addAsyncCleanup(self.client.close)
 
+    async def test_dataset_upload_routes_and_asset(self):
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore
+        from frame_route_fixture.sam3d_funscript.dataset_upload import DatasetUpload
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False)
+        self.assertTrue(listing['dataset_upload'])
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        with patch('frame_route_fixture.sam3d_funscript.dataset_upload.credentials', return_value=dict(available=True, authenticated=True)):
+            response = await self.client.post(url + '/dataset_status', json={})
+            self.assertEqual(response.status, 200, await response.text())
+            state = await response.json()
+            self.assertEqual((state['job']['stage'], state['use_folder_approval']), ('idle', True))
+            self.assertNotIn('token', state)
+        with patch.object(DatasetUpload, 'start', return_value={'job': {'stage': 'building'}}) as start:
+            for body in ({'repo': 'tester/example'}, {'repo': 'tester/example', 'use_folder_approval': False}):
+                start.reset_mock()
+                response = await self.client.post(url + '/dataset_upload', json=body)
+                self.assertEqual(response.status, 200, await response.text())
+                start.assert_called_once_with(listing['folder'], 'tester/example')
+        response = await self.client.get('/sam3d_funscript/assets/folder-upload.mjs')
+        self.assertEqual(response.status, 200, await response.text())
+
+    async def test_h3_routes_cover_unrendered_images_exclusions_and_confidence(self):
+        from test_h3_project import project_fixture
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore
+        project = self.root / 'H3'; project_fixture(project, self.video)
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(project), kind='h3'); folder = listing['folder']
+        url = '/sam3d_funscript/folders/' + folder
+        response = await self.client.post(url + '/h3_exclude_page', json={'page':'page_0003','excluded':True})
+        self.assertEqual(response.status,200,await response.text())
+        self.assertEqual((await response.json())['h3']['excluded_pages'],['page_0003'])
+        from frame_route_fixture.sam3d_funscript.h3_project import set_confidence
+        worker_threads = []
+        def save_confidence(*args):
+            worker_threads.append(threading.get_ident())
+            return set_confidence(*args)
+        with patch('frame_route_fixture.sam3d_funscript.h3_project.set_confidence',side_effect=save_confidence):
+            response = await self.client.post(url + '/h3_confidence', json={'confidence':.25})
+        self.assertEqual(response.status,200,await response.text())
+        self.assertEqual((await response.json())['h3']['confidence'],.25)
+        self.assertEqual(len(worker_threads),1)
+        self.assertNotEqual(worker_threads[0],threading.get_ident(),'Project writes must not block the event loop')
+        response = await self.client.post(url + '/h3_confidence', json={'confidence':False})
+        self.assertEqual(response.status,400)
+        base = '/sam3d_funscript/h3/' + folder
+        response = await self.client.get(base + '/image?page=page_0003')
+        self.assertEqual(response.status,200,await response.text() if response.status!=200 else '')
+        self.assertEqual(response.content_type,'image/png')
+        response = await self.client.get(base + '/image?page=../../project.json')
+        self.assertEqual(response.status,400)
+        with patch('frame_route_fixture.sam3d_funscript.h3_project.probe',return_value={'samples':[]}) as probe:
+            response = await self.client.post(base + '/probe',json={'panel':'page_0001_panel_001'})
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(probe.call_args.args[0].name,'clean_reference.png')
+            self.assertEqual(probe.call_args.args[1],.25)
+        for name in ('h3-project.mjs','h3-project.css'):
+            response = await self.client.get('/sam3d_funscript/assets/'+name)
+            self.assertEqual(response.status,200,await response.text())
+
+    async def test_h3_refresh_bypasses_cached_takes(self):
+        from test_h3_project import project_fixture
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore
+        project = self.root / 'H3'; project_fixture(project, self.video)
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(project), kind='h3')
+        (project / listing['entries'][0]['name']).with_name('render.json').unlink()
+        response = await self.client.get('/sam3d_funscript/folders/' + listing['folder'] + '?refresh=1')
+        self.assertEqual(response.status,200,await response.text())
+        self.assertEqual(len((await response.json())['entries']),3)
+
+    async def test_folder_compact_routes_do_not_scan_known_clips(self):
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore, ACTIVE
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False)
+        entry = listing['entries'][0]; clip = entry['id']
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        store.open(listing['folder'], clip)
+        editor = store.editors.read(entry['editor_session'])
+        with patch.object(FolderStore, 'scan', side_effect=AssertionError('Unnecessary library scan')):
+            response = await self.client.post(url + '/intensity', json={'clip': clip})
+            self.assertEqual(response.status, 200, await response.text())
+            estimate = await response.json()
+            self.assertEqual((estimate['clip'], estimate['revision']), (clip, editor['revision']))
+            response = await self.client.post(url + '/review', json={'clip': clip, 'intensity_mode': 'auto', 'compact': True})
+            self.assertEqual(response.status, 200, await response.text())
+            saved = (await response.json())['entries'][0]
+            self.assertEqual((saved['intensity'], saved['intensity_mode']), (estimate['level'], 'auto'))
+            with patch.dict(ACTIVE, {entry['timeline']: -1}):
+                response = await self.client.get(url, params={'clip': clip})
+                self.assertEqual(response.status, 200, await response.text())
+                value = await response.json()
+                self.assertTrue(value['partial']); self.assertTrue(value['entries'][0]['processing'])
+            for action, fields in [('review', {'quality': 4}), ('ignore', {'ignored': True}),
+                                   ('ignore', {'ignored': False}), ('approve', {'revision': editor['revision']})]:
+                response = await self.client.post(url + '/' + action, json={'clip': clip, 'compact': True, **fields})
+                self.assertEqual(response.status, 200, await response.text())
+                result = await response.json(); value = result.get('listing', result)
+                self.assertTrue(value['partial']); self.assertEqual(len(value['entries']), 1)
+                self.assertEqual(value['entries'][0]['quality'], 4)
+
+    async def test_folder_review_intensity_roundtrip_and_validation(self):
+        from sam3d_funscript.folder_store import FolderStore
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False)
+        clip = listing['entries'][0]['id']
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        self.assertEqual(listing['entries'][0]['intensity'], 0)
+        for fields, expected in [({'intensity': 3}, 3), ({'quality': 5, 'audio_sync': True}, 3), ({'intensity': 0}, 0)]:
+            response = await self.client.post(url + '/review', json={'clip': clip, **fields})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertEqual((await response.json())['entries'][0]['intensity'], expected)
+        for invalid in (-1, 6, True, 1.5, '3'):
+            response = await self.client.post(url + '/review', json={'clip': clip, 'intensity': invalid})
+            self.assertEqual(response.status, 400)
+        response = await self.client.get(url)
+        self.assertEqual((await response.json())['entries'][0]['intensity'], 0)
+
+    async def test_folder_tags_roundtrip_job_controls_and_validation(self):
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore
+        from frame_route_fixture.sam3d_funscript.tag_jobs import TagJobs, RUNNING
+        store=FolderStore(self.root/'sam3d_funscript')
+        listing=store.prepare(str(self.root),False);clip=listing['entries'][0]['id'];folder=listing['folder']
+        url='/sam3d_funscript/folders/'+folder
+        self.assertTrue(listing['tagging']);self.assertTrue(listing['bulk_reprocess'])
+        asset=await self.client.get('/sam3d_funscript/assets/folder-tags.mjs')
+        self.assertEqual(asset.status,200)
+        self.assertIn('export function folderTags',await asset.text())
+        response=await self.client.post(url+'/review',json={'clip':clip,'quality':4,'tags':['Woman','long_hair','woman']})
+        self.assertEqual(response.status,200,await response.text())
+        self.assertEqual((await response.json())['entries'][0]['tags'],['long hair','woman'])
+        response=await self.client.post(url+'/review',json={'clip':clip,'tags':'not a list'})
+        self.assertEqual(response.status,400)
+        self.assertEqual(store.entry(folder,clip)[0]['quality'],4)
+        with patch('frame_route_fixture.sam3d_funscript.tag_jobs.threading.Thread'):
+            response=await self.client.post(url+'/tags_start',json={'clip_ids':[clip],'source':'civitai'})
+        self.assertEqual(response.status,200,await response.text());job=await response.json()
+        self.assertTrue(job['incremental'])
+        self.assertFalse(job['force'])
+        try:
+            response=await self.client.post(url+'/tags_status',json={})
+            self.assertEqual((await response.json())['stage'],'running')
+            response=await self.client.post(url+'/tags_stop',json={})
+            self.assertEqual((await response.json())['stage'],'stopping')
+            TagJobs(store.root).run(folder,listing['entries'],job)
+            response=await self.client.post(url+'/tags_status',json={})
+            self.assertEqual((await response.json())['stage'],'stopped')
+        finally: RUNNING.discard((str(store.root),folder))
+        with patch.object(TagJobs, 'start', return_value={'stage':'complete'}) as start:
+            response=await self.client.post(url+'/tags_start',json={'clip_ids':[clip],'force':True})
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(start.call_args.kwargs, {'force':True})
+
+    async def test_folder_bulk_audio_sync_preserves_other_review_fields(self):
+        from frame_route_fixture.sam3d_funscript.folder_store import FolderStore
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False); clip = listing['entries'][0]['id']
+        store.review(listing['folder'],clip,quality=4,note='Keep this note',intensity=3)
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        response = await self.client.post(url + '/review_audio_sync',json={'clip_ids':[clip,clip],'audio_sync':True})
+        self.assertEqual(response.status,200,await response.text())
+        result = await response.json(); entry = result['listing']['entries'][0]
+        self.assertEqual((result['matched'],result['updated']),(1,1))
+        self.assertEqual((entry['audio_sync'],entry['quality'],entry['note'],entry['intensity']),(True,4,'Keep this note',3))
+        response = await self.client.post(url + '/review_audio_sync',json={'clip_ids':[clip,'0'*32],'audio_sync':False})
+        self.assertEqual(response.status,409)
+        self.assertTrue(store.entry(listing['folder'],clip)[0]['audio_sync'])
+        response = await self.client.post(url + '/review_audio_sync',json={'clip_ids':[],'audio_sync':True})
+        self.assertEqual(response.status,400)
+
+    async def test_folder_review_audio_sync_roundtrip_and_validation(self):
+        from sam3d_funscript.folder_store import FolderStore
+        store = FolderStore(self.root / 'sam3d_funscript')
+        listing = store.prepare(str(self.root), False)
+        clip = listing['entries'][0]['id']
+        url = '/sam3d_funscript/folders/' + listing['folder']
+        for fields, expected in [({'audio_sync': True}, True), ({'quality': 4}, True), ({'audio_sync': False}, False)]:
+            response = await self.client.post(url + '/review', json={'clip': clip, **fields})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertIs((await response.json())['entries'][0]['audio_sync'], expected)
+        response = await self.client.post(url + '/review', json={'clip': clip, 'audio_sync': 'false'})
+        self.assertEqual(response.status, 400)
+        response = await self.client.get(url)
+        self.assertIs((await response.json())['entries'][0]['audio_sync'], False)
+
     async def test_folder_routes_open_ignore_restore_and_approve_saved_main(self):
         from sam3d_funscript.folder_store import FolderStore
         store = FolderStore(self.root / 'sam3d_funscript')
@@ -92,12 +278,32 @@ class FrameRouteTests(unittest.IsolatedAsyncioTestCase):
         folder=library.folders.prepare(str(self.root))['folder'];base='/sam3d_funscript/civitai/'+folder
         response=await self.client.get(base);self.assertEqual(response.status,200)
         data=await response.json();entry=data['items']['123'][0]
+        self.assertTrue(data['video_galleries'])
+        self.assertEqual((data['metadata']['known'],data['metadata']['total']),(0,1))
         response=await self.client.get(base+'/local/'+entry['id'],headers={'Range':'bytes=0-31'})
         self.assertEqual(response.status,206);self.assertEqual(len(await response.read()),32)
         self.assertFalse((library.folders.plans.directory(entry['timeline'])/'timeline.json').exists())
         with patch.object(module,'fetch_json',return_value={'items':[],'metadata':{'nextCursor':'test'}}):
             response=await self.client.post(base+'/browse',json={'sort':'Newest','site':'civitai.com'})
             self.assertEqual((await response.json())['next_cursor'],'test')
+        with patch.object(module,'fetch_json',return_value={'items':[{'id':123,'postId':77,'username':'Creator','type':'video','url':'https://image.civitai.com/key/uuid/width=450/123.mp4'}]}):
+            response=await self.client.post(base+'/gallery',json={'kind':'post','id':'123','postId':'77'})
+            self.assertEqual(response.status,200,await response.text());self.assertEqual((await response.json())['gallery']['post_id'],'77')
+        response=await self.client.post(base+'/gallery',json={'kind':'post','id':'../123'})
+        self.assertEqual(response.status,400)
+        with patch.object(module,'fetch_json') as fetch:
+            response=await self.client.post(base+'/metadata_start',json={})
+            self.assertEqual(response.status,200,await response.text())
+            job=await response.json();self.assertEqual((job['stage'],job['skipped']),('complete',1))
+            fetch.assert_not_called()
+        with patch.object(module.CivitaiLibrary,'token',return_value='private-key'),patch.object(module.CivitaiMetadata,'start',return_value={'stage':'running'}) as start:
+            response=await self.client.post(base+'/metadata_start',json={'site':'civitai.com','force':True,'ids':['999']})
+            self.assertEqual(response.status,200)
+            start.assert_called_once_with(folder,['123'],'civitai.com','private-key',True)
+        response=await self.client.post(base+'/metadata_stop',json={})
+        self.assertEqual(response.status,200)
+        response=await self.client.post(base+'/metadata_start',json={'force':'yes'})
+        self.assertEqual(response.status,400)
         for action,body in [('browse',[]),('category',{'name':'../outside'}),('download',{'id':'../123','category':'Dance'})]:
             response=await self.client.post(base+'/'+action,json=body);self.assertEqual(response.status,400)
         for name in ('civitai-browser.mjs','civitai-queue.mjs','civitai-browser.css'):

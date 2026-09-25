@@ -41,6 +41,8 @@ For audio patterns or manual authoring, open Motion Studio immediately after pre
 
 For a collection of clips or Civitai browsing, start with [Folder library](workflows/02_folder_library.json), set `folder_path`, run **prepare**, then click **Open folder workspace**.
 
+For H3 Animator projects, use [H3 project](workflows/03_h3_project.json). It follows page/panel order, checks person detection on drawings and videos, supports reversible page/video exclusions, and saves reviewed scripts beside the selected take. See the [H3 project guide](docs/h3-project.md).
+
 | Setting | What to know |
 |---|---|
 | `sample_fps` | Set to **0** to analyse every source frame. |
@@ -63,8 +65,9 @@ Your download includes `project.json` and `viewer.html`. Open the viewer and cho
 |---|---|
 | One video, including audio patterns | [01 · Single video](workflows/01_single_video.json) |
 | Local folders, bulk review or Civitai | [02 · Folder library](workflows/02_folder_library.json) |
+| H3 Animator pages, panels and video takes | [03 · H3 project](workflows/03_h3_project.json) |
 
-These are the two canvas starters. Specialized node recipes are in [advanced examples](extras/advanced/README.md); automation prompts are in [API examples](extras/api/README.md). Regenerate the starters with `python scripts/create_workflows.py`.
+These are the three canvas starters. Specialized node recipes are in [advanced examples](extras/advanced/README.md); automation prompts are in [API examples](extras/api/README.md). Regenerate the starters with `python scripts/create_workflows.py`.
 
 ## Before you export
 

@@ -66,6 +66,23 @@ class CivitaiLibraryTests(unittest.TestCase):
             result=self.library.download(self.folder,'123','New')
         fetch.assert_not_called();self.assertTrue(result['reused']);self.assertEqual(result['entry']['category'],'Old');self.assertTrue(path.exists())
 
+    def test_browsing_saves_metadata_for_every_local_copy_and_gallery_reuses_it(self):
+        first=self.local('Old/Unknown_civitai_123_original.mp4')
+        second=self.local('Other/Unknown_civitai_123_original.mp4')
+        before={path:path.read_bytes() for path in (first,second)}
+        record={'id':123,'type':'video','url':REMOTE,'username':'ActualCreator','postId':77,'width':640,'height':960}
+        with patch('sam3d_funscript.civitai_library.fetch_json',return_value={'items':[record]}):
+            self.library.browse(self.folder,{})
+        library=CivitaiLibrary(self.library.root)
+        catalogue=library.catalogue(self.folder)
+        self.assertEqual((catalogue['metadata']['known'],catalogue['metadata']['total']),(1,1))
+        self.assertEqual([entry['creator_username'] for entry in catalogue['items']['123']],['ActualCreator']*2)
+        self.assertEqual(before,{path:path.read_bytes() for path in before})
+        with patch('sam3d_funscript.civitai_library.fetch_json',return_value={'items':[record]}) as fetch:
+            library.gallery(self.folder,{'id':'123','kind':'post'})
+        fetch.assert_called_once()
+        self.assertEqual(parse_qs(urlsplit(fetch.call_args.args[0]).query)['postId'],['77'])
+
     def test_api_preserves_sort_and_cursor_order_and_filters_invalid_items(self):
         data={'items':[{'id':9,'type':'video','url':REMOTE,'stats':[]},{'id':3,'type':'video','url':REMOTE},
                        {'id':1,'type':'image','url':REMOTE},{'id':2,'type':'video','url':'http://localhost/private'}],
@@ -87,6 +104,47 @@ class CivitaiLibraryTests(unittest.TestCase):
                     self.assertEqual(query['browsingLevel'],[str(level)])
                     self.assertEqual(query.get('cursor'),[cursor] if cursor else None)
                     self.assertEqual(fetch.call_args.args[1],'fixture-secret')
+
+    def test_post_gallery_resolves_local_video_and_preserves_post_on_next_page(self):
+        self.library.set_token('fixture-secret')
+        record={'id':123,'type':'video','url':REMOTE,'postId':77,'username':'Creator'}
+        with patch('sam3d_funscript.civitai_library.fetch_json',side_effect=[{'items':[record]}, {'items':[record,{**record,'id':124}],'metadata':{'nextCursor':'next'}}]) as fetch:
+            result=self.library.gallery(self.folder,{'id':'123','kind':'post','site':'civitai.com','browsingLevel':16,'sort':'Oldest','period':'Week'})
+        queries=[parse_qs(urlsplit(call.args[0]).query) for call in fetch.call_args_list]
+        self.assertEqual(queries[0]['imageId'],['123']);self.assertEqual(queries[1]['postId'],['77'])
+        self.assertNotIn('imageId',queries[1]);self.assertEqual(queries[1]['period'],['AllTime'])
+        self.assertTrue(all(q['browsingLevel']==['16'] for q in queries))
+        self.assertTrue(all(call.args[1]=='fixture-secret' for call in fetch.call_args_list))
+        self.assertEqual([r['id'] for r in result['items']],['123','124'])
+        self.assertEqual(result['gallery']['post_id'],'77');self.assertEqual(result['next_cursor'],'next')
+        with patch('sam3d_funscript.civitai_library.fetch_json',return_value={'items':[record]}) as fetch:
+            self.library.gallery(self.folder,{'id':'123','kind':'post','postId':'77','cursor':'next'})
+        fetch.assert_called_once();query=parse_qs(urlsplit(fetch.call_args.args[0]).query)
+        self.assertEqual(query['postId'],['77']);self.assertEqual(query['cursor'],['next'])
+
+    def test_creator_gallery_resolves_author_without_guessing_from_filename(self):
+        record={'id':123,'type':'video','url':REMOTE,'postId':77,'username':'Real_Creator'}
+        with patch('sam3d_funscript.civitai_library.fetch_json',side_effect=[{'items':[record]}, {'items':[{**record,'id':125,'postId':88}]}]) as fetch:
+            result=self.library.gallery(self.folder,{'id':'123','kind':'creator'})
+        query=parse_qs(urlsplit(fetch.call_args.args[0]).query)
+        self.assertEqual(query['username'],['Real_Creator']);self.assertNotIn('postId',query)
+        self.assertEqual(query['period'],['AllTime']);self.assertEqual(result['gallery']['username'],'Real_Creator')
+        with patch('sam3d_funscript.civitai_library.fetch_json',return_value={'items':[]}) as fetch:
+            self.library.gallery(self.folder,{'id':'123','kind':'creator','username':'Real_Creator','cursor':'next'})
+        fetch.assert_called_once()
+
+    def test_galleries_do_not_fall_back_to_unrelated_videos(self):
+        record={'id':123,'type':'video','url':REMOTE}
+        for data in ({'items':[]},{'items':[record]},{'items':[{**record,'id':999,'postId':77,'username':'Other'}]}):
+            for kind in ('post','creator'):
+                with self.subTest(data=data,kind=kind),patch('sam3d_funscript.civitai_library.fetch_json',return_value=data) as fetch,self.assertRaises(ValueError):
+                    self.library.gallery(self.folder,{'id':'123','kind':kind})
+                fetch.assert_called_once()
+        with patch('sam3d_funscript.civitai_library.fetch_json',return_value={'items':[{**record,'postId':88}]}),self.assertRaisesRegex(ValueError,'outside the requested post'):
+            self.library.gallery(self.folder,{'id':'123','kind':'post','postId':'77'})
+        for options in ({'id':'123','kind':'unknown'},{'id':'../123','kind':'post'},{'id':'123','kind':'post','postId':'bad'}):
+            with patch('sam3d_funscript.civitai_library.fetch_json') as fetch,self.assertRaises(ValueError):self.library.gallery(self.folder,options)
+            fetch.assert_not_called()
 
     def test_download_lookup_does_not_fall_back_to_public_ratings(self):
         self.library.set_token('fixture-secret')
@@ -229,7 +287,7 @@ class CivitaiLibraryTests(unittest.TestCase):
     def test_selected_bulk_only_processes_selected_unscripted_nonignored_clips(self):
         for id in ('1','2','3','4'):self.local('X_civitai_'+id+'_original.mp4')
         index=self.library.catalogue(self.folder)['items'];ids={k:v[0]['id'] for k,v in index.items()}
-        (self.videos/'X_civitai_2_original.funscript').write_text('{}');self.library.ignore(self.folder,'3',True)
+        (self.videos/'X_civitai_2_original.funscript').write_text(json.dumps({'actions':[{'at':0,'pos':20},{'at':1000,'pos':80}]}));self.library.ignore(self.folder,'3',True)
         visited=[];result=self.folders.process_batch(self.folder,'',lambda e:visited.append(e['id']),clip_ids=[ids['1'],ids['2'],ids['3']])
         self.assertEqual(visited,[ids['1']]);self.assertEqual(result['total'],1)
         self.assertFalse((self.videos/'X_civitai_1_original.funscript').exists())

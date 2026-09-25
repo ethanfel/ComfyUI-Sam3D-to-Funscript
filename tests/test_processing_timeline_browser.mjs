@@ -23,7 +23,7 @@ const session='1234567890abcdef1234567890abcdef';
 let orientationCapabilities=true;
 let state={session,revision:1,info:{source_id:'neutral',source:{path:'neutral-test.mp4'},start:'0',duration:'3600',source_origin:'0',rate:'30',width:160,height:120,end_ms:3600000},plan:{version:1,source_id:'neutral',tracking:[{id:'t0',name:'Full video',start_ms:0,end_ms:3600000,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],smoothing_ms:80,settings:{}}],stabilization:[],selection:[0,0],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},report:null,project:null,editor_session:'shared-motion-session'};
 let seenProcess=null,apiRequests=0,renderedState=null,referenceSaved=null,referenceCapabilities=true,trackCapabilities=true,maskCapabilities=true,meshCapabilities=true,automaticCapabilities=true;
-let importRequest=null,seedCapabilities=true;
+let importRequest=null,seedCapabilities=true,retainSplitFixture=false,splitCapabilities=true;
 let cutEditRequests=[];
 let seedModels=[{value:'checkpoints:sam3.pt',label:'SAM3 · sam3.pt (checkpoints)'},{value:'sam3:sam3.1_multiplex.pt',label:'SAM3.1 · sam3.1_multiplex.pt (sam3)'}];
 const referenceState={id:'neutral-reference',info:{source_id:'neutral-reference-source',width:160,height:120,source_origin:'0',rate:'2'},config:{crop_xywh:[0,0,160,120],points:[],sections:[]},frame_index:{times_ms:Array.from({length:120},(_,i)=>i*500)}};
@@ -34,7 +34,7 @@ const mime={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript'
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end(parentHtml);return;}
- if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({sam3_mask_seed:seedCapabilities?1:0,automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,orientation_stabilization:orientationCapabilities?1:0,timeline_scope:1,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
+ if(url.pathname==='/sam3d_funscript/reference-capabilities'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({sam3_mask_seed:seedCapabilities?1:0,automatic_scenes:automaticCapabilities?1:0,automatic_stabilization:1,similarity_stabilization:1,orientation_stabilization:orientationCapabilities?1:0,timeline_scope:1,tracking_splits:splitCapabilities?1:0,keyframes:referenceCapabilities?1:0,timeline_stabilize:trackCapabilities?1:0,reference_masks:maskCapabilities?1:0,mask_anchors:meshCapabilities?1:0}));return;}
  if(url.pathname==='/sam3d_funscript/mask-seed-models'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(seedModels));return;}
  if(url.pathname==='/test/reference-save'){let body='';for await(const part of req)body+=part;referenceSaved=JSON.parse(body);res.end('{}');return;}
  if(url.pathname==='/sam3d_funscript/reference/neutral-reference'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(referenceState));return;}
@@ -57,12 +57,18 @@ const server=http.createServer(async(req,res)=>{
   if(importRequest.preview)res.end(JSON.stringify({cuts,expected_cuts:token}));
   else{state.scene_cuts=cuts;res.end(JSON.stringify(state));}return;
  }
- if(url.pathname===`/sam3d_funscript/timelines/${session}`){apiRequests++;res.setHeader('Content-Type','application/json');if(req.method==='POST'){let body='';for await(const part of req)body+=part;const sent=JSON.parse(body);if(sent.revision!==state.revision){res.statusCode=409;res.setHeader('Content-Type','text/plain');res.end('stale revision');return;}state={...state,revision:state.revision+1,plan:sent.plan};}res.end(JSON.stringify(state));return;}
+ if(url.pathname===`/sam3d_funscript/timelines/${session}`){apiRequests++;res.setHeader('Content-Type','application/json');if(req.method==='POST'){let body='';for await(const part of req)body+=part;const sent=JSON.parse(body);if(sent.revision!==state.revision){res.statusCode=409;res.setHeader('Content-Type','text/plain');res.end('stale revision');return;}state={...state,revision:state.revision+1,plan:sent.plan};
+  if(retainSplitFixture){
+   state.report={regions:state.plan.tracking.map(region=>({id:region.id,region,stabilization_regions:[],state:'complete',coverage:[[region.start_ms,region.end_ms]]}))};
+   state.retained_splits={revision:state.revision,regions:state.plan.tracking.map(r=>r.id)};
+   renderedState={source_id:state.info.source_id,regions:Object.fromEntries(state.report.regions.map(r=>[r.id,r]))};
+  }
+ }res.end(JSON.stringify(state));return;}
  if(url.pathname==='/view'&&url.searchParams.get('filename')==='state.json'){res.setHeader('Content-Type','application/json');if(!renderedState){res.statusCode=404;res.end('{}');}else res.end(JSON.stringify(renderedState));return;}
  if(url.pathname==='/view'&&url.searchParams.get('filename')==='reference.json'){
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id:'a'.repeat(24),state:'ready',info:{source:state.info.source},video:{padding_xy:[20,20]},data:{source_times_ms:[2000,2500,3000,3500,4000],quality:['tracked','tracked','held','held','tracked'],shift_xy:[[0,0],[10,0],[10,0],[10,0],[40,0]],points:Array.from({length:5},(_,i)=>[[40+i*10,60],[70+i*10,70],[100+i*10,60]]),visible:[[true,true,true],[true,true,true],[true,true,false],[true,true,false],[true,true,true]],reasons:['consensus','consensus','insufficient_visible_points','insufficient_visible_points','consensus']}}));return;
  }
- if(url.pathname.endsWith('/frames')){const rate=state.info.source_id==='portrait'?2:30,first=Math.ceil(Number(state.info.start)*rate),end=Math.ceil(state.info.end_ms/1000*rate);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:state.info.source_id,first_frame:first,end_frame:end,times_ms:Array.from({length:end-first},(_,i)=>(i+first)*1000/rate),end_ms:state.info.end_ms}));return;}
+ if(url.pathname.endsWith('/frames')){const rate=state.info.source_id==='fractional'?24:state.info.source_id==='portrait'?2:30,first=Math.ceil(Number(state.info.start)*rate),end=Math.ceil(state.info.end_ms/1000*rate);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({source_id:state.info.source_id,first_frame:first,end_frame:end,times_ms:Array.from({length:end-first},(_,i)=>state.info.source_id==='fractional'?Math.round((i+first)*1000000000/rate)/1000000:(i+first)*1000/rate),end_ms:state.info.end_ms}));return;}
  if(url.pathname.includes('/masks/')){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));return;}
  if(url.pathname.endsWith('/thumbnail')){if(state.info.source_id==='portrait'){res.setHeader('Content-Type','image/jpeg');res.end(fs.readFileSync(portraitThumb));}else{res.statusCode=404;res.end();}return;}
  let file;if(url.pathname.endsWith('/video/source'))file=clip;else if(url.pathname==='/view'&&url.searchParams.get('filename')==='stabilized.mp4')file=stabilizedClip;else if(url.pathname.endsWith('/video'))file=state.info.source_id==='portrait'?portraitClip:clip;else if(url.pathname.startsWith('/sam3d_funscript/assets/'))file=path.join(root,'assets',path.basename(url.pathname));
@@ -88,6 +94,20 @@ try{
  assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/108000 frames/);
  await page.evaluate('document.querySelector("#timelineUnit").value="time";document.querySelector("#timelineUnit").dispatchEvent(new Event("change"))');
  assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/1:00:00/);
+ // Replacing the only region covers the whole clip, regardless of a stale
+ // marked range, zoom or playhead. Explicit new marks still take precedence.
+ const regionBounds=()=>page.evaluate('[Number(document.querySelector("#regionIn").value),Number(document.querySelector("#regionOut").value)]');
+ await page.evaluate('document.querySelector("#goTime").value=5;document.querySelector("#seekTime").click();document.querySelector("#zoomIn").click();document.querySelector("#selectionIn").value=2;document.querySelector("#selectionOut").value=4;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#remove").click();document.querySelector("#addTracking").click()');
+ assert.deepEqual(await regionBounds(),[0,3600],'Replacing the last region discards the old marked range');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click();document.querySelector("#clearSelection").click();document.querySelector("#remove").click();document.querySelector("#clearSelection").click();document.querySelector("#addTracking").click()');
+ assert.deepEqual(await regionBounds(),[0,3600],'An empty lane defaults to the full clip, not ten seconds at the playhead');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click();document.querySelector("#remove").click();document.querySelector("#selectionIn").value=10;document.querySelector("#selectionOut").value=12;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#addTracking").click()');
+ assert.deepEqual(await regionBounds(),[10,12],'A range explicitly marked after deletion is honored');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click();document.querySelector("#clearSelection").click();document.querySelector("#addStabilization").click()');
+ assert.deepEqual(await regionBounds(),[0,3600],'Empty stabilization also defaults to the full clip');
+ assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),1,'Stabilization does not alter tracking coverage');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#clearSelection").click();document.querySelector("#fitAll").click()');
+
  await page.evaluate('document.querySelector("#regionOut").value=30;document.querySelector("#regionOut").dispatchEvent(new Event("change"));document.querySelector("#anchor").value="mouth";document.querySelector("#anchor").dispatchEvent(new Event("change"))');
  await page.evaluate('document.querySelector("#apply").click()');
  assert.match(await page.evaluate('document.querySelector("#apply").textContent'),/Applying/);
@@ -96,6 +116,11 @@ try{
  await page.evaluate('document.querySelector("#regionLock").click()');assert.equal(await page.evaluate('document.querySelector("#regionOut").disabled'),true);
  await page.evaluate('document.querySelector("#regionLock").click();document.querySelector("#selectionIn").value=30;document.querySelector("#selectionOut").value=60;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#addTracking").click()');
  assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),2);
+ await page.evaluate('document.querySelector("#selectionIn").value=10;document.querySelector("#selectionOut").value=12;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#remove").click();document.querySelector("#addTracking").click()');
+ assert.deepEqual(await regionBounds(),[30,60],'Replacing one of several regions fills its former interval');
+ assert.equal(await page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length'),2,'Neighboring regions are kept');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click()');
+
  // Switching blocks after editing an anchor must refresh the inspector even
  // though the lane prevents pointerdown's normal focus change.
  await page.evaluate('document.querySelector("#selectionIn").value=0;document.querySelector("#selectionOut").value=60;document.querySelector("#selectionOut").dispatchEvent(new Event("change"));document.querySelector("#fitSelection").click()');
@@ -246,6 +271,10 @@ try{
  assert.equal(await page.evaluate('document.querySelector("#nextCut").disabled'),true,'old source markers must not appear on a new source');assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/^0:30/);assert.equal(Number(await page.evaluate('document.querySelector("#pan").min')),30000);
  await page.evaluate('document.querySelector("#zoomIn").click();document.querySelector("#pan").value=0;document.querySelector("#pan").dispatchEvent(new Event("input"));document.querySelector("#fitAll").click()');
  assert.match(await page.evaluate('document.querySelector("#viewLabel").textContent'),/^0:30/);
+
+ await page.evaluate('document.querySelector("#remove").click();document.querySelector("#addTracking").click()');
+ assert.deepEqual(await regionBounds(),[30,3630],'Whole-clip replacement respects source trims');
+ await page.evaluate('document.querySelector("#undo").click();document.querySelector("#undo").click()');
 
  // Layout edits never alter analysis regions; portrait media and full frames fit.
  state={...state,revision:state.revision+1,info:{...state.info,source_id:'portrait',start:'0',end_ms:10000,width:180,height:320},plan:{...state.plan,source_id:'portrait',tracking:[{...state.plan.tracking[0],id:'portrait0',start_ms:0,end_ms:10000}],stabilization:[],selection:[0,0],selected_ids:[]}};
@@ -701,6 +730,29 @@ try{
  assert.deepEqual(state.plan.stabilization,splitSaved);
  await page.evaluate('document.querySelector("#stabilizationLane").scrollIntoView({block:"center"})');await wait(100);
  fs.writeFileSync('development/region-split-browser/independent-regions.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ // Pure detection splits retain both results on Apply and never queue inference.
+ state.plan.tracking=[{...structuredClone(state.plan.tracking[0]),id:'retained-parent',name:'Saved detection',start_ms:0,end_ms:10000}];
+ state.plan.stabilization=[];state.plan.selected_ids=['retained-parent'];state.plan.selection=[0,0];state.revision++;
+ state.report={regions:[{id:'retained-parent',state:'complete',region:structuredClone(state.plan.tracking[0]),stabilization_regions:[]}]};
+ renderedState={source_id:state.info.source_id,regions:{'retained-parent':state.report.regions[0]}};
+ await page.evaluate('localStorage.clear()');await page.call('Page.reload');
+ await until(()=>page.evaluate('document.querySelector("#regionName")?.value==="Saved detection"&&!document.querySelector("#apply").disabled'),'saved detection reopened');
+ await page.evaluate('document.querySelector("#fitAll").click();document.querySelector(".timeline-panel").scrollIntoView({block:"center"})');await wait(100);
+ await marker(4500);
+ await page.evaluate('document.querySelector("#cutSplitLane").value="tracking";document.querySelector("#cutSplitLane").dispatchEvent(new Event("change"));document.querySelector("#cutSplit").click()');
+ assert.deepEqual(await page.evaluate('[...document.querySelectorAll("#trackingLane .region-state")].map(e=>e.textContent)'),['split · apply to retain','split · apply to retain']);
+ splitCapabilities=false;seenProcess=null;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#error").textContent.includes("Restart ComfyUI")'),'old backend protects saved detection');
+ assert.equal(state.plan.tracking.length,1,'unsupported backend must not save the split');
+ splitCapabilities=true;retainSplitFixture=true;
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'retained split applied');
+ assert.deepEqual(state.plan.tracking.map(r=>[r.start_ms,r.end_ms]),[[0,4500],[4500,10000]]);
+ assert.deepEqual(await page.evaluate('[...document.querySelectorAll("#trackingLane .region-state")].map(e=>e.textContent)'),['complete','complete']);
+ assert.equal(seenProcess,null,'a retained split does not queue a process job');
+ fs.writeFileSync('development/region-split-browser/retained-detection.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ retainSplitFixture=false;delete state.retained_splits;renderedState=null;
  // Automatic proposals remain ordinary editable regions; the bridge gets a
  // one-shot option and review navigation includes failed inference as well.
  const automaticRegion={...structuredClone(state.plan.tracking[0]),id:'auto-test',name:'Scene 1',start_ms:0,end_ms:5000,enabled:true,locked:false,
@@ -883,6 +935,43 @@ try{
  await page.call('Emulation.setDeviceMetricsOverride',{width:720,height:1120,deviceScaleFactor:1,mobile:false});await wait(100);
  assert.ok(await page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'orientation controls fit narrow timeline');
  console.log('Head orientation: fractional angles, save/reload, switching to Tracking 10, inactive validation, actionable invalid-field errors, backend guard, tracking, preview, lock and narrow layout passed');
+
+ // Fractional cut replacement: a rounded frame edge must share the visual
+ // row and exact saved boundary with its unchanged completed neighbours.
+ {
+ const leftEdge=19041.666666666668,rightEdge=23500;
+ const makeRegion=(id,start,end)=>({id,name:id,start_ms:start,end_ms:end,enabled:true,locked:false,anchor:'pelvis',person:0,rois:[[0,0,1,1]],settings:{},smoothing_ms:30});
+ const neighbours=[makeRegion('previous-scene',0,leftEdge),makeRegion('next-scene',rightEdge,29916.666666666668)];
+ state={session,revision:state.revision+1,info:{source_id:'fractional',source:{path:'neutral-test.mp4'},start:'0',duration:'29.916666666666668',source_origin:'0',rate:'24',width:160,height:120,end_ms:29916.666666666668},
+   plan:{version:1,source_id:'fractional',tracking:structuredClone(neighbours),stabilization:[],selection:[19041.666666,rightEdge],selected_ids:[],join_ms:200,gap_policy:'hold',chunk_seconds:30},
+   report:{regions:neighbours.map(r=>({...r,state:'complete'})),warnings:[]},project:null};
+ renderedState=null;
+ await page.evaluate(`localStorage.removeItem('s3f-processing-timeline:${session}');location.reload()`);
+ await until(()=>page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length===2'),'fractional neighbours loaded');
+ await page.evaluate('document.querySelector("#addTracking").click()');
+ await until(()=>page.evaluate('document.querySelectorAll("#trackingLane .region-bar").length===3'),'replacement added');
+ assert.equal(await page.evaluate('new Set([...document.querySelectorAll("#trackingLane .region-bar")].map(b=>b.style.top)).size'),1,'Replacement stays on the same row as both neighbouring scenes');
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'fractional replacement saved');
+ assert.deepEqual(state.plan.tracking.slice(0,2),neighbours,'Completed neighbours remain unchanged');
+ assert.deepEqual([state.plan.tracking.at(-1).start_ms,state.plan.tracking.at(-1).end_ms],[leftEdge,rightEdge]);
+ // Reopening a draft made by the old UI also repairs just its new edge at Apply.
+ const savedFractional=structuredClone(state.plan);state.plan={...savedFractional,tracking:structuredClone(neighbours)};state.revision++;
+ const recovered=structuredClone(savedFractional);recovered.tracking.at(-1).start_ms=19041.666666;
+ await page.evaluate('window.s3fEditorReady=false');
+ await page.call('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('s3f-processing-timeline:${session}',JSON.stringify(${JSON.stringify({revision:state.revision,base:state.plan,plan:recovered})}));`});
+ await page.call('Page.reload');
+ await until(()=>page.evaluate('window.s3fEditorReady&&document.querySelectorAll("#trackingLane .region-bar").length===3'),'rounded draft recovered');
+ assert.equal(await page.evaluate('new Set([...document.querySelectorAll("#trackingLane .region-bar")].map(b=>b.style.top)).size'),1);
+ await page.evaluate('document.querySelector("#apply").click()');
+ await until(()=>page.evaluate('document.querySelector("#apply").textContent.includes("Applied")'),'recovered replacement saves');
+ assert.deepEqual(state.plan.tracking,savedFractional.tracking);
+ await page.call('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+ await page.evaluate('document.querySelector("#trackingLane").scrollIntoView({block:"center"})');await wait(100);
+ fs.mkdirSync('development/timeline-adjacent-regions',{recursive:true});
+ fs.writeFileSync('development/timeline-adjacent-regions/adjacent.png',Buffer.from((await page.call('Page.captureScreenshot')).data,'base64'));
+ console.log('Fractional scene replacement and recovered draft: same display row, exact shared edges, existing completed regions unchanged');
+ }
 
  assert.equal(errors.length,0,JSON.stringify(errors));
  console.log(JSON.stringify({checks:['cut-menu split of both lanes, reference and mask preservation, independent right-side edits, atomic Undo, lock protection, S shortcut and reload','tracking-only action without pose regions','progress and cancel beside Track region','automatic stabilized preview','reference-only processing preserves motion and selection','tracking action lock protection and backend capability check','compact desktop and narrow stabilization controls','multiple reference keyframes in both editors','offline mode saved per region','reference navigation before first tracking','numbered point identities and keyframe removal/undo','neutral source playback','hour timeline zoom','apply feedback and parent ack','tracking regions and anchors','locks','overlap rejection','first-frame point picking','start edits clear stale points','undo','seek without accidental move','explicit resize and split','isolate selection into independent region','shift-drag selection','selected processing and result link','stale edit rejection','older draft recovered after reload','trimmed original-clock navigation','narrow layout','hard-cut scan preserves regions','cut navigation and shot selection','snapped guide seeking','subtle guides can be hidden','portrait aspect and full-frame filmstrip','wide and centered layouts','draggable preview columns and heights','thumbnail/lane/overview sizing','keyboard divider resize','layout persistence without plan edits','full-screen entry and exit','fit video/reset layout','old workflow bridge recovery message','source frame ruler default','exact frame go-to and stepping','keyboard In/Out without dragging','last frame selection with exclusive Out','frame snapping during ruler scrubbing','frame selections saved as original timestamps','typing does not trigger transport','clickable cut markers and keyboard boundary marks','Shift-click cut range in both directions','before/after and double-click shot selection','make tracking zone preserves anchors','locked region rejects cut split','make independent stabilization zone','Escape, hidden guides and refreshed scan clear cut selection','cut action panel fits narrow views','tools beside preview without pushing filmstrip','narrow tools below timeline','detailed anchor search and short main list','detailed extra tracks survive general toggles','detailed anchors save reload and lock','frame steps hold image until latest decoded frame','saved stabilized clip discovery without rerun','original/stabilized frame-aligned switching and stepping','point edits use original frame','stale render labeling','playback leaves stabilization at its end','held-frame counts and warnings','gap navigation and tracked-point overlay'],apiRequests,errors},null,2));

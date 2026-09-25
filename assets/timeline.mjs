@@ -64,12 +64,18 @@ export function latestTrack(project, track) {
     if(latest.has(track.source))return track;
     const candidates=project.timeline.tracks.filter(t=>{
         const s=sources.get(t.source),r=s?.data?.metadata?.processing_region;
-        return latest.has(t.source)&&!t.window&&t.axis===track.axis&&r&&
-            (r.id===region.id||['start_ms','end_ms'].every(k=>Math.round(r[k])===Math.round(region[k])))&&
-            s.data.config.target_anchor===old.data.config.target_anchor&&s.data.config.target_person===old.data.config.target_person;
+        return latest.has(t.source)&&!t.window&&t.axis===track.axis&&r&&s.data.config.target_person===old.data.config.target_person;
     });
     const sameInput=old.input?candidates.filter(t=>sources.get(t.source).input===old.input):[];
-    const matches=sameInput.length?sameInput:candidates;
+    const sameAnchor=candidates.filter(t=>sources.get(t.source).data.config.target_anchor===old.data.config.target_anchor);
+    const exact=sameAnchor.filter(t=>{const r=sources.get(t.source).data.metadata.processing_region;return r.id===region.id||['start_ms','end_ms'].every(k=>Math.round(r[k])===Math.round(region[k]));});
+    if(sameInput.length||exact.length){const matches=sameInput.length?sameInput:exact;return matches.length===1?matches[0]:track;}
+    // Splitting or replacing several scenes changes the boundaries as well as the ID.
+    if(candidates.some(t=>sources.get(t.source).data.metadata.processing_region.id===region.id))return track;
+    const range=t=>{const r=sources.get(t.source).data.metadata.processing_region;return [r.start_ms,r.end_ms].every(Number.isFinite)?[r.start_ms,r.end_ms]:trackCoverage(project,t);};
+    const [start,end]=range(track);
+    const overlaps=candidates.filter(t=>{const [a,b]=range(t);return b>a&&a<end&&b>start;});
+    const anchors=overlaps.filter(t=>sameAnchor.includes(t)),matches=anchors.length?anchors:overlaps;
     return matches.length===1?matches[0]:track;
 }
 
@@ -114,6 +120,34 @@ export function sourceChoices(project) {
         const label=`${source.data.metadata?.processing_region?.name || input} · ${config.target_anchor.replaceAll("_"," ")} · person ${config.target_person}`;
         return {id:source.id,current:latest.has(source.id),label:latest.has(source.id)?`${label} · latest`:`${label} · saved ${source.id.split("@")[1]?.slice(0,8)??"original"}`};
     });
+}
+
+export function missingLatestSources(project) {
+    return sourceChoices(project).filter(source=>source.current&&!project.timeline.tracks.some(t=>t.source===source.id&&!t.window));
+}
+
+export function defaultTrackSource(project, track) {
+    const choices=sourceChoices(project);
+    return missingLatestSources(project)[0]?.id||choices.find(s=>s.current&&s.id===track?.source)?.id||choices.find(s=>s.current)?.id||track?.source||choices[0]?.id;
+}
+
+export function restoreLatestTracks(project, axis='L0') {
+    return missingLatestSources(project).map(source=>newTrack(project,source.id,axis));
+}
+
+export function visibleTrackRanges(project, currentId) {
+    const ranges=project.timeline.tracks.map(track=>{const [start,end]=trackCoverage(project,track);return {id:track.id,start,end,previous:processingTrackState(project,track)==='Previous detection'};});
+    const latest=ranges.filter(r=>!r.previous);
+    return ranges.flatMap(range=>{
+        let parts=[{id:range.id,start:range.start,end:range.end}];
+        if(!range.previous||range.id===currentId)return parts;
+        // Keep old-only coverage, but old scene boundaries must not split a new full-length result.
+        for(const replacement of latest)parts=parts.flatMap(part=>{
+            if(replacement.end<=part.start||replacement.start>=part.end)return [part];
+            return [part.start<replacement.start?{...part,end:replacement.start}:null,part.end>replacement.end?{...part,start:replacement.end}:null].filter(Boolean);
+        });
+        return parts;
+    }).sort((a,b)=>a.start-b.start||a.end-b.end);
 }
 
 function cached(project, key, create) {
@@ -310,17 +344,20 @@ export function fitSelectionTrack(project, track, window) {
 
 // Blend inside the selection. Outside it, preserve the authored main exactly
 // (up to integer position rounding at newly introduced boundary samples).
-export function spliceActions(main, source, start, end, method = "blend", blendMs = 200, protectedTimes=[]) {
+export function spliceActions(main, source, start, end, method = "blend", blendMs = 200, protectedTimes=[], duration=Infinity) {
     if (![start, end, blendMs].every(Number.isFinite) || start < 0 || end <= start || blendMs < 0) throw new Error("Select a nonempty time range and a nonnegative join duration");
     if (!["blend", "cut"].includes(method)) throw new Error("Unknown join method");
     start = Math.round(start); end = Math.round(end);
     if (end <= start) throw new Error("Selection must span at least one millisecond");
     const width = method === "blend" ? Math.min(Math.round(blendMs), Math.floor((end - start) / 2)) : 0;
+    // Blend only where existing motion continues outside the replacement.
+    const left = start > 0 ? width : 0, right = end < duration ? width : 0;
     const knots = new Set([start, end]);
     for (const action of [...main, ...source]) if (action.at > start && action.at < end) knots.add(action.at);
-    if (width) {knots.add(start + width); knots.add(end - width);}
+    if (left) knots.add(start + left);
+    if (right) knots.add(end - right);
     const value = time => {
-        const weight = width ? Math.max(0, Math.min(1, (time - start) / width, (end - time) / width)) : 1;
+        const weight = Math.max(0, Math.min(1, left ? (time - start) / left : 1, right ? (end - time) / right : 1));
         return evaluate(main, time) * (1 - weight) + evaluate(source, time) * weight;
     };
     const times = [...knots].sort((a, b) => a - b), inside = [];
@@ -334,12 +371,10 @@ export function spliceActions(main, source, start, end, method = "blend", blendM
     inside.push({at: end, pos: roundEven(value(end))});
     const outside = main.filter(a => a.at < start || a.at > end).map(a => ({...a}));
     // One-ms cut guards also prevent an empty/short main from changing everywhere.
-    if (!width) {
-        if (start > 0) outside.push({at: start - 1, pos: roundEven(evaluate(main, start - 1))});
-        outside.push({at: end + 1, pos: roundEven(evaluate(main, end + 1))});
-    }
+    if (!left && start > 0) outside.push({at: start - 1, pos: roundEven(evaluate(main, start - 1))});
+    if (!right && end < duration) outside.push({at: end + 1, pos: roundEven(evaluate(main, end + 1))});
     return reduceActions([...new Map([...outside, ...inside].map(a => [a.at, a])).values()].sort((a,b)=>a.at-b.at),
-        {start,end,protectedTimes:[...protectedTimes,start+width,end-width]}).actions;
+        {start,end,protectedTimes:[...protectedTimes,start+left,end-right]}).actions;
 }
 
 export function applyTrack(project, track, outputAxis, {start, end, method = "blend", blendMs = 200, whole = false} = {}) {
@@ -348,14 +383,18 @@ export function applyTrack(project, track, outputAxis, {start, end, method = "bl
     const coverage = trackCoverage(project, track);
     if (!whole && (start < coverage[0] || end > coverage[1])) throw new Error(`Select within this track’s analysis: ${(coverage[0] / 1000).toFixed(3)}–${(coverage[1] / 1000).toFixed(3)} s`);
     const script = whole ? copy(track.script) : {...project.scripts[outputAxis], actions:
-        spliceActions(project.scripts[outputAxis].actions, track.script.actions, start, end, method, blendMs, reductionBoundaries(project,null,outputAxis)).filter(a => a.at <= duration)};
+        spliceActions(project.scripts[outputAxis].actions, track.script.actions, start, end, method, blendMs, reductionBoundaries(project,null,outputAxis),duration).filter(a => a.at <= duration)};
     if(whole)script.actions=reduceActions(script.actions,{protectedTimes:reductionBoundaries(project,track,track.axis)}).actions;
     start = whole ? 0 : Math.round(start); end = whole ? duration : Math.round(end);
     const regions = whole ? [] : main.regions.flatMap(region => {
-        if (region.end <= start || region.start >= end) return [region];
+        // Funscript time is integer ms; a fractional frame edge must not leave
+        // a tiny obsolete section after replacing through the end of a clip.
+        const a=roundEven(region.start), b=roundEven(region.end);
+        if (b<=a) return [];
+        if (b <= start || a >= end) return [region];
         const pieces = [];
-        if (region.start < start) pieces.push({...region, end: start});
-        if (region.end > end) pieces.push({...region, start: end});
+        if (a < start) pieces.push({...region, end: start});
+        if (b > end) pieces.push({...region, start: end});
         return pieces;
     });
     regions.push({start, end, source: track.source, axis: track.axis, settings: copy(track.settings),

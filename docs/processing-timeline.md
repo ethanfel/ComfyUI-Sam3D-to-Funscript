@@ -35,7 +35,11 @@ loading or Motion Studio's curve editor.
    choose the selected piece's **Main anchor** and analysis settings. Tick any
    **Additional anchors in this section** to generate alternative tracks alongside it.
    Add a **Stabilization** region separately wherever a reference needs to stay
-   still. Stabilization is optional.
+   still. Stabilization is optional. Deleting the last region in a lane marks the
+   whole clip for replacement; otherwise it marks the deleted interval. Click
+   **Create / isolate** to replace it, or mark a different range first. In an empty
+   lane with no marked range, a new region covers the whole clip, regardless of zoom
+   and playhead position.
 5. Use **Process marked range**, **Process selected regions**, **Process all**, or
    **Process unfinished**. Each action applies the plan and queues the timeline and its upstream inputs;
    they do not repeatedly run the downstream Motion Studio export nodes.
@@ -417,6 +421,8 @@ Motion Studio exports remain self-contained editors.
 
 ## Tracking and stabilization are independent
 
+Adjacent regions stay on the same row when a frame index and an automatic cut store the same boundary with different decimal precision. Creating or resizing a region joins its edge to the exact neighbouring boundary; existing completed regions keep their times. Recovered replacement drafts are aligned when applying. Actual overlapping regions still use separate rows.
+
 Tracking regions choose the analysis interval, person/ROI slot, anchor, smoothing
 and calibration settings. This first version uses SAM3D Body for pose extraction;
 it does not offer interchangeable pose-estimation models under one generic
@@ -718,7 +724,17 @@ completed chunks remain available for the next run. The default chunk duration i
 30 seconds and can be changed in the editor. Calibration is calculated over the
 available region coverage rather than independently resetting at every chunk.
 
-A changed region requires processing again; unchanged work can be reused.
+Splitting a completed tracking region without changing its detection settings
+retains the saved detections on **Apply**. Both halves get their own time bounds,
+poses, and anchor tracks, including all people and additional anchors. Curves
+keep their existing values and calibration; authored Main motion and manual
+source edits are preserved. The timeline shows **split · apply to retain** until
+the split is saved, then restores the completion badges. Open Motion Studio
+editors save before the split and refresh afterward. No inference is queued.
+This also works for repeated splits. A split of a stabilization region changes
+its reference setup and still requires tracking those new intervals.
+
+A change to detection settings requires processing again; unchanged work can be reused.
 Completed lane badges and report rows change to **needs processing** when their
 anchor, person, ROI, smoothing, axis, painting, or overlapping stabilization
 settings change. Existing results remain available for review. Older cached
@@ -744,6 +760,11 @@ The default **Join** is 200 ms. At each incoming processed region, a smooth blen
 reconciles its output with the preceding curve, limited to that region's available
 coverage. The assembly updates all six axes together. Review these joins in Motion
 Studio, where the curves remain editable.
+
+When copying a source selection into Main, **Blend** joins it to the existing
+motion on either side. At the start or end of the video there is no outside
+section to join, so Main keeps the source's endpoint. Recopy a selection to repair
+an end ramp created by an older editor; the source detection does not need rerunning.
 
 ## One source clock
 
@@ -782,8 +803,25 @@ the gold lane. These diagnostics review saved results without rerunning extracti
 Rendered stabilization clips have black padding and no audio; the original video
 retains its own audio when playback returns to it.
 
-Motion Studio places the device preview between the video and 3D body view.
-**Float video** keeps the same video and projected pose overlay above the tracks
+Motion Studio keeps the play/pause button, seek bar, time, mute/volume and video
+fullscreen controls **below the image**, including in floating and fullscreen views.
+Click the video or press Space to play/pause; playback controls do not cover the pose.
+
+Motion Studio's **Preview** selector above the video offers **Panels** (the original
+separate views), **Beside video** (a compact device beside the image), and **Over
+video** (a movable device overlay). The device selector remembers your choice in
+this browser across clips and reloads, including already prefetched previews.
+Drag the **Device preview** heading to place
+it beside the subject, or focus the heading and use arrow keys (Shift moves farther).
+The **Position** menu snaps it back to a corner. **Settings** opens the device,
+sleeve and motion controls in compact mode. **Fit**, **−** and **+** keep the device
+large enough to compare with the video; dragging the model still orbits it. The default
+framing fits the neutral model and stays steady during playback. Layout and position
+are remembered in this browser and included in offline projects. The overlay stays
+inside the video area when resizing or floating the video.
+
+**Float video** keeps the same video, projected pose overlay and any compact device
+preview above the tracks
 while you scroll. Drag its heading to move it, drag the lower-right handle to
 resize it, and use **Dock video** to return it to the top. Focus the heading or
 resize handle and use arrow keys for keyboard adjustment (Shift makes larger steps).
@@ -862,3 +900,16 @@ python scripts/create_processing_timeline_workflow.py
 
 The node pack remains GPL-3.0-only. Optional model code and weights retain their
 own licenses; CoTracker3 uses CC-BY-NC-4.0.
+
+When tracking regions are deleted and rebuilt with different boundaries, Motion
+Studio shows the latest detections across their new coverage. Previous detections
+remain available in the history selector and separate rows, including edited or
+locked curves; their old scene boundaries no longer subdivide a replacement.
+A unique overlapping replacement follows the old selection when the result loads.
+
+Removing a Source row does not delete its saved detection. Use **Restore latest
+detections** beside **Add track** to recreate missing latest rows without running
+tracking again. Main, existing source rows and their edits are kept, and this action
+can be undone. **Add track** also prefers a missing latest detection over older
+saved sources. After restoring, select the source range and copy it into Main if
+you want to replace the exported motion.

@@ -16,6 +16,7 @@ from .folder_store import FolderStore, LOCK, editing_session, identity
 from .reference import atomic_json
 from .video import fingerprint
 from .civitai_review import CivitaiReview, STAGING
+from .civitai_metadata import CivitaiMetadata, from_api, public_fields
 
 SITES = ('civitai.red', 'civitai.com', 'civitaired.com')
 SORTS = ('Most Reactions', 'Most Comments', 'Most Collected', 'Newest', 'Oldest')
@@ -151,6 +152,7 @@ def video_extension(path):
 class CivitaiLibrary:
     def __init__(self, root):
         self.root=Path(root);self.folders=FolderStore(root)
+        self.metadata=CivitaiMetadata(root)
 
     def thumbnail(self, folder, clip):
         """Cache one small preview on demand without opening a processing session."""
@@ -207,20 +209,23 @@ class CivitaiLibrary:
     def catalogue(self, folder):
         from .folder_queue import FolderQueue
         CivitaiReview(self).recover(folder)
-        listing=self.folders.scan(folder);settings=self.settings(folder);index={};categories=set(settings['categories'])
+        listing=self.folders.scan(folder);settings=self.settings(folder);index={};categories=set(settings['categories']);metadata=self.metadata.read()
         for entry in listing['entries']:
             match=ID_PATTERN.search(Path(entry['name']).name)
             parent=Path(entry['name']).parent.as_posix()
             if parent!='.' and not parent.startswith(STAGING+'/'):categories.add(parent)
             if not match:continue
             row=copy.deepcopy(entry);row['category']=entry['category_hint'] if entry.get('civitai_temporary') else '' if parent=='.' else parent
+            row.update(public_fields(metadata.get(match.group(1))))
             state=self.folders.plans.read(row['timeline']) if row['draft'] and not row['existing'] else None
             row['processed']=bool(row['existing'] or row['batch_result']=='ready' or state and state.get('project_path') and not state.get('editor_only'))
             index.setdefault(match.group(1),[]).append(row)
         with DOWNLOAD_LOCK:downloads={key[1]:dict(value) for key,value in DOWNLOADS.items() if key[0]==folder}
         return {'folder':folder,'root':listing['root'],'items':index,'categories':sorted(categories,key=str.casefold),
                 'ignored':settings['ignored'],'downloads':downloads,'token_configured':bool(self.token()),'recursive':listing['recursive'],
-                'queue':FolderQueue(self.root).read(folder)}
+                'queue':FolderQueue(self.root).read(folder),'video_galleries':True,
+                'set_aside':self.folders.read(folder).get('civitai_set_aside',{}),
+                'metadata':dict(total=len(index),known=sum(bool(metadata.get(identifier,{}).get('fetched_at')) for identifier in index),job=self.metadata.status(folder))}
 
     def add_category(self, folder, name):
         name=category_name(name)
@@ -251,7 +256,7 @@ class CivitaiLibrary:
         level=options.get('browsingLevel',ALL_RATINGS)
         if type(level) is not int or not 1<=level<=ALL_RATINGS:raise ValueError('Choose a supported Civitai content rating.')
         query={'type':'video','limit':24,'sort':sort,'period':period,'browsingLevel':level}
-        for name in ('username','cursor','modelId','modelVersionId','imageId'):
+        for name in ('username','cursor','modelId','modelVersionId','imageId','postId'):
             value=options.get(name)
             if value not in (None,''):
                 if not isinstance(value,(str,int)) or len(str(value))>500:raise ValueError('Invalid Civitai filter.')
@@ -264,20 +269,48 @@ class CivitaiLibrary:
         try:identifier=video_id(raw['id']);url=media_url(raw['url'])
         except (ValueError,KeyError):return None
         stats=raw.get('stats') if isinstance(raw.get('stats'),dict) else {}
+        try:post_id=video_id(raw.get('postId'))
+        except ValueError:post_id=None
         return {'id':identifier,'username':str(raw.get('username') or '')[:140], 'url':url,'poster':poster_url(url),
                 'page':f'https://{site}/images/{identifier}','width':raw.get('width'),'height':raw.get('height'),
-                'created_at':str(raw.get('createdAt') or ''),'stats':{k:v for k,v in stats.items() if isinstance(v,(int,float))}}
+                'post_id':post_id,'created_at':str(raw.get('createdAt') or ''),'stats':{k:v for k,v in stats.items() if isinstance(v,(int,float))},
+                'metadata':from_api(raw,site)}
 
     def browse(self, folder, options):
         self.folders.read(folder);site,query=self.query(options)
         data=fetch_json(f'https://{site}/api/v1/images?'+urlencode(query), self.token())
         if not isinstance(data,dict) or not isinstance(data.get('items'),list):raise ValueError('Civitai returned an unexpected response.')
         items=[record for raw in data['items'] if (record:=self.record(raw,site))]
+        if query.get('postId') and any(item['post_id']!=query['postId'] for item in items):
+            raise ValueError('Civitai returned videos outside the requested post. Retry the gallery.')
+        self.metadata.save(items)
         # Do not re-sort results locally: Civitai defines ranking and cursor order.
         metadata=data.get('metadata') if isinstance(data.get('metadata'),dict) else {}
         cursor=metadata.get('nextCursor')
         if cursor is not None and (not isinstance(cursor,(str,int)) or len(str(cursor))>500):raise ValueError('Civitai returned an invalid page cursor.')
         return {'items':items,'next_cursor':cursor,'library':self.catalogue(folder)}
+
+    def gallery(self, folder, options):
+        """Resolve old local downloads on demand; never guess a post or creator."""
+        self.folders.read(folder);site,query=self.query(options)
+        identifier=video_id(options['id']);kind=options.get('kind')
+        if kind not in ('post','creator'):raise ValueError('Choose the post or creator gallery.')
+        cached=self.metadata.read().get(identifier,{})
+        post_id=query.get('postId') or cached.get('post_id');username=query.get('username') or cached.get('creator_username')
+        if not (post_id if kind=='post' else username):
+            lookup={'imageId':identifier,'type':'video','period':'AllTime','browsingLevel':query['browsingLevel'],'limit':1}
+            data=fetch_json(f'https://{site}/api/v1/images?'+urlencode(lookup),self.token())
+            if not isinstance(data,dict) or not isinstance(data.get('items'),list):raise ValueError('Civitai returned an unexpected response.')
+            record=next((self.record(raw,site) for raw in data['items'] if isinstance(raw,dict) and str(raw.get('id'))==identifier),None)
+            if not record:raise ValueError('This video is unavailable with the current site, account or rating filter.')
+            self.metadata.save([record])
+            post_id=record['post_id'];username=record['username']
+        if kind=='post' and not post_id:raise ValueError('Civitai did not provide a post for this video.')
+        if kind=='creator' and not username:raise ValueError('Civitai did not provide a creator for this video.')
+        filters={'postId':post_id} if kind=='post' else {'username':username}
+        result=self.browse(folder,dict(site=site,sort=query['sort'],period='AllTime',browsingLevel=query['browsingLevel'],cursor=query.get('cursor'),**filters))
+        result['gallery']={'kind':kind,'id':identifier,'post_id':post_id if kind=='post' else None,'username':username or ''}
+        return result
 
     def download(self, folder, identifier, category, site='civitai.red'):
         identifier=video_id(identifier);category=category_name(category) if category else ''
@@ -304,6 +337,7 @@ class CivitaiLibrary:
             if not isinstance(data,dict) or not isinstance(data.get('items'),list):raise ValueError('Civitai returned an unexpected response.')
             record=next((self.record(r,site) for r in data['items'] if isinstance(r,dict) and str(r.get('id'))==identifier),None)
             if not record:raise ValueError('Civitai did not return this video. Check its availability and your account access.')
+            self.metadata.save([record])
             if not destination.resolve().is_relative_to(root):raise ValueError('The category points outside the library.')
             temporary=destination/('.s3f-download-'+uuid.uuid4().hex+'.part');last_error=None
             for url,kind in download_urls(record['url']):

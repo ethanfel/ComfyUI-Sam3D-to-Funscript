@@ -2,14 +2,14 @@ import {workflowHost,openWorkspacePage} from "./workflow-host.mjs";
 import {timelineView as baseTimelineView, zoomView as baseZoomView, panView as basePanView, followView as baseFollowView, sliderSpan as baseSliderSpan, spanSlider as baseSpanSlider, formatTime, rulerTicks} from "./viewport.mjs";
 // These exports were added together. Bypass helper URLs cached by older servers;
 // updated servers revalidate all editor assets on subsequent loads.
-import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection,overlapsRange} from "./processing-timeline-edit.mjs?v=orientation-1";
+import {LANES, ANCHORS, DETAILED_ANCHOR_GROUPS, clone, clamp, fraction, bounds, regionById, selectionRange, createRegion, changeRegion, splitRegion, splitAtTime, validateInterval, validateReference, regionRows, isolateSelection,regionFromSelection,overlapsRange,alignEditedBoundaries} from "./processing-timeline-edit.mjs?v=adjacent-edges-1";
 import {cutIndex,neighboringCut,snapCut,shotRange,cutSideRange,visibleCuts} from "./cut-markers.mjs?v=cut-selection-2";
 import {createTimelineLayout,thumbnailCount} from "./timeline-layout.mjs?v=timeline-audit-1";
 import {frameClock} from "./frame-clock.mjs";
 import {referenceKeys,withReferenceKeys,addReferenceKey,putReferencePoint,removeReferencePoint,requireReferenceBackend} from "./reference-edit.mjs?v=orientation-1";
 import {timelineOutputURL,timelineRenderCatalog,timelineRenderCurrent,timelineRenderAt,timelineTrackingHealth,trackingFrame,trackingSummary,trackingReason,transformPixel} from "./video-preview.mjs?v=orientation-1";
 
-import {trackingResultCurrent,processingScope,planForScope} from "./processing-state.mjs?v=anchor-boundary-1";
+import {trackingResultCurrent,processingScope,planForScope,trackingSplits,flushSplitEditor} from "./processing-state.mjs?v=retained-splits-1";
 import {timelineRestore,restoreCandidate} from "./timeline-restore.mjs?v=orientation-1";
 import {subjectEditor} from "./timeline-subject.mjs?v=subject-crop-1";
 import {meshAnchorEditor} from './mesh-anchor.mjs?v=1';
@@ -17,6 +17,7 @@ import {stabilizationSteps,orientationEditor} from './stabilization-steps.mjs?v=
 import {prefillReferenceKey,agreementText} from './reference-mask.mjs';
 const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
 const session = params.get("session"), node = params.get("node"), api = new URL(`../timelines/${encodeURIComponent(session || "")}`, location.href), video = $("source");
+const prefetching=()=>window.frameElement?.dataset.prefetch==='true';
 const uuid = () => crypto.randomUUID?.() || [...crypto.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2,"0")).join("");
 const equal = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 let state, plan, savedPlan, revision, dirty = false, history = [], view, playhead = 0, busy = false;
@@ -29,7 +30,7 @@ let selectedCut = null, cutRangeReady = false;
 let cutEditPending = false;
 let propagatedMasks = {};
 let renderedClips = [], previewClip = null, previewURL = '', previewLoading = false, resumePlayback = false;
-let anchorPreview=null,processedRegions={},anchorOrigin=null;
+let anchorPreview=null,processedRegions={},anchorOrigin=null,splitResults=null;
 let renderRequest = 0, previewFailures = new Set(), catalogError = '';
 const trackingDetails = new Map();
 const resultStates = new Map();
@@ -165,6 +166,7 @@ function feedback(kind, text) {
     $("applyStatus").textContent = text || "";
 }
 function draft() {
+    if(prefetching())return;
     try { if (dirty) localStorage.setItem(draftKey, JSON.stringify({revision, plan, base: savedPlan})); else localStorage.removeItem(draftKey); } catch (_) { /* Storage can be disabled; Download plan still works. */ }
 }
 function edit(next, message = "Plan changed · Apply to node to keep it") {
@@ -517,6 +519,9 @@ function renderNavigation() {
     }
 }
 function resultState(region,result){
+    if(splitResults?.plan!==plan||splitResults?.previous!==savedPlan)splitResults={plan,previous:savedPlan,parents:trackingSplits(savedPlan,plan)};
+    const parent=splitResults.parents.get(region.id);
+    if(parent&&trackingResultCurrent(parent,processedRegions[parent.id],plan.stabilization)===true)return 'split · apply to retain';
     if(!result)return '';
     if(!['complete','partial','locked'].includes(result.state))return result.state||'';
     const entry=result.region?result:processedRegions[region.id];
@@ -561,7 +566,8 @@ function renderTimelines() {
             bar.classList.toggle("selected",(plan.selected_ids||[]).includes(region.id));bar.classList.toggle("locked",!!region.locked);bar.classList.toggle("disabled-region",region.enabled===false);
             bar.querySelector(".region-title").textContent=`${region.locked?"🔒 ":""}${region.name}${lane==="tracking"?" · "+region.anchor.replaceAll("_"," ")+(region.additional_anchors?.length?` +${region.additional_anchors.length}`:""):""}`;
             const result=states.get(region.id),changedBounds=result&&['start_ms','end_ms'].some(key=>result[key]!==undefined&&result[key]!==region[key]);
-            bar.querySelector(".region-state").textContent=changedBounds?'needs processing':lane==='tracking'?resultState(region,result):result?.state||"";
+            const stateLabel=lane==='tracking'?resultState(region,result):result?.state||"";
+            bar.querySelector(".region-state").textContent=changedBounds&&stateLabel!=='split · apply to retain'?'needs processing':stateLabel;
             bar.title=`${region.name} · ${positionLabel(region.start_ms)} – ${positionLabel(region.end_ms)} (exclusive)${region.locked?" · Locked":""}`;
             const rendered=lane==='stabilization'?renderedClips.find(r=>r.id===region.id):null,health=trackingDetails.get(rendered?.url)?.health;
             bar.querySelector('.region-state').dataset.held=String(!!health?.counts.held);
@@ -779,7 +785,10 @@ function render() {
 function addRegion(lane) {
     const [a,b]=selectionRange(plan,state.info),[low,high]=sourceBounds();
     let start=a,end=b;
-    if(end-start<1) {start=clamp(playhead,low,high-1);end=Math.min(high,start+Math.min(10000,view.span_ms));}
+    if(end-start<1) {
+        if(!plan[lane].length){start=low;end=high;}
+        else {start=clamp(playhead,low,high-1);end=Math.min(high,start+Math.min(10000,view.span_ms));}
+    }
     start=frames.snap(start);end=Math.max(frames.at(frames.containing(start)+1),frames.snap(end,true));
     const next=regionFromSelection({...plan,selection:[start,end]},lane,uuid,state.info,frames);
     activeId=next.selected_ids[0];edit(next,'Region ready · existing coverage was isolated where necessary');
@@ -978,7 +987,14 @@ $("referenceMode").onchange=()=>{
 $("cropZoom").onchange=drawSource;
 $("clearPoints").onclick=()=>attempt(()=>{const r=selected().region;updateRegion({reference:withReferenceKeys(r.reference,[{frame:Math.max(0,activeFrame()-frames.ceil(r.start_ms)),points:[]}])});});
 $("addTracking").onclick=()=>attempt(()=>addRegion("tracking"));$("addStabilization").onclick=()=>attempt(()=>addRegion("stabilization"));
-$("remove").onclick=()=>attempt(()=>{const found=selected();if(!found)return;if(found.region.locked)throw new Error("Unlock this region before deleting it.");const next={...plan,[found.lane]:plan[found.lane].filter(r=>r.id!==found.region.id),selected_ids:[]};activeId=null;edit(next);});
+$("remove").onclick=()=>attempt(()=>{
+    const found=selected();if(!found)return;
+    if(found.region.locked)throw new Error("Unlock this region before deleting it.");
+    const remaining=plan[found.lane].filter(r=>r.id!==found.region.id);
+    const selection=remaining.length?[found.region.start_ms,found.region.end_ms]:sourceBounds();
+    activeId=null;selectedCut=null;cutRangeReady=false;
+    edit({...plan,[found.lane]:remaining,selected_ids:[],selection},remaining.length?'Region deleted · its interval is marked for replacement':'Region deleted · the whole clip is marked for a new region');
+});
 $("duplicate").onclick=()=>attempt(()=>{
     const found=selected();if(!found)return;if(found.region.locked)throw new Error("Unlock this region before duplicating it.");
     const [a,b]=selectionRange(plan,state.info);if(b-a<1)throw new Error("Select the destination time range before duplicating.");
@@ -991,7 +1007,7 @@ function finishSplit(next){
     const lane=selected()?.lane;
     activeId=next.selected_ids.find(id=>regionById(next,id).lane===lane)||next.selected_ids[0];
     const hasReference=next.selected_ids.some(id=>regionById(next,id).lane==='stabilization');
-    edit(next,'Split into independent regions · right side selected.'+(hasReference?' Reference marks stay on their own side; propagate masks and track the new intervals.':''));
+    edit(next,'Split into independent regions · right side selected.'+(hasReference?' Reference marks stay on their own side; propagate masks and track the new intervals.':' Apply retains matching saved detections on both sides.'));
     clearCut();showInspectorTab('region');$("referenceMode").value='review';
 }
 $("split").onclick=()=>attempt(()=>finishSplit(splitRegion(plan,activeId,frames.at(activeFrame()),uuid(),state.info,frames)));
@@ -1076,8 +1092,14 @@ async function save() {
     if(conflictingDraft)throw new Error("This recovered draft is older than the saved plan. Download your edits before loading the latest plan.");
     if(savePromise){await savePromise;if(dirty)return save();return;}
     if(!dirty)return;
+    plan=alignEditedBoundaries(plan,savedPlan);
     const sent=clone(plan);let sentRevision=revision;
     savePromise=(async()=>{
+        if(trackingSplits(savedPlan,sent).size){
+            const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
+            if(capabilities.tracking_splits!==1)throw new Error('Restart ComfyUI after processing finishes to retain detections when splitting. Your split is kept as an unapplied draft.');
+            await flushSplitEditor(state.editor_session);
+        }
         if(sent.tracking.some(r=>r.isolate_subject)){
             const capabilities=await jsonResponse(await fetch(new URL('../reference-capabilities',location.href),{cache:'no-store',signal:AbortSignal.timeout(10000)}));
             if(capabilities.subject_crop!==1)throw new Error('Restart ComfyUI to enable person crops, then Apply again. Your edits are kept.');
@@ -1105,13 +1127,21 @@ async function save() {
         }
         revision=next.revision;savedPlan=clone(next.plan||sent);state={...state,...next};
         if(equal(plan,sent))plan=clone(savedPlan);dirty=!equal(plan,savedPlan);draft();
+        if(next.retained_splits?.revision===next.revision){
+            await refreshRenderedClips();
+            if(next.editor_session&&typeof BroadcastChannel==='function'){
+                const channel=new BroadcastChannel(`s3f-editor-${next.editor_session}`);
+                channel.postMessage({type:'run'});channel.close();
+            }
+            status('Split saved · existing detections retained and trimmed to each part.');
+        }
     })();
     try{await savePromise;}catch(error){if(error.status===409){$("reload").hidden=false;throw new Error("This plan changed in another tab. Download your edits before loading the latest plan.");}throw error;}finally{savePromise=null;}
     if(dirty)return save();
 }
 function finishApply(error) {
     const pending=applyPending;if(!pending)return;clearTimeout(pending.timer);applyPending=null;
-    if(error){feedback("error",error.message);pending.reject(error);}else{appliedPlan=clone(pending.sent);feedback("applied",equal(plan,pending.sent)?"ComfyUI confirmed these settings":"Earlier edits applied · newer edits still pending");status("Plan applied to node");pending.resolve();}
+    if(error){feedback("error",error.message);pending.reject(error);}else{appliedPlan=clone(pending.sent);feedback("applied",equal(plan,pending.sent)?"ComfyUI confirmed these settings":"Earlier edits applied · newer edits still pending");status(state.retained_splits?.revision===revision?"Plan applied · saved detections retained and trimmed to each part":"Plan applied to node");pending.resolve();}
     render();
 }
 window.s3fTimelineApply=()=>{
@@ -1337,7 +1367,7 @@ window.s3fReconnect=async({hostChanged=false}={})=>{
 };
 $("reload").onclick=async()=>{try{const next=pendingState||await jsonResponse(await fetch(api,{cache:"no-store"}));await loadState(next,true);feedback("pending","Latest saved plan loaded");clearError();}catch(error){fail(error);}};
 $("download").onclick=()=>{const blob=new Blob([JSON.stringify(plan,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="processing-timeline.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-window.addEventListener("beforeunload",event=>{draft();if(dirty){event.preventDefault();event.returnValue="";}});
+window.addEventListener("beforeunload",event=>{if(prefetching())return;draft();if(dirty){event.preventDefault();event.returnValue="";}});
 function scheduleThumbs() {clearTimeout(thumbTimer);thumbTimer=setTimeout(drawThumbnails,300);}
 function drawThumbnails() {
     // Small cached images are fetched only for the visible range; decoding the source remains browser streaming.
@@ -1363,9 +1393,12 @@ async function initialize() {
         if(!regionById(plan,activeId))activeId=plan.selected_ids?.[0]||plan.tracking[0]?.id||null;
         draft();status(conflictingDraft?"Recovered older draft · download it before loading the latest plan":"Recovered unsaved edits from this browser · Apply to node to keep them");feedback("pending","Recovered unapplied edits");render();
     }
-    pollTimer=setInterval(async()=>{if(document.hidden||savePromise||applyPending||loading)return;try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));if(next.revision!==revision||!equal(next.report,state.report)||next.project!==state.project||!equal(next.scene_cuts,state.scene_cuts))await loadState(next);else await refreshRenderedClips();}catch(_){/* Explicit Apply/Process surfaces connection failures without interrupting edits. */}},4000);
+    pollTimer=setInterval(async()=>{if(prefetching()||document.hidden||savePromise||applyPending||loading)return;try{const next=await jsonResponse(await fetch(api,{cache:"no-store"}));if(next.revision!==revision||!equal(next.report,state.report)||next.project!==state.project||!equal(next.scene_cuts,state.scene_cuts))await loadState(next);else await refreshRenderedClips();}catch(_){/* Explicit Apply/Process surfaces connection failures without interrupting edits. */}},4000);
 }
-initialize().catch(error=>{fail(error);status("Timeline could not load");window.s3fTimelineStartupFailed?.(error);});
+initialize().catch(error=>{fail(error);status("Timeline could not load");window.s3fTimelineStartupFailed?.(error);}).finally(()=>{
+    window.s3fEditorReady=true;
+    try{window.parent.s3fFolderEditorReady?.(window);}catch{/* Standalone timeline. */}
+});
 
 $("openStudio").addEventListener("click",event=>{if(openWorkspacePage($("openStudio").href))event.preventDefault();});
 window.s3fHasUnsavedEdits=()=>dirty||!!applyPending;

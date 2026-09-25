@@ -36,6 +36,37 @@ class FolderNodeTests(unittest.TestCase):
     def run_node(self, **kwargs):
         return self.node.S3F_FolderTimeline().run(str(self.videos),'test-model',unique_id='9',**kwargs)
 
+    def test_h3_node_keeps_folder_editor_and_applies_project_confidence(self):
+        from test_h3_project import project_fixture
+        from sam3d_funscript.h3_project import set_confidence
+        project = self.base / 'H3'; project_fixture(project, self.videos / 'a.mp4')
+        listing = self.store.prepare(str(project), kind='h3'); entry = listing['entries'][0]
+        set_confidence(project, .25)
+        with patch.object(self.node.S3F_ProcessingTimeline, 'run', side_effect=self.parent):
+            prepared = self.node.S3F_H3ProjectTimeline().run(str(project), 'test-model', unique_id='9')
+            workflow = {'workflow': {'nodes': [{'id':9, 'type':'S3F_H3ProjectTimeline', 'properties':{'s3f_timeline_session':entry['timeline']}}]}}
+            self.node.S3F_H3ProjectTimeline().run(str(project), 'test-model', video_name=entry['name'], operation='automatic', unique_id='9', extra_pnginfo=workflow)
+        self.assertEqual(prepared['ui']['s3f_folder'][0], listing['folder'])
+        self.assertEqual(self.calls[-1][0], str(project / entry['name']))
+        self.assertEqual(json.loads(self.calls[-1][2]['plan_json'])['automatic_options']['confidence'], .25)
+        self.assertEqual(json.loads(self.calls[-1][2]['plan_json'])['automatic_options']['min_track_confidence'], .25)
+        self.assertEqual(self.node.motion_editor_session(workflow['workflow'], '9', entry['timeline']), entry['editor_session'])
+
+    def test_h3_prepare_keeps_selected_main_when_no_main_needs_processing(self):
+        from test_h3_project import project_fixture, write
+        project = self.base / 'H3'; project_fixture(project, self.videos / 'a.mp4')
+        listing = self.store.prepare(str(project), kind='h3')
+        for entry in listing['entries']:
+            video = project / entry['name']
+            write(video.parents[2] / 'main_take.json', {'take_id':'take_0001'})
+            if entry['h3']['take'] == 'take_0001':
+                write(video.with_suffix('.funscript'), {'actions':[{'at':0,'pos':50},{'at':1000,'pos':50}]})
+        self.store.scan(listing['folder'], refresh=True)
+        with patch.object(self.node.S3F_ProcessingTimeline, 'run', side_effect=self.parent):
+            prepared = self.node.S3F_H3ProjectTimeline().run(str(project), 'test-model', unique_id='9')
+        self.assertTrue(prepared['ui']['s3f_folder_entry'][0]['h3']['main'])
+        self.assertEqual(prepared['ui']['s3f_folder_entry'][0]['h3']['take'], 'take_0001')
+
     def parent(self, video, model, **kwargs):
         self.calls.append((video,model,kwargs))
         session=next(n for n in kwargs['extra_pnginfo']['workflow']['nodes'] if str(n['id'])=='9')['properties']['s3f_timeline_session']
@@ -52,6 +83,20 @@ class FolderNodeTests(unittest.TestCase):
         self.assertEqual(result['result'][0]['scripts']['L0']['actions'][0]['pos'],17)
         self.assertEqual(self.calls[0][2]['operation'],'prepare')
         self.assertTrue(result['ui']['s3f_folder_entry'][0]['script_versions'])
+
+    def test_bulk_reprocess_preserves_plan_and_skips_inference_cache(self):
+        entry=self.listing['entries'][0];self.store.open(self.folder,entry['id'])
+        state=self.store.plans.read(entry['timeline']);state['report']={'jobs':[]};state['editor_only']=False
+        state['plan']['tracking'][0]['name']='Keep my region';self.store.plans.write(state)
+        (self.videos/'a.funscript').write_text('{"actions":[{"at":0,"pos":17}]}')
+        with patch.object(self.node.S3F_ProcessingTimeline,'run',side_effect=self.parent):
+            result=self.run_node(operation='automatic',plan_json=json.dumps({'folder_batch':{'clip_ids':[entry['id']],'reprocess':True}}))
+        options=self.calls[-1][2]
+        self.assertEqual(options['operation'],'all');self.assertFalse(options['use_cache'])
+        self.assertEqual(json.loads(options['plan_json']),{'plan':{},'preserve_main':True})
+        self.assertEqual(self.store.plans.read(entry['timeline'])['plan']['tracking'][0]['name'],'Keep my region')
+        self.assertEqual(result['ui']['s3f_folder_batch'][0]['failed'],[])
+        self.assertTrue(any(v['name']=='Before bulk reprocess' for v in self.store.versions(self.folder,entry['id'])))
 
     def test_selected_browser_batch_passes_only_requested_clip_to_inference(self):
         chosen=self.listing['entries'][1]

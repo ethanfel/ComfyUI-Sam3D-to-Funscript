@@ -97,12 +97,34 @@ class AutomaticTests(unittest.TestCase):
             result,report=prepare_automatic(current,plan,{'source_id':current['source_id'],'times_ms':[]},folder,replace_default=True,detector=lambda _:[])
             self.assertFalse(result['tracking'][0]['enabled']);self.assertIn('No reliable person',report['review'][0]['reasons'][0])
 
+    def test_confidence_change_does_not_reuse_old_person_detections(self):
+        current=info();plan=normalize_plan({},current);detector=Mock(return_value=[])
+        def frames(*args,**kwargs):
+            yield np.zeros((4,4,3),np.uint8), {'time_ms':0}
+        with tempfile.TemporaryDirectory() as folder, patch('sam3d_funscript.automatic.video_frames',side_effect=frames):
+            for confidence in (.4,.4,.15,.15):
+                prepare_automatic(current,plan,{'source_id':current['source_id'],'times_ms':[]},folder,replace_default=True,detector=detector,confidence=confidence)
+            self.assertEqual(detector.call_count,2)
+
     def test_malformed_options_and_candidate_indices_fail_before_inference(self):
         with self.assertRaisesRegex(ValueError,'another video'):
             prepare_automatic(info(),normalize_plan({},info()),{'source_id':'other'},'/tmp',detector=lambda _:[])
         for indices in ([2], [], ['0']):
             with self.assertRaisesRegex(ValueError,'Candidate people'):
                 normalize_plan({'tracking':[region(candidate_people=indices)]},info())
+
+
+class DrawingConfidenceTests(unittest.TestCase):
+    def test_temporally_stable_drawing_keeps_low_confidence_with_warning(self):
+        from sam3d_funscript.automatic import person_envelopes
+        detection={'box':[.1,.1,.4,.8],'confidence':.25}
+        samples=[{'people':[detection]} for _ in range(8)]
+        self.assertEqual(person_envelopes(samples)[0],[])
+        people,_=person_envelopes(samples,confidence=.15)
+        self.assertEqual(len(people),1)
+        self.assertTrue(any('Low-confidence' in r for r in people[0]['review']))
+        samples=[{'people':[detection] if i==3 else []} for i in range(8)]
+        self.assertEqual(person_envelopes(samples,confidence=.15)[0],[])
 
 
 if __name__ == '__main__': unittest.main()

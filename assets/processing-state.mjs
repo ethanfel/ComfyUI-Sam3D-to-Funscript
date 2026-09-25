@@ -22,6 +22,39 @@ export function trackingResultCurrent(region,entry,stabilization) {
     const signature=rows=>canonical(rows.map(referenceConfiguration).sort((a,b)=>a.id.localeCompare(b.id)));
     return signature(current)===signature(entry.stabilization_regions);
 }
+export function trackingSplits(previous,incoming){
+    const result=new Map();
+    if(!previous||canonical(previous.stabilization)!==canonical(incoming.stabilization))return result;
+    const ids=new Set(previous.tracking.map(r=>r.id));
+    const settings=r=>canonical({...trackingConfiguration(r),id:'',start_ms:0,end_ms:0});
+    for(const old of previous.tracking){
+        if(old.enabled===false||old.locked)continue;
+        const parts=incoming.tracking.filter(r=>r.enabled!==false&&(r.id===old.id||!ids.has(r.id))&&r.start_ms>=old.start_ms&&r.end_ms<=old.end_ms&&settings(r)===settings(old)).sort((a,b)=>a.start_ms-b.start_ms);
+        if(parts.length>1&&parts[0].id===old.id&&parts[0].start_ms===old.start_ms&&parts.at(-1).end_ms===old.end_ms&&parts.every((r,i)=>!i||parts[i-1].end_ms===r.start_ms))
+            for(const part of parts)result.set(part.id,old);
+    }
+    return result;
+}
+
+// Use the same save handshake as queued processing, also for a cached split.
+// No curve payload is broadcast and a failed editor save cancels the split.
+export function flushSplitEditor(session){
+    if(!session||typeof BroadcastChannel!=='function')return Promise.resolve();
+    return new Promise((resolve,reject)=>{
+        const channel=new BroadcastChannel(`s3f-editor-${session}`),request=Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,"0")).join(""),pending=new Set();
+        let discovering=true;
+        const finish=error=>{clearTimeout(discovery);clearTimeout(timeout);channel.close();error?reject(error):resolve();};
+        const check=()=>{if(!discovering&&!pending.size)finish();};
+        const discovery=setTimeout(()=>{discovering=false;check();},250);
+        const timeout=setTimeout(()=>finish(new Error('Motion Studio did not finish saving. Check its tab before splitting.')),15000);
+        channel.onmessage=({data})=>{
+            if(data?.request!==request)return;
+            if(data.type==='preparing')pending.add(data.editor);
+            if(data.type==='prepared'){if(data.error){finish(new Error(`Motion Studio save failed: ${data.error}`));return;}pending.delete(data.editor);check();}
+        };
+        channel.postMessage({type:'prepare-run',request});
+    });
+}
 export function processingScope(plan,kind) {
     if(kind==='range'){
         const range=[...plan.selection];

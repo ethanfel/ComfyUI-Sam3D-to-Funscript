@@ -1,4 +1,4 @@
-import {isFolder,folderDescriptor,folderPages,attachFolder,adoptFolder,detachFolder,updateFolderNode,setupFolder} from "./folder.mjs";
+import {isFolder,folderDescriptor,folderPages,attachFolder,adoptFolder,detachFolder,updateFolderNode,setupFolder} from "./folder.mjs?v=review-save-lock-1";
 import {openWorkspace,registerWorkspaceTool,refreshWorkspaces} from "./workspace.mjs";
 import {app} from "../../scripts/app.js";
 import {api} from "../../scripts/api.js";
@@ -56,7 +56,7 @@ app.registerExtension({
                 if(message.type==="s3f-timeline-cancel"){
                     const job=jobs.get(node);
                     if(!job?.prompt_id){reply({state:"error",error:"The job has not entered the queue yet."});return}
-                    const response=await api.fetchApi(`/jobs/${encodeURIComponent(job.prompt_id)}/cancel`,{method:"POST"});
+                    const response=await api.fetchApi(`/jobs/${encodeURIComponent(job.prompt_id)}/cancel`,{method:"POST",signal:AbortSignal.timeout(15000)});
                     if(!response.ok)throw new Error(`Could not cancel this job (${response.status}). Use ComfyUI's queue controls.`);
                     job.reply({state:"running",text:"Cancellation requested · completed regions are kept"});return;
                 }
@@ -81,7 +81,7 @@ app.registerExtension({
                 const job={reply};jobs.set(node,job);
                 try{
                     setPlan();reply({state:"queued",text:maskSeed?'Preparing initial SAM3 mask…':anchorPreview?'Preparing anchor preview…':cutScan?"Preparing hard-cut scan…":trackOnly?"Preparing reference tracking…":"Preparing selected processing job…"});
-                    const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
+                    const stateResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store",signal:AbortSignal.timeout(15000)});
                     if(!stateResponse.ok)throw new Error("Could not read the saved timeline before processing.");
                     const state=await stateResponse.json();
                     const motionSessions=prepareNodeSessions(app.graph?._nodes||[]);
@@ -107,8 +107,14 @@ app.registerExtension({
                     },{nodeType:node.type,resultKey:"s3f_timeline"});
                     assertCurrent();
                     node.s3fTimelineStatus.textContent=output.s3f_timeline_status?.[0]||"Timeline processing complete";
-                    const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store"});
-                    if(latestResponse.ok&&motionRun){const latest=await latestResponse.json();if(latest.editor_session)notifyEditorRun(latest.editor_session,latest.project)}
+                    if(motionRun){
+                        let session=state.editor_session,project=output.s3f_timeline_project?.[0];
+                        try{
+                            const latestResponse=await api.fetchApi(`/sam3d_funscript/timelines/${message.session}`,{cache:"no-store",signal:AbortSignal.timeout(15000)});
+                            if(latestResponse.ok){const latest=await latestResponse.json();session=latest.editor_session||session;project=latest.project||project;}
+                        }catch{/* The job completed; a delayed status read must not keep the folder locked. */}
+                        if(session)notifyEditorRun(session,project);
+                    }
                     reply({state:"complete",text:node.s3fTimelineStatus.textContent,project:output.s3f_timeline_project?.[0],
                         ...(anchorPreview?{anchor_preview:output.s3f_anchor_preview?.[0]}:{}),...(maskSeed?{mask_seed:output.s3f_mask_seed?.[0]}:{})});
                 }finally{jobs.delete(node)}
@@ -142,14 +148,14 @@ app.registerExtension({
         };
     },
     beforeRegisterNodeDef(type,data){
-        if(!["S3F_ProcessingTimeline","S3F_FolderTimeline"].includes(data.name))return;
+        if(!["S3F_ProcessingTimeline","S3F_FolderTimeline","S3F_H3ProjectTimeline"].includes(data.name))return;
         const created=type.prototype.onNodeCreated;
         type.prototype.onNodeCreated=function(){
             created?.apply(this,arguments);this.properties||={};this.properties.s3f_timeline_session||=newSession();
             const status=document.createElement("div");status.style.cssText="font:12px system-ui;color:#a9d9c5;padding:8px;white-space:normal";
             status.textContent="Run Prepare once, then open the processing timeline.";this.s3fTimelineStatus=status;
             this.addDOMWidget("timeline_status","text",status,{serialize:false,getMinHeight:()=>44});
-            this.addWidget("button",isFolder(this)?"Open folder workspace":"Open processing timeline",null,()=>open(this));this.setSize([410,410]);
+            this.addWidget("button",this.type==='S3F_H3ProjectTimeline'?"Open H3 project workspace":isFolder(this)?"Open folder workspace":"Open processing timeline",null,()=>open(this));this.setSize([410,410]);
         };
         const executed=type.prototype.onExecuted;
         type.prototype.onExecuted=function(output){

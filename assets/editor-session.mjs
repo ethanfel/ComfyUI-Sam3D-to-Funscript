@@ -66,6 +66,7 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
     const params = new URLSearchParams(location.search), session = params.get('session');
     if (!session || document.getElementById('s3f-project')) return null;
     const endpoint = `../editors/${encodeURIComponent(session)}`;
+    const prefetching = () => window.frameElement?.dataset.prefetch === 'true';
     let revision = 0, baseContent, unconfirmed, pending = false, timer, retryTimer, retryDelay = 1000, saving, recovering, refreshing, failure, output = params.get('project');
     let unavailable = false;
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(`s3f-editor-${session}`) : null;
@@ -153,6 +154,7 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
         }
     }
     async function flush() {
+        if(prefetching())return;
         clearTimeout(timer);
         clearTimeout(retryTimer);
         if (recovering) {await recovering; return flush();}
@@ -204,6 +206,7 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
         finally {recovering = null;}
     }
     channel && (channel.onmessage = ({data}) => {
+        if(prefetching())return;
         if(data?.type==='prepare-run'){
             channel.postMessage({type:'preparing',request:data.request,editor});
             flush().then(()=>channel.postMessage({type:'prepared',request:data.request,editor}),
@@ -211,8 +214,8 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
         }else if(data?.type==='run')refresh(data.project).catch(error=>status(error.message));
         else if(!data?.type&&!pending&&!saving&&!recovering&&!failure)refresh().catch(error=>status(error.message));
     });
-    window.addEventListener('focus',()=>refresh().catch(error=>status(error.message)));
-    window.addEventListener('online',()=>refresh().catch(error=>status(error.message)));
+    window.addEventListener('focus',()=>{if(!prefetching())refresh().catch(error=>status(error.message));});
+    window.addEventListener('online',()=>{if(!prefetching())refresh().catch(error=>status(error.message));});
     window.addEventListener('beforeunload', event => {if (pending || saving || recovering || failure) {event.preventDefault();event.returnValue = '';}});
     window.s3fFlush = flush;
     window.s3fEditorRevision = () => revision;
@@ -226,12 +229,13 @@ export function editorSession({install, snapshot, status, recovery = () => {}, d
             if (reason) {waitForProject(reason); return;}
             if (state) {accept(state, false); status('Saved editor restored · locks survive reruns');}
             else {
+                if(prefetching())return;
                 const data=await fallback();
                 if(!data){status('Waiting for workflow · connect projects and run the standalone node');return;}
                 install(data, false, output); baseContent = editorContent(snapshot()); pending = true; await flush();
             }
         },
-        changed() {if(unavailable&&!snapshot())return; unavailable = false; pending = true; clearTimeout(timer); if (!failure) timer = setTimeout(() => flush().catch(() => {}), 300);},
+        changed() {if(prefetching()||unavailable&&!snapshot())return; unavailable = false; pending = true; clearTimeout(timer); if (!failure) timer = setTimeout(() => flush().catch(() => {}), 300);},
         flush, recover,
     };
 }

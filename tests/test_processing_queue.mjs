@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {errorMessage,queueReferenceTracking} from '../web/reference-queue.mjs';
 const origin='http://localhost',session='a'.repeat(32),handlers=new Map(),replies=[];
-const win={closed:false,location:{origin},postMessage:data=>replies.push(data)};
+const win={closed:false,location:{origin,pathname:'/sam3d_funscript/assets/processing-timeline.html'},postMessage:data=>replies.push(data)};
 const node={id:1,type:'S3F_ProcessingTimeline',properties:{s3f_timeline_session:session},widgets:[{name:'plan_json',value:'{}'}],s3fTimelineStatus:{},setDirtyCanvas(){}};
 const app={graph:{_nodes:[node],getNodeById:()=>node,change(){}},queuePrompt(){},registerExtension(extension){this.extension=extension},
  graphToPrompt:async()=>({output:{1:{class_type:'S3F_ProcessingTimeline',inputs:{operation:'prepare',plan_json:node.widgets[0].value}},2:{class_type:'S3F_StandaloneExport',inputs:{project_0:['1',0]}}},workflow:{nodes:[]}})};
-let attached,prepared=0,notified=0,queued;
+let attached,prepared=0,notified=0,queued,activeJobs;
 class API extends EventTarget{
  fetchApi=async()=>({ok:true,json:async()=>({editor_session:'b'.repeat(32),project:'authored'})});
  async queuePrompt(number,prompt,options){
@@ -19,6 +19,7 @@ class API extends EventTarget{
 }
 const api=new API();
 const deps={app,api,queueReferenceTracking,errorMessage,prepareEditorSessions:async()=>prepared++,notifyEditorRun:()=>notified++,
+ setupFolder:jobs=>{activeJobs=jobs},isFolder:()=>false,AbortSignal:{timeout:()=>AbortSignal.timeout(50)},
  prepareNodeSessions:()=>new Set(),migrateCutSensitivity(){},openWorkspace(){},refreshWorkspaces(){},
  registerWorkspaceTool:(name,tool)=>attached=tool,
  window:{addEventListener:(name,fn)=>handlers.set(name,fn)},location:{origin}};
@@ -101,3 +102,24 @@ for(const at_ms of [0,3000]){
 }
 console.log('SAM3 seed mask: targeted single-frame job, preserved reference points, and no Motion Studio side effects');
 assert.ok(replies.some(r=>r.text==='Downloading SAM2Matting-SAM3.pt · 25%'&&r.value===25&&r.max===100),'download progress reaches the mask job');
+
+// Neither a stalled preflight read nor a delayed completion lookup may leave
+// the folder's shared processing guard stuck after the request finishes.
+const fetchNormally=api.fetchApi,keepAlive=setInterval(()=>{},1000);
+try{
+ for(const stallAt of [1,2]){
+  let reads=0;
+  api.fetchApi=async(path,options)=>{
+   assert.ok(options.signal,'Timeline status reads need a deadline');
+   if(++reads===stallAt)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+   return fetchNormally(path,options);
+  };
+  await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'timeout',operation:'all',revision:4,plan}});
+  assert.equal(activeJobs.size,0,'Timed out status reads release the node');
+  assert.equal(replies.at(-1).state,stallAt===1?'error':'complete','A completed detection stays successful when its optional status refresh times out');
+  api.fetchApi=fetchNormally;
+  await handlers.get('message')({origin,source:win,data:{type:'s3f-timeline-process',node:1,session,request:'after-timeout',operation:'all',revision:4,plan}});
+  assert.equal(replies.at(-1).state,'complete');assert.equal(activeJobs.size,0);
+ }
+}finally{api.fetchApi=fetchNormally;clearInterval(keepAlive)}
+console.log('Timeline status timeouts release the shared processing guard; completed jobs and later runs remain usable');
